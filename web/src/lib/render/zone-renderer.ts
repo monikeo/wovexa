@@ -24,48 +24,155 @@ function setLetterSpacing(ctx: Ctx, px: number) {
   if ('letterSpacing' in ctx) (ctx as CanvasRenderingContext2D).letterSpacing = `${px}px`;
 }
 
-/** Natural size of the text at the reference size; the renderer scales it to fill the layer box. */
-export function measureText(c: TextContent) {
+/** Split into user-perceived characters so combining marks (Khmer, accents) stay on their base letter. */
+function graphemes(text: string): string[] {
+  if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
+    return Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text), (s) => s.segment);
+  }
+  return Array.from(text);
+}
+
+interface Glyph {
+  g: string;
+  x: number;
+  y: number;
+  rot: number;
+}
+
+/** Text laid out at the reference size. The renderer scales it to fill the layer box. */
+export interface TextLayout {
+  width: number;
+  height: number;
+  /** Centre of the ink box relative to the layout origin. */
+  cx: number;
+  cy: number;
+  lines: string[];
+  glyphs?: Glyph[];
+}
+
+export function isCurved(c: Pick<TextContent, 'curveDeg' | 'value'>) {
+  return Math.abs(c.curveDeg) >= 0.5 && !c.value.includes('\n') && c.value.length > 0;
+}
+
+const layoutCache = new Map<string, TextLayout>();
+
+export function layoutText(c: TextContent): TextLayout {
+  const key = JSON.stringify([c.value, c.fontFamily, c.fontWeight, c.italic, c.letterSpacingEm, c.lineHeight, isCurved(c) ? c.curveDeg : 0]);
+  const cached = layoutCache.get(key);
+  if (cached) return cached;
   const ctx = measurer();
   ctx.save();
   ctx.font = fontString(c, TEXT_REF_PX);
-  setLetterSpacing(ctx, c.letterSpacingEm * TEXT_REF_PX);
-  const lines = (c.value || ' ').split('\n');
-  const widths = lines.map((line) => Math.max(1, ctx.measureText(line || ' ').width));
+  const lineH = TEXT_REF_PX * c.lineHeight;
+  let layout: TextLayout;
+
+  if (isCurved(c)) {
+    setLetterSpacing(ctx, 0);
+    const spacing = c.letterSpacingEm * TEXT_REF_PX;
+    const gs = graphemes(c.value);
+    const widths = gs.map((g) => Math.max(1, ctx.measureText(g).width));
+    const length = widths.reduce((a, b) => a + b, 0) + spacing * (gs.length - 1);
+    const theta = (c.curveDeg * Math.PI) / 180;
+    const radius = length / Math.abs(theta);
+    const up = theta > 0;
+    let s = -length / 2;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const glyphs = gs.map((g, i) => {
+      const mid = s + widths[i] / 2;
+      s += widths[i] + spacing;
+      const phi = mid / radius;
+      const x = radius * Math.sin(phi);
+      const y = (up ? 1 : -1) * radius * (1 - Math.cos(phi));
+      const rot = up ? phi : -phi;
+      const cos = Math.cos(rot);
+      const sin = Math.sin(rot);
+      for (const [dx, dy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        const px = (dx * widths[i]) / 2;
+        const py = (dy * lineH) / 2;
+        const X = x + px * cos - py * sin;
+        const Y = y + px * sin + py * cos;
+        minX = Math.min(minX, X);
+        maxX = Math.max(maxX, X);
+        minY = Math.min(minY, Y);
+        maxY = Math.max(maxY, Y);
+      }
+      return { g, x, y, rot };
+    });
+    layout = { width: maxX - minX, height: maxY - minY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, lines: [c.value], glyphs };
+  } else {
+    setLetterSpacing(ctx, c.letterSpacingEm * TEXT_REF_PX);
+    const lines = (c.value || ' ').split('\n');
+    const widths = lines.map((line) => Math.max(1, ctx.measureText(line || ' ').width));
+    layout = { width: Math.max(...widths), height: lines.length * lineH, cx: 0, cy: 0, lines };
+  }
   ctx.restore();
-  return { lines, widths, width: Math.max(...widths), height: lines.length * TEXT_REF_PX * c.lineHeight };
+  if (layoutCache.size > 300) layoutCache.delete(layoutCache.keys().next().value!);
+  layoutCache.set(key, layout);
+  return layout;
 }
 
-/** Box aspect (width / height) that shows the text undistorted. */
+/** Forget measured layouts, e.g. after a web font finishes loading and metrics change. */
+export function clearTextLayoutCache() {
+  layoutCache.clear();
+}
+
+/** Box aspect (width / height) that shows the text undistorted, straight or curved. */
 export function textAspect(c: TextContent) {
-  const m = measureText(c);
+  const m = layoutText(c);
   return m.width / m.height;
 }
 
 function drawText(ctx: Ctx, c: TextContent, w: number, h: number, pxPerMm: number) {
-  const m = measureText(c);
+  const m = layoutText(c);
   const scaleY = h / m.height;
   ctx.save();
-  ctx.scale(w / m.width, h / m.height);
+  ctx.scale(w / m.width, scaleY);
+  ctx.translate(-m.cx, -m.cy);
   ctx.font = fontString(c, TEXT_REF_PX);
-  setLetterSpacing(ctx, c.letterSpacingEm * TEXT_REF_PX);
   ctx.textBaseline = 'middle';
-  ctx.textAlign = c.align;
-  const x = c.align === 'left' ? -m.width / 2 : c.align === 'right' ? m.width / 2 : 0;
-  const lineH = TEXT_REF_PX * c.lineHeight;
-  m.lines.forEach((line, i) => {
-    const y = -m.height / 2 + lineH * (i + 0.5);
-    if (c.strokeColor && c.strokeWidthMm) {
-      ctx.lineJoin = 'round';
-      ctx.strokeStyle = c.strokeColor;
-      // The stroke is centred on the glyph edge and the fill covers its inner half,
-      // so draw it twice as wide to show the requested outline width outside the letter.
-      ctx.lineWidth = (c.strokeWidthMm * pxPerMm * 2) / scaleY;
-      ctx.strokeText(line, x, y);
+  ctx.lineJoin = 'round';
+  // The stroke is centred on the glyph edge and the fill covers its inner half,
+  // so draw it twice as wide to show the requested outline width outside the letter.
+  const stroke = c.strokeColor && c.strokeWidthMm ? { color: c.strokeColor, width: (c.strokeWidthMm * pxPerMm * 2) / scaleY } : null;
+
+  if (m.glyphs) {
+    setLetterSpacing(ctx, 0);
+    ctx.textAlign = 'center';
+    for (const pass of stroke ? ['stroke', 'fill'] : ['fill']) {
+      for (const glyph of m.glyphs) {
+        ctx.save();
+        ctx.translate(glyph.x, glyph.y);
+        ctx.rotate(glyph.rot);
+        if (pass === 'stroke' && stroke) {
+          ctx.strokeStyle = stroke.color;
+          ctx.lineWidth = stroke.width;
+          ctx.strokeText(glyph.g, 0, 0);
+        } else {
+          ctx.fillStyle = c.fill;
+          ctx.fillText(glyph.g, 0, 0);
+        }
+        ctx.restore();
+      }
     }
-    ctx.fillStyle = c.fill;
-    ctx.fillText(line, x, y);
-  });
+  } else {
+    setLetterSpacing(ctx, c.letterSpacingEm * TEXT_REF_PX);
+    ctx.textAlign = c.align;
+    const x = c.align === 'left' ? -m.width / 2 : c.align === 'right' ? m.width / 2 : 0;
+    const lineH = TEXT_REF_PX * c.lineHeight;
+    m.lines.forEach((line, i) => {
+      const y = -m.height / 2 + lineH * (i + 0.5);
+      if (stroke) {
+        ctx.strokeStyle = stroke.color;
+        ctx.lineWidth = stroke.width;
+        ctx.strokeText(line, x, y);
+      }
+      ctx.fillStyle = c.fill;
+      ctx.fillText(line, x, y);
+    });
+  }
   ctx.restore();
 }
 
@@ -180,14 +287,19 @@ export function renderZoneArtwork(zone: ZoneDesign, widthMm: number, heightMm: n
   return { canvas, dpi: effectiveDpi };
 }
 
-/** Resolve once every font used by text layers is ready for canvas drawing. */
-export async function ensureFonts(zones: ZoneDesign[]) {
-  if (typeof document === 'undefined' || !document.fonts) return;
+/** Resolve once every font used by text layers is ready. Returns true if any font had to load. */
+export async function ensureFonts(zones: ZoneDesign[]): Promise<boolean> {
+  if (typeof document === 'undefined' || !document.fonts) return false;
   const wanted = new Set<string>();
   for (const zone of zones) {
     for (const layer of Object.values(zone.layers)) {
       if (layer.content.kind === 'text') wanted.add(fontString(layer.content, 40));
     }
   }
-  await Promise.all([...wanted].map((f) => document.fonts.load(f).catch(() => undefined)));
+  const pending = [...wanted].filter((f) => !document.fonts.check(f));
+  if (!pending.length) return false;
+  await Promise.all(pending.map((f) => document.fonts.load(f).catch(() => undefined)));
+  // Newly loaded faces change glyph metrics, so layouts measured with a fallback font are stale.
+  clearTextLayoutCache();
+  return true;
 }

@@ -13,7 +13,9 @@ import { getLoadedImage, loadAssetImage } from '@/lib/assets';
 import { canvasToBlob, downloadBlob, loadImageFromUrl, sha256Hex, slugify } from '@/lib/download';
 import { ensureFonts, renderZoneArtwork } from '@/lib/render/zone-renderer';
 import { toast } from '@/components/ui/primitives';
-import { useStudio } from '@/stores/studio-store';
+import { documentHash } from '@/domain/hash';
+import { approvalState } from '@/lib/local-db';
+import { useLive, useStudio } from '@/stores/studio-store';
 import { VIEW_PRESETS, viewerApi, type ViewPreset } from './viewer3d/Viewer3D';
 
 const BACKGROUNDS = {
@@ -37,7 +39,9 @@ export function ExportPanel() {
   const [background, setBackground] = useState<keyof typeof BACKGROUNDS>('white');
   const [layout, setLayout] = useState<'sheet' | 'separate'>('sheet');
   const [dpi, setDpi] = useState(300);
+  const [allColorways, setAllColorways] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const meta = useStudio((s) => s.meta);
   if (!doc) return null;
 
   const model = getGarment(doc.garment.modelId);
@@ -62,8 +66,12 @@ export function ExportPanel() {
   const exportMockups = () =>
     run('mockups', async () => {
       if (!viewerApi.capture) throw new Error('Open the 3D or Split view to export mockup images.');
-      const shots = await viewerApi.capture({ views, width: 1600, height: 2000 });
       const fill = BACKGROUNDS[background].color;
+      if (allColorways && doc.colorways.length > 1) {
+        await exportAllColorways(fill);
+        return;
+      }
+      const shots = await viewerApi.capture({ views, width: 1600, height: 2000 });
       const flatten = async (dataUrl: string) => {
         const img = await loadImageFromUrl(dataUrl);
         const c = document.createElement('canvas');
@@ -102,6 +110,61 @@ export function ExportPanel() {
       }
       toast(`Exported ${shots.length} view${shots.length > 1 ? 's' : ''}.`, 'success');
     });
+
+  /** Batch render (spec MED-09): every colourway × chosen views, one contact sheet or one file each. */
+  const exportAllColorways = async (fill: string | null) => {
+    const live = useLive.getState();
+    const nextFrames = () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+    const rows: { name: string; tiles: HTMLCanvasElement[] }[] = [];
+    try {
+      for (const c of doc.colorways) {
+        live.setColorwayOverride(c.id);
+        await nextFrames();
+        const shots = await viewerApi.capture!({ views, width: 1200, height: 1500 });
+        const tiles: HTMLCanvasElement[] = [];
+        for (const shot of shots) {
+          const img = await loadImageFromUrl(shot.dataUrl);
+          const t = document.createElement('canvas');
+          t.width = img.width;
+          t.height = img.height;
+          const ctx = t.getContext('2d')!;
+          if (fill) {
+            ctx.fillStyle = fill;
+            ctx.fillRect(0, 0, t.width, t.height);
+          }
+          ctx.drawImage(img, 0, 0);
+          tiles.push(t);
+        }
+        rows.push({ name: c.name, tiles });
+      }
+    } finally {
+      live.setColorwayOverride(null);
+    }
+    if (layout === 'separate') {
+      for (const row of rows) {
+        for (const [i, tile] of row.tiles.entries()) downloadBlob(await canvasToBlob(tile), `${base}_${views[i]}_${slugify(row.name)}_r${doc.revision}.png`);
+      }
+    } else {
+      const w = rows[0].tiles[0].width;
+      const h = rows[0].tiles[0].height;
+      const labelH = 90;
+      const sheet = document.createElement('canvas');
+      sheet.width = w * views.length;
+      sheet.height = (h + labelH) * rows.length;
+      const ctx = sheet.getContext('2d')!;
+      ctx.fillStyle = fill ?? '#FFFFFF';
+      ctx.fillRect(0, 0, sheet.width, sheet.height);
+      rows.forEach((row, r) => {
+        ctx.fillStyle = '#111111';
+        ctx.font = '600 44px system-ui, sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(row.name, 48, r * (h + labelH) + labelH / 2);
+        row.tiles.forEach((tile, c) => ctx.drawImage(tile, c * w, r * (h + labelH) + labelH));
+      });
+      downloadBlob(await canvasToBlob(sheet), `${base}_all-colourways_r${doc.revision}.png`);
+    }
+    toast(`Exported ${rows.length} colourways × ${views.length} views.`, 'success');
+  };
 
   const exportPrintFiles = () =>
     run('print', async () => {
@@ -153,6 +216,17 @@ export function ExportPanel() {
         units: 'mm',
         outputs,
         preflight: issues.filter((i) => i.severity !== 'info').map(({ severity, code, zoneId, layerId, message }) => ({ severity, code, zoneId, layerId, message })),
+        approval:
+          meta && approvalState(meta) === 'approved'
+            ? { status: 'approved', versionNumber: meta.approvedVersionNumber, contentHash: meta.approvedHash }
+            : { status: meta?.approvedHash ? 'changed-since-approval' : 'draft', approvedVersionNumber: meta?.approvedVersionNumber ?? null },
+        contentHash: await documentHash(current),
+        production: {
+          constructionNotes: current.production.constructionNotes,
+          factoryContact: current.production.factoryContact,
+          billOfMaterials: current.production.bom,
+          qaChecklist: current.production.qa,
+        },
         notes: 'Screen colours are sRGB previews. Confirm colour, placement and print method with a physical proof before production.',
         generatedAt: new Date().toISOString(),
       };
@@ -209,6 +283,12 @@ export function ExportPanel() {
             </select>
           </label>
         </div>
+        {doc.colorways.length > 1 ? (
+          <label className="mt-3 flex items-center gap-2 text-sm">
+            <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]" checked={allColorways} onChange={(e) => setAllColorways(e.target.checked)} />
+            Every colourway ({doc.colorways.length}), not just {doc.colorways.find((c) => c.id === doc.activeColorwayId)?.name}
+          </label>
+        ) : null}
         {viewerReady ? (
           <button className="btn btn-primary mt-3 w-full" disabled={!views.length || !!busy} onClick={exportMockups}>
             {busy === 'mockups' ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} Download mockups

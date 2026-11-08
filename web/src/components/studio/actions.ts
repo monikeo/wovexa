@@ -1,5 +1,6 @@
 'use client';
 /** Studio actions shared by the tool rail, mobile sheets, keyboard shortcuts and drag-and-drop. */
+import { alignUnits, distributeUnits, expandToGroups, selectionUnits, type AlignMode, type DistributeAxis } from '@/domain/arrange';
 import * as cmd from '@/domain/commands';
 import { contrastInk, createImageLayer, createShapeLayer, createTextLayer, newId } from '@/domain/factory';
 import { getGarment } from '@/domain/garments';
@@ -90,26 +91,62 @@ export function nudgeSelection(dxMm: number, dyMm: number) {
         return [id, { centerXmm: t.centerXmm + dxMm, centerYmm: t.centerYmm + dyMm }];
       }),
   );
-  dispatch(cmd.updateTransforms(activeZoneId, changes, 'Nudge'));
+  dispatch(cmd.coalescing(cmd.updateTransforms(activeZoneId, changes, 'Nudge'), `nudge:${Object.keys(changes).join()}`));
 }
 
-export function alignSelection(axis: 'x' | 'y') {
+const ALIGN_LABELS: Record<AlignMode, string> = {
+  left: 'Align left',
+  hcenter: 'Centre horizontally',
+  right: 'Align right',
+  top: 'Align top',
+  vcenter: 'Centre vertically',
+  bottom: 'Align bottom',
+};
+
+/** Align the selection: to the print area for one item, to the selection bounds for several. */
+export function alignSelection(mode: AlignMode) {
   const c = context();
   if (!c || !c.s.document) return;
   const zone = c.s.document.zones[c.zoneId];
-  const changes = Object.fromEntries(
-    c.s.selectedLayerIds
-      .filter((id) => zone.layers[id] && !zone.layers[id].locked)
-      .map((id) => [id, axis === 'x' ? { centerXmm: c.spec.printableWidthMm / 2 } : { centerYmm: c.spec.printableHeightMm / 2 }]),
-  );
-  c.s.dispatch(cmd.updateTransforms(c.zoneId, changes, axis === 'x' ? 'Centre horizontally' : 'Centre vertically'));
+  const units = selectionUnits(zone, c.s.selectedLayerIds);
+  const changes = alignUnits(units, mode, { x: 0, y: 0, width: c.spec.printableWidthMm, height: c.spec.printableHeightMm });
+  c.s.dispatch(cmd.updateTransforms(c.zoneId, changes, ALIGN_LABELS[mode]));
+}
+
+export function distributeSelection(axis: DistributeAxis) {
+  const c = context();
+  if (!c || !c.s.document) return;
+  const units = selectionUnits(c.s.document.zones[c.zoneId], c.s.selectedLayerIds);
+  c.s.dispatch(cmd.updateTransforms(c.zoneId, distributeUnits(units, axis), axis === 'horizontal' ? 'Distribute horizontally' : 'Distribute vertically'));
+}
+
+export function groupSelection() {
+  const { selectedLayerIds, activeZoneId, dispatch, select } = useStudio.getState();
+  if (selectedLayerIds.length < 2) return;
+  dispatch(cmd.groupLayers(activeZoneId, selectedLayerIds, `g-${newId()}`));
+  select([...selectedLayerIds]);
+}
+
+export function ungroupSelection() {
+  const { selectedLayerIds, activeZoneId, dispatch, select } = useStudio.getState();
+  if (!selectedLayerIds.length) return;
+  dispatch(cmd.ungroupLayers(activeZoneId, selectedLayerIds));
+  select([...selectedLayerIds]);
+}
+
+/** Select layers from a list click, expanding to whole groups. */
+export function selectLayers(ids: string[]) {
+  const { document, activeZoneId, select } = useStudio.getState();
+  if (!document) return;
+  select(expandToGroups(document.zones[activeZoneId], ids));
 }
 
 export function moveSelectionInStack(direction: 1 | -1) {
-  const { document, selectedLayerIds, activeZoneId, dispatch } = useStudio.getState();
-  if (!document || selectedLayerIds.length !== 1) return;
-  const order = document.zones[activeZoneId].orderedLayerIds;
-  const id = selectedLayerIds[0];
-  const index = order.indexOf(id);
-  dispatch(cmd.reorderLayer(activeZoneId, id, index + direction));
+  const { selectedLayerIds, activeZoneId, dispatch } = useStudio.getState();
+  if (!selectedLayerIds.length) return;
+  dispatch(cmd.moveLayerBy(activeZoneId, selectedLayerIds[0], direction));
+}
+
+export function zoomToSelection() {
+  window.dispatchEvent(new CustomEvent('wovexa:zoom-to-selection'));
 }

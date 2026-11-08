@@ -1,6 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { NewProjectButton, ProjectCard, QuickStart, useProjects } from '@/components/workspace/projects';
+import { BuiltInTemplates } from '@/components/workspace/templates';
 import { PageHeader } from '@/components/workspace/WorkspaceShell';
 
 export function Dashboard() {
@@ -16,6 +17,18 @@ export function Dashboard() {
           Start from a blank
         </h2>
         <QuickStart />
+      </section>
+
+      <section aria-labelledby="templates" className="mt-10">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 id="templates" className="text-sm font-semibold">
+            Or start from a template
+          </h2>
+          <Link href="/templates" className="text-sm font-medium text-accent underline-offset-4 hover:underline">
+            All templates
+          </Link>
+        </div>
+        <BuiltInTemplates limit={3} />
       </section>
 
       <section aria-labelledby="recent" className="mt-10">
