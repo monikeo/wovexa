@@ -375,6 +375,77 @@ export const HOODIE: GarmentModel = {
   ],
 };
 
+export const SWEATSHIRT: GarmentModel = {
+  ...HOODIE,
+  id: 'sweatshirt-crew',
+  name: 'Crewneck sweatshirt',
+  shortName: 'Sweatshirt',
+  description: 'Fleece crewneck with a rib collar, cuffs and hem. Room for a big chest print.',
+  neckRadiusMm: 92,
+  frontNeckDropMm: 78,
+  backNeckDropMm: 24,
+  shoulderSlope: 0.22,
+  neckline: 'crew',
+  extras: {},
+  zones: {
+    front: torsoZone('front', 320, 360, 150, ALL_FLAT),
+    back: torsoZone('back', 330, 420, 120, ALL_FLAT),
+    ...sleeveZones(90, 360, 250),
+  },
+  colorParts: [
+    { part: 'body', label: 'Body' },
+    { part: 'sleeves', label: 'Sleeves' },
+    { part: 'collar', label: 'Rib' },
+    { part: 'stitching', label: 'Stitch' },
+  ],
+};
+
+export const TEE_CROP: GarmentModel = {
+  ...TEE_CLASSIC,
+  id: 'tee-crop',
+  name: 'Cropped tee',
+  shortName: 'Crop',
+  description: 'Boxy cropped body that ends above the hip, with short sleeves.',
+  category: 'tee',
+  bodyLengthMm: 540,
+  chestHalfWidthMm: 270,
+  bodyHalfDepthMm: 122,
+  shoulderHalfWidthMm: 250,
+  sleeve: { lengthMm: 200, angleDeg: 34, rootRadiusMm: 110, cuffRadiusMm: 92, cuff: 'hem' },
+  zones: { front: torsoZone('front', 280, 250, 150), back: torsoZone('back', 290, 300, 110), ...sleeveZones(90, 80, 95) },
+  sizes: gradedSizes({ chestFlatMm: 540, bodyLengthMm: 540, sleeveMm: 200 }, ADULT_SHIRTS),
+};
+
+export const BASKETBALL: GarmentModel = {
+  ...TANK,
+  id: 'jersey-basketball',
+  name: 'Basketball jersey',
+  shortName: 'Basketball',
+  description: 'Sleeveless athletic mesh with deep armholes and a V-neck trim. Built for names and numbers.',
+  category: 'jersey',
+  bodyLengthMm: 760,
+  chestHalfWidthMm: 280,
+  bodyHalfDepthMm: 118,
+  shoulderHalfWidthMm: 140,
+  neckRadiusMm: 98,
+  frontNeckDropMm: 140,
+  backNeckDropMm: 40,
+  neckline: 'v',
+  armholeDropMm: 280,
+  trimWidthMm: 24,
+  zones: { front: torsoZone('front', 300, 380, 190), back: torsoZone('back', 320, 450, 110) },
+  colorParts: [
+    { part: 'body', label: 'Body' },
+    { part: 'collar', label: 'Trim' },
+    { part: 'stitching', label: 'Stitch' },
+  ],
+  sizes: gradedSizes({ chestFlatMm: 560, bodyLengthMm: 760 }, [...KIDS_SINGLETS, ...ADULT_SINGLETS], ADULT_SINGLETS[2]),
+  fabricPresets: [
+    { id: 'mesh-140', label: 'Performance mesh, 140 gsm', gsm: 140, surface: 'mesh' },
+    { id: 'poly-150', label: 'Smooth polyester, 150 gsm', gsm: 150, surface: 'jersey' },
+  ],
+};
+
 export const JERSEY: GarmentModel = {
   ...TEE_CLASSIC,
   id: 'jersey-v',
@@ -483,7 +554,7 @@ export const DOBOK: GarmentModel = {
   ],
 };
 
-export const GARMENT_LIST: GarmentModel[] = [TEE_CLASSIC, TEE_OVERSIZED, TEE_LONG, POLO, TANK, HOODIE, JERSEY, DOBOK];
+export const GARMENT_LIST: GarmentModel[] = [TEE_CLASSIC, TEE_OVERSIZED, TEE_CROP, TEE_LONG, POLO, TANK, HOODIE, SWEATSHIRT, JERSEY, BASKETBALL, DOBOK];
 export const GARMENTS: Record<string, GarmentModel> = Object.fromEntries(GARMENT_LIST.map((g) => [g.id, g]));
 
 export function getGarment(modelId: string): GarmentModel {

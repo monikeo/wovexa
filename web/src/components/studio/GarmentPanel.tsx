@@ -3,13 +3,15 @@
  * Garment panel (spec GAR-02/05/06/07/09, VAR-01/02): style, size, fabric, colourways with a
  * colour for every part the garment has, and all-over fabric prints per part.
  */
-import { Check, Dices, GitCompare, ImagePlus, Loader2, Plus, Trash2 } from 'lucide-react';
+import { Check, Dices, Download, GitCompare, ImagePlus, Loader2, Plus, Trash2, Upload } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { useBrandKit } from './brand-context';
 import * as cmd from '@/domain/commands';
 import { createColorway } from '@/domain/factory';
 import { BELT_COLOURS, colorwayPresetsFor, GARMENT_LIST, getGarment, hasZone, partColor, PRINT_METHOD_LABELS, sizeChart, sizeLabel, type GarmentModel } from '@/domain/garments';
-import { FABRIC_EFFECTS, PATTERNS, ZONE_IDS, type Colorway, type FabricEffect, type PrintMethod, type Surface } from '@/domain/schema';
+import { FABRIC_EFFECTS, PATTERNS, ZONE_IDS, type Colorway, type DesignDocument, type FabricEffect, type PrintMethod, type Surface } from '@/domain/schema';
+import { downloadBlob } from '@/lib/download';
+import { viewerApi } from './viewer3d/stage';
 import { AssetError, importImageFile, loadAssetImage } from '@/lib/assets';
 import { ColorField, toast } from '@/components/ui/primitives';
 import { useActiveColorway, useActiveZoneSpec, useStudio } from '@/stores/studio-store';
@@ -248,6 +250,86 @@ function FabricPrint({ colorway, model }: { colorway: Colorway; model: GarmentMo
 
 const cm = (mm: number | undefined) => (mm === undefined ? '–' : (mm / 10).toFixed(mm % 10 ? 1 : 0));
 
+/**
+ * The garment's 3D shape: built in, or one an artist made from this style's template in Blender,
+ * Clo3D or Marvelous Designer. Prints, colours, lighting, motion and renders follow either.
+ */
+function ShapePicker({ model, doc }: { model: GarmentModel; doc: DesignDocument }) {
+  const dispatch = useStudio((s) => s.dispatch);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState<'template' | 'shape' | null>(null);
+  const shape = doc.garment.shape?.modelId === model.id ? doc.garment.shape : undefined;
+
+  const downloadTemplate = async () => {
+    if (!viewerApi.exportTemplate) {
+      toast('Show the 3D view to download this style’s template.', 'error');
+      return;
+    }
+    setBusy('template');
+    try {
+      downloadBlob(await viewerApi.exportTemplate(), `${model.id}_${doc.garment.sizeCode}_template.glb`);
+      toast('Template downloaded. Reshape it, keep the part names and UVs, then load it back here.', 'success');
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'The template couldn’t be made.', 'error');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const load = async (file: File) => {
+    setBusy('shape');
+    try {
+      const { importGarmentShape } = await import('./viewer3d/garment-glb');
+      const next = await importGarmentShape(file, model, doc.garment.sizeCode);
+      dispatch(cmd.setGarmentShape(next));
+      toast(`Using your 3D shape “${next.name}”. Prints, colours and lighting follow it.`, 'success');
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'That file couldn’t be used.', 'error');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="space-y-2 rounded-lg border border-line p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold">3D shape</p>
+          <p className="truncate text-[11px] text-fg-3">{shape ? `Your shape: ${shape.name}` : 'Built-in shape'}</p>
+        </div>
+        {shape ? (
+          <button className="btn btn-ghost min-h-8 flex-none px-2 text-xs" onClick={() => dispatch(cmd.setGarmentShape(null))}>
+            Use built-in
+          </button>
+        ) : null}
+      </div>
+      <div className="grid grid-cols-2 gap-1.5">
+        <button className="btn btn-outline min-h-8 px-2 text-xs" disabled={busy !== null} onClick={() => void downloadTemplate()} title="This style as a GLB with named parts and print areas, for Blender, Clo3D or Marvelous Designer">
+          {busy === 'template' ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} Template
+        </button>
+        <button className="btn btn-outline min-h-8 px-2 text-xs" disabled={busy !== null} onClick={() => fileRef.current?.click()} title="Load a GLB made from this style’s template">
+          {busy === 'shape' ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {shape ? 'Replace' : 'Load shape'}
+        </button>
+      </div>
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".glb,model/gltf-binary"
+        className="sr-only"
+        tabIndex={-1}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void load(f);
+          e.target.value = '';
+        }}
+      />
+      <p className="text-[11px] text-fg-3">
+        Download this style’s template, reshape it in Blender, Clo3D or Marvelous Designer with the part names and UVs kept, then load it back for a more natural drape. Use models you own or have a licence for.
+      </p>
+    </div>
+  );
+}
+
 /** The style's size chart in centimetres. Choosing a size here is the same as the size menu. */
 function SizeGuide({ model, selected, onPick }: { model: GarmentModel; selected: string; onPick: (code: string) => void }) {
   const { columns, rows } = sizeChart(model);
@@ -336,6 +418,7 @@ export function GarmentPanel() {
           </label>
         </div>
         <SizeGuide model={model} selected={doc.garment.sizeCode} onPick={(code) => dispatch(cmd.setGarmentSize(code))} />
+        <ShapePicker model={model} doc={doc} />
       </section>
 
       <section>

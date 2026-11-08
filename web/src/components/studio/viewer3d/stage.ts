@@ -104,6 +104,8 @@ export const viewerApi: {
   currentCamera?: () => Omit<CameraBookmark, 'id' | 'name'>;
   /** The garment as a 3D model: GLB for viewers and engines, USDZ for AR Quick Look. */
   exportModel?: (format: 'glb' | 'usdz') => Promise<Blob>;
+  /** This style as a garment template GLB for Blender, Clo3D or Marvelous Designer (see garment-glb.ts). */
+  exportTemplate?: () => Promise<Blob>;
 } = {};
 
 export function shotKey(shot: ShotSpec) {

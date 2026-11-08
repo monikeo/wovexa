@@ -15,8 +15,9 @@ import { coalescing, updateTransforms } from '@/domain/commands';
 import { getGarment, getSize, partColor, zoneSpecOrFirst, type PartId } from '@/domain/garments';
 import { clamp, hitTestLayer, normalizeDeg, rotatedBounds, scaleRotateAbout } from '@/domain/geometry';
 import { backdropCss, drapeAmount, motionOf, presetOf, sceneOf, toneOf, type MotionKind, type ToneId } from '@/domain/scene';
-import type { LayerTransform, Scene, ZoneId } from '@/domain/schema';
+import type { DesignDocument, LayerTransform, Scene, ZoneId } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
+import { getAsset } from '@/lib/local-db';
 import { canvasToBlob, downloadBlob, slugify } from '@/lib/download';
 import { paintBackdrop } from '@/lib/render/backdrop';
 import { ensureFonts } from '@/lib/render/zone-renderer';
@@ -28,6 +29,7 @@ import { BASE_FOV, frameFit, shotKey, shotLabel, VIEW_PRESETS, viewerApi, ZONE_V
 import { buildGarment, createFabricNormalMap, FABRIC_LOOK, type GarmentGeometry, type TrimColor } from './garment-geometry';
 import { drawPart, drawPartSurface, partKey, partSizeMm, setGpuMaxTexture, type PaintContext, type Quality } from './garment-textures';
 import { bakeAmbientOcclusion, type AoTarget } from './ao-bake';
+import { cachedShape, exportGarmentTemplate, ShapeError, shapedGarment, type ParsedShape } from './garment-glb';
 import { applyMotion, MOTION_CACHE_KEY, motionDepthMaterial, motionState, motionUniforms, patchMotion, setLimbPivots } from './motion';
 import { disposeDecal, disposePhotoreal, fillCard, inkDecals, insetGeometry, liveTrace, pathTrace, photorealSupport, softStudioLights } from './photoreal';
 import { uvInZone, uvToZone, type GarmentPart } from './uv-mapping';
@@ -473,6 +475,31 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
       cancelAnimationFrame(frame);
     };
   }, [geo, linings, gl, quality, invalidate]);
+
+  // "Download 3D template": this shape as a GLB, with the print areas drawn on plain fabric.
+  useEffect(() => {
+    const exportTemplate = () => {
+      const zones = Object.fromEntries(Object.entries(doc.zones).map(([id, z]) => [id, { ...z, layers: {}, orderedLayerIds: [] }])) as unknown as DesignDocument['zones'];
+      const blank: DesignDocument = { ...doc, zones };
+      const neutral = {
+        ...colorway,
+        surfaces: undefined,
+        parts: Object.fromEntries(Object.entries(colorway.parts).map(([k]) => [k, k === 'belt' ? '#3A3D44' : k === 'collar' ? '#C9CCD3' : k === 'stitching' ? '#AEB3BC' : '#E4E5E9'])) as typeof colorway.parts,
+      };
+      const ctx: PaintContext = { doc: blank, model, geo, colorway: neutral, quality: 'high', guides: { zones: true, selection: null, accent }, simulateFinish: false };
+      const guideMaps = new Map<PartId, HTMLCanvasElement>();
+      for (const p of geo.parts) {
+        const canvas = document.createElement('canvas');
+        drawPart(canvas, p.id, ctx);
+        guideMaps.set(p.id, canvas);
+      }
+      return exportGarmentTemplate(geo, model, size, guideMaps);
+    };
+    viewerApi.exportTemplate = exportTemplate;
+    return () => {
+      if (viewerApi.exportTemplate === exportTemplate) viewerApi.exportTemplate = undefined;
+    };
+  }, [doc, colorway, model, geo, size, accent]);
 
   useEffect(() => setGpuMaxTexture(gl.capabilities.maxTextureSize), [gl]);
   useEffect(() => {
@@ -1487,14 +1514,53 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
   const sizeCode = doc?.garment.sizeCode ?? 'M';
   // Read straight from the document (not the derived scene), so the memo depends on a plain string.
   const drapeId = doc?.scene?.drape ?? 'natural';
-  const geo = useMemo(() => buildGarmentFor(modelId, sizeCode, quality, drapeAmount(drapeId)), [modelId, sizeCode, quality, drapeId]);
+  const baseGeo = useMemo(() => buildGarmentFor(modelId, sizeCode, quality, drapeAmount(drapeId)), [modelId, sizeCode, quality, drapeId]);
   useEffect(
     () => () => {
+      for (const p of baseGeo.parts) p.geometry.dispose();
+      for (const t of baseGeo.trims) t.geometry.dispose();
+    },
+    [baseGeo],
+  );
+
+  // A custom 3D shape made from this style's template, in place of the built-in parts.
+  const shapeAssetId = doc?.garment.shape?.modelId === modelId ? doc.garment.shape.assetId : null;
+  const shapeSizeCode = doc?.garment.shape?.sizeCode ?? sizeCode;
+  const [loadedShape, setLoadedShape] = useState<{ assetId: string; shape: ParsedShape } | null>(null);
+  useEffect(() => {
+    if (!shapeAssetId) return;
+    let alive = true;
+    const model = getGarment(modelId);
+    cachedShape(
+      shapeAssetId,
+      async () => {
+        const asset = await getAsset(shapeAssetId);
+        if (!asset) throw new ShapeError('The 3D shape file isn’t on this device any more.');
+        return asset.blob.arrayBuffer();
+      },
+      model,
+    ).then(
+      (shape) => alive && setLoadedShape({ assetId: shapeAssetId, shape }),
+      (error: unknown) => alive && toast(error instanceof Error ? `${error.message} Showing the built-in shape.` : 'The 3D shape couldn’t be loaded.', 'error'),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [shapeAssetId, modelId]);
+  const geo = useMemo(() => {
+    if (!shapeAssetId || loadedShape?.assetId !== shapeAssetId) return baseGeo;
+    const model = getGarment(modelId);
+    const now = getSize(model, sizeCode);
+    const made = getSize(model, shapeSizeCode);
+    return shapedGarment(baseGeo, loadedShape.shape, { width: now.chestFlatMm / made.chestFlatMm, length: now.bodyLengthMm / made.bodyLengthMm });
+  }, [baseGeo, shapeAssetId, loadedShape, modelId, sizeCode, shapeSizeCode]);
+  useEffect(() => {
+    if (geo === baseGeo) return;
+    return () => {
       for (const p of geo.parts) p.geometry.dispose();
       for (const t of geo.trims) t.geometry.dispose();
-    },
-    [geo],
-  );
+    };
+  }, [geo, baseGeo]);
   const motion = motionOf(scene);
   const motionGroup = useRef<THREE.Group>(null);
   const backdropImage = useBackdropImage(scene.backdrop.kind === 'image' ? scene.backdrop.assetId : undefined);
