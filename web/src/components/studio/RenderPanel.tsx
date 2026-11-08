@@ -5,14 +5,19 @@
  * colourway, and turntable video. Renders come from the saved document and never include
  * on-garment guides.
  */
-import { Clapperboard, Download, Images, Loader2, Square } from 'lucide-react';
+import { Clapperboard, Download, Images, Loader2, Sparkles, Square } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { sceneOf } from '@/domain/scene';
 import { canvasToBlob, downloadBlob, slugify } from '@/lib/download';
 import { planVideo, recordTurntable, type VideoPlan } from '@/lib/video';
 import { toast } from '@/components/ui/primitives';
 import { useLive, useStudio } from '@/stores/studio-store';
-import { VIEW_PRESETS, viewerApi, type CapturedShot, type RenderBackground, type ShotSpec, type ViewPreset } from './viewer3d/stage';
+import { PHOTOREAL_PRESETS, VIEW_PRESETS, viewerApi, type CapturedShot, type PhotorealPreset, type RenderBackground, type ShotSpec, type ViewPreset } from './viewer3d/stage';
+
+type Engine = 'realtime' | 'photoreal';
+/** Depth of field as an f-number: smaller is a shallower, blurrier background. */
+const LENSES = { off: undefined, soft: 2.8, strong: 1.2 } as const;
+type Lens = keyof typeof LENSES;
 
 const ASPECTS = [
   { id: '1:1', w: 1, h: 1, hint: 'Square posts and marketplaces' },
@@ -71,6 +76,11 @@ export function RenderPanel() {
   const [everyColorway, setEveryColorway] = useState(false);
   const [layout, setLayout] = useState<'separate' | 'sheet'>('separate');
   const [stillProgress, setStillProgress] = useState<string | null>(null);
+  const [engine, setEngine] = useState<Engine>('realtime');
+  const [preset, setPreset] = useState<PhotorealPreset>('studio');
+  const [lens, setLens] = useState<Lens>('off');
+  const [denoise, setDenoise] = useState(true);
+  const [traceProgress, setTraceProgress] = useState<number | null>(null);
 
   const [seconds, setSeconds] = useState(6);
   const [degrees, setDegrees] = useState(360);
@@ -129,22 +139,35 @@ export function RenderPanel() {
     setStillProgress(`0 of ${total}`);
     const live = useLive.getState();
     const rows: { name: string; shots: CapturedShot[] }[] = [];
+    const traced = engine === 'photoreal';
+    const controller = new AbortController();
+    if (traced) {
+      abortRef.current = controller;
+      setTraceProgress(0);
+    }
+    const samples = PHOTOREAL_PRESETS.find((p) => p.id === preset)!.samples;
     try {
       await useStudio.getState().saveNow();
-      for (const c of colorways) {
+      for (const [i, c] of colorways.entries()) {
         if (everyColorway) {
           live.setColorwayOverride(c.id);
           await nextFrames();
         }
-        rows.push({ name: c.name, shots: await viewerApi.capture({ shots: specs, width: still.w, height: still.h, background, frameCurrent: true }) });
+        const photoreal = traced
+          ? { samples, denoise, fStop: LENSES[lens], signal: controller.signal, onProgress: (f: number) => setTraceProgress((i + f) / colorways.length) }
+          : undefined;
+        rows.push({ name: c.name, shots: await viewerApi.capture({ shots: specs, width: still.w, height: still.h, background, frameCurrent: true, photoreal }) });
         setStillProgress(`${rows.length * specs.length} of ${total}`);
       }
     } catch (error) {
-      toast(error instanceof Error ? error.message : 'Rendering failed. Try a smaller size.', 'error');
+      if (error instanceof DOMException && error.name === 'AbortError') toast('Render cancelled.');
+      else toast(error instanceof Error ? error.message : 'Rendering failed. Try a smaller size.', 'error');
       return;
     } finally {
       if (everyColorway) live.setColorwayOverride(null);
       setStillProgress(null);
+      setTraceProgress(null);
+      if (abortRef.current === controller) abortRef.current = null;
     }
     const ext = format === 'jpeg' ? 'jpg' : format;
     if (layout === 'separate' || total === 1) {
@@ -248,6 +271,58 @@ export function RenderPanel() {
         <h3 className="panel-title flex items-center gap-2">
           <Images size={15} /> Still images
         </h3>
+        <div className="grid grid-cols-2 gap-1.5" role="group" aria-label="Renderer">
+          <button
+            className={`btn h-auto min-h-0 flex-col items-start justify-start gap-0.5 whitespace-normal px-3 py-2 text-left ${engine === 'realtime' ? 'btn-ink' : 'btn-outline'}`}
+            aria-pressed={engine === 'realtime'}
+            onClick={() => setEngine('realtime')}
+          >
+            <span className="text-sm font-semibold">Real time</span>
+            <span className="text-[11px] font-normal leading-snug opacity-75">Instant, as the 3D view shows it</span>
+          </button>
+          <button
+            className={`btn h-auto min-h-0 flex-col items-start justify-start gap-0.5 whitespace-normal px-3 py-2 text-left ${engine === 'photoreal' ? 'btn-ink' : 'btn-outline'}`}
+            aria-pressed={engine === 'photoreal'}
+            onClick={() => setEngine('photoreal')}
+          >
+            <span className="flex items-center gap-1 text-sm font-semibold">
+              <Sparkles size={13} aria-hidden /> Photoreal
+            </span>
+            <span className="text-[11px] font-normal leading-snug opacity-75">Real light and soft shadows; takes longer</span>
+          </button>
+        </div>
+        {engine === 'photoreal' ? (
+          <div className="space-y-2 rounded-lg border border-line p-2.5">
+            <div className="grid grid-cols-3 gap-1.5" role="group" aria-label="Photoreal quality">
+              {PHOTOREAL_PRESETS.map((p) => (
+                <Chip key={p.id} on={preset === p.id} onClick={() => setPreset(p.id)} title={`${p.samples} samples per pixel`}>
+                  {p.label}
+                </Chip>
+              ))}
+            </div>
+            <p className="text-[11px] text-fg-3">
+              {PHOTOREAL_PRESETS.find((p) => p.id === preset)!.hint} Light bounces between surfaces, prints show their real relief and gloss, and the view on screen resolves as it renders.
+            </p>
+            <details>
+              <summary className="cursor-pointer text-xs font-semibold text-fg-2">Lens and finish</summary>
+              <div className="mt-2 space-y-2">
+                <label className="grid grid-cols-[96px_1fr] items-center gap-2">
+                  <span className="label">Depth of field</span>
+                  <select className="field" value={lens} onChange={(e) => setLens(e.target.value as Lens)}>
+                    <option value="off">Off</option>
+                    <option value="soft">Soft (f/2.8)</option>
+                    <option value="strong">Strong (f/1.2)</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]" checked={denoise} onChange={(e) => setDenoise(e.target.checked)} />
+                  Remove grain
+                </label>
+                <p className="text-[11px] text-fg-3">Focus lands on the garment at the centre of each shot. Turn off grain removal for the finest print detail at Final quality.</p>
+              </div>
+            </details>
+          </div>
+        ) : null}
         <fieldset>
           <legend className="label mb-1.5">Shots</legend>
           <div className="flex flex-wrap gap-1.5">
@@ -312,10 +387,21 @@ export function RenderPanel() {
             <option value="sheet">One contact sheet</option>
           </select>
         </label>
-        <button className="btn btn-primary w-full" disabled={!specs.length || busy} onClick={() => void renderStills()}>
-          {stillProgress ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
-          {stillProgress ? `Rendering ${stillProgress}` : `Render ${total || ''} image${total === 1 ? '' : 's'}`}
-        </button>
+        {traceProgress !== null ? (
+          <div className="space-y-2">
+            <div className="h-2 overflow-hidden rounded-full bg-hover" role="progressbar" aria-label="Photoreal render progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(traceProgress * 100)}>
+              <div className="h-full bg-[var(--accent)] transition-[width]" style={{ width: `${Math.round(traceProgress * 100)}%` }} />
+            </div>
+            <button className="btn btn-outline w-full" onClick={() => abortRef.current?.abort()}>
+              <Square size={14} /> Cancel ({Math.round(traceProgress * 100)}%)
+            </button>
+          </div>
+        ) : (
+          <button className="btn btn-primary w-full" disabled={!specs.length || busy} onClick={() => void renderStills()}>
+            {stillProgress ? <Loader2 size={15} className="animate-spin" /> : engine === 'photoreal' ? <Sparkles size={15} /> : <Download size={15} />}
+            {stillProgress ? `Rendering ${stillProgress}` : `Render ${total || ''} ${engine === 'photoreal' ? 'photoreal ' : ''}image${total === 1 ? '' : 's'}`}
+          </button>
+        )}
       </section>
 
       <section className="space-y-3">

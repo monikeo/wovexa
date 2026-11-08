@@ -7,8 +7,35 @@ import { readPngDpi, setPngDpi } from './png-dpi';
 import { designPlaceholders, fillPlaceholders, parseRoster, personalise, sizeBreakdown, toCsv } from './roster';
 import { assignInks, colorDistance, findInks, plateData } from './separations';
 import { listZip, safeZipPath, ZipWriter } from './zip';
+import { buildTechSheet } from './tech-sheet';
 import { createDocument, createTextLayer } from '@/domain/factory';
-import { TEE_CLASSIC } from '@/domain/garments';
+import { DOBOK, getSize, TEE_CLASSIC } from '@/domain/garments';
+
+describe('tech sheet measurements', () => {
+  it('lists every size in cm, marks the sample and shows ordered quantities', () => {
+    const doc = createDocument({ projectId: 'p', title: 'Club uniforms' });
+    const html = buildTechSheet({
+      doc,
+      model: DOBOK,
+      size: getSize(DOBOK, '170'),
+      fabricLabel: 'Diamond weave',
+      approval: 'Draft',
+      revision: 'v1',
+      contentHash: 'abc',
+      dpi: 300,
+      zones: [],
+      colorwayFlats: {},
+      mockups: {},
+      fonts: [],
+      issues: [],
+      team: { people: 3, sizes: [{ size: '170', count: 2 }, { size: '130', count: 1 }], file: 'team/roster.csv' },
+    });
+    expect(html).toContain('<h2>Measurements</h2>');
+    // Size 170 (L): 83 cm jacket, 61 cm chest, 54 cm sleeve, 34 cm waist, 105 cm pants, two ordered.
+    expect(html).toContain('<tr class="sel"><td>170 cm (L) <span class="pill">Sample</span></td><td>61</td><td>83</td><td>54</td><td>34</td><td>105</td><td>2</td></tr>');
+    expect(html).toContain('<td>130 cm (2XS)</td><td>51.5</td><td>66</td><td>42</td><td>27</td><td>84</td><td>1</td>');
+  });
+});
 
 describe('crc32', () => {
   it('matches the reference value', () => {

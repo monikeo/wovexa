@@ -13,10 +13,10 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | Priority | Features | Done | Partial | Not started |
 | --- | ---: | ---: | ---: | ---: |
 | P0 | 34 | 25 | 9 | 0 |
-| P1 | 88 | 36 | 34 | 18 |
-| P2 | 59 | 2 | 10 | 47 |
+| P1 | 88 | 38 | 32 | 18 |
+| P2 | 59 | 2 | 11 | 46 |
 | Platform requirements (no priority) | 80 | 41 | 22 | 17 |
-| **All** | 261 | 104 | 75 | 82 |
+| **All** | 261 | 106 | 74 | 81 |
 
 ## Accounts and onboarding
 
@@ -90,19 +90,19 @@ Nothing here has been run against a live Supabase project: the app works fully i
 
 | ID | Priority | Feature | Status | Notes |
 | --- | --- | --- | --- | --- |
-| ED3-01 | P0 | Interactive garment | Done | Orbit, zoom, bounded angles, five view presets, keyboard orbit, Safari trackpad pinch. |
+| ED3-01 | P0 | Interactive garment | Done | Full 360° orbit, over the top and underneath, zoom, seven view presets, keyboard orbit, Safari trackpad pinch. |
 | ED3-02 | P0 | Live artwork projection | Done | Per-zone canvas textures redrawn from the canonical renderer within a frame of each edit, including live drags. |
 | ED3-03 | P0 | Inspect vs edit modes | Done | Orbit and Place modes with distinct pointer, touch and cursor behaviour. |
 | ED3-04 | P1 | Surface selection | Done | Raycast → UV → zone millimetres → topmost layer (groups expand); switches zone when needed. |
 | ED3-05 | P1 | Direct surface editing | Done | Drag across the surface, scroll/pinch to resize, Shift+scroll/twist to rotate, centre-line snap, centre kept on the print area. One undo step per gesture. |
-| ED3-06 | P0 | View presets | Done | Front, back, sides, ¾; saved views stored in the project scene. |
-| ED3-07 | P1 | Material realism | Partial | Fabric normal maps per surface, sheen, baked AO, vertical cloth folds, stitched and rib hems, trims drawn along the real neckline. Not calibrated against a scanned garment. |
-| ED3-08 | P1 | Surface finish previews | Partial | Flat, puff, embroidery, metallic and distressed previews. Reflective and cracked ink not yet. |
-| ED3-09 | P1 | Studio light controls | Done | Five lighting looks (key/fill/rim rigs), exposure, light rotation, floor shadow. |
+| ED3-06 | P0 | View presets | Done | Front, back, sides, ¾, top (into the neck) and underneath (up through the hem); saved views stored in the project scene. |
+| ED3-07 | P1 | Material realism | Partial | Fabric normal maps per surface, sheen, ambient occlusion baked on the GPU from the garment's real shape for every style, size and drape (outside, and the inside darkening away from the neck, hem and cuffs), soft key-light shadows that follow motion, faint cotton dye mottle, stitched and rib hems, trims drawn along the real neckline. Drape builds real folds into the mesh (pressed, natural, relaxed): hanging folds toward the hem, a waved hem, underarm gathers, sleeve twist and cuff stacking, seams kept closed. Photoreal view (toolbar) path traces the viewport in place whenever it is left still (light bounces, softbox shadows, raised ink), denoised every frame and resting at 320 samples; any interaction returns to real time. Needs WebGL 2 with float render targets. Not calibrated against a scanned garment. |
+| ED3-08 | P1 | Surface finish previews | Done | Flat, puff, embroidery, metallic, distressed and cracked ink. A print-surface map per part gives real relief (bump), gloss and metal per print method; in photoreal renders each print becomes a raised ink layer with true relief. |
+| ED3-09 | P1 | Studio light controls | Done | Seven lighting looks (key/fill/rim rigs, including golden hour and neon), tone (true colour, filmic AgX, cinematic ACES), exposure, light rotation, floor shadow. |
 | ED3-10 | P1 | Background / stage | Done | Transparent, solid, gradient or uploaded-image backdrop; preset scenes; contact floor shadow. |
 | ED3-11 | P1 | Position aids | Done | Print-area outlines and selection box on the garment; never in renders. |
 | ED3-12 | P1 | 2D/3D split view | Partial | Split view; the 2D editor follows 3D drags live. No draggable divider. |
-| ED3-13 | P1 | Animation presets | Partial | Motion presets: turntable, wind through the fabric (pinned at the shoulders), float, and a knit reveal from the hem up, with speed; all play in video. No hanger, fold or ghost mannequin states. |
+| ED3-13 | P1 | Animation presets | Partial | Motion presets: turntable, walk (an invisible walker: body bob and turn, sleeves and uniform legs swing from shoulder and hip), wind in gusts (pinned at the shoulders), hanger sway from the neck on a wooden hanger, float, and a knit reveal, with speed; all play in video, frame-exact. Procedural, not baked cloth simulation; no retail fold state. |
 | ED3-14 | P2 | Cross-seam artwork | Not started |  |
 | ED3-15 | P2 | Side-by-side comparison (new) | Partial | Colourway comparison and batch renders use one camera. No live side-by-side 3D. |
 | ED3-16 | P0 | Capability fallback | Done | No-WebGL and context-loss fallbacks keep 2D editing and print export working. |
@@ -149,7 +149,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | TYP-03 | P1 | Text styles | Done | Fill (solid, gradient, pattern), outline, shadow, arch and wave, transforms, line height, and one-tap styles (varsity, college arch, athletic, retro, script, stencil, wave, Korean and Khmer display). |
 | TYP-04 | P1 | Text legibility validation | Done | Small-text warning per print method. |
 | TYP-05 | P1 | Repeat design patterns | Done | Image repeat patterns plus procedural pattern fills; parameters stay editable. |
-| TYP-06 | P1 | Print finish simulation | Partial | Puff relief, embroidery thread shading and foil sheen, preview only. No cracked-ink overlay. |
+| TYP-06 | P1 | Print finish simulation | Done | Puff relief, satin-stitch embroidery rows, foil and vinyl gloss, plastisol and DTF ink edges, and cracked vintage ink (the cracks also print). Lit in real time and path traced in photoreal renders. |
 | TYP-07 | P2 | Variable design tokens (new) | Partial | Brand kit colours and fonts can be applied; no linked tokens that propagate. |
 | TYP-08 | P2 | Distress controls (new) | Done | Seeded distress mask: amount, physical grain size, reseed; identical in 2D, 3D and print. |
 
@@ -164,23 +164,23 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | VAR-05 | P1 | Swatch previews | Done | Colourway comparison and batch renders use identical camera and lighting. |
 | VAR-06 | P2 | Collection builder (new) | Not started |  |
 | VAR-07 | P2 | Cost / lead-time estimator (new) | Not started |  |
-| VAR-08 | P2 | Size/fit data (new) | Not started |  |
+| VAR-08 | P2 | Size/fit data (new) | Partial | Real size charts: shirts XS to 8XL and kids K2 to K14, singlets, and the dobok by height 100 to 210 (jacket, chest, sleeve, waist, pants). The 3D garment follows each measurement separately; size guide in the Garment panel; graded measurements table with tolerances and ordered quantities in the tech sheet. No fit adjustments or customer body measurements yet. |
 
 ## Media and scenes (Wovexa Render)
 
 | ID | Priority | Feature | Status | Notes |
 | --- | --- | --- | --- | --- |
 | MED-01 | P0 | Four-angle images | Done | Front, back, sides and ¾ (plus saved views) as PNG, JPEG or WebP. |
-| MED-02 | P1 | Scene presets | Partial | Studio, shop white, daylight, dark studio, flat. No podium or ghost-mannequin scenes. |
+| MED-02 | P1 | Scene presets | Partial | Studio, shop white, daylight, dark studio, golden hour, neon, flat, each with a tone curve. No podium or ghost-mannequin scenes. |
 | MED-03 | P1 | Camera controls | Done | Lens (field of view), saved views, orbit bounds, auto framing for tall frames. |
 | MED-04 | P1 | Background options | Done | Transparent, colour, gradient and uploaded photo backdrops, in the view and in every render. |
-| MED-05 | P1 | Still render settings | Done | 1:1, 4:5, 9:16, 16:9 at three sizes; the frame is outlined on the live view; quality for JPEG/WebP; GPU-limit checks. |
-| MED-06 | P1 | Turntable clip | Done | Turntable and motion video (wind, float, knit): length, turn, size, frame rate, start view, backdrop; motion plays on the video clock, frame-accurate. |
+| MED-05 | P1 | Still render settings | Done | 1:1, 4:5, 9:16, 16:9 at three sizes; the frame is outlined on the live view; quality for JPEG/WebP; GPU-limit checks. Real time or Photoreal (GPU path tracing, three-gpu-pathtracer): Draft, Studio and Final quality, depth of field, grain removal, progress and cancel. |
+| MED-06 | P1 | Turntable clip | Done | Turntable and motion video (walk, wind, hanger, float, knit): length, turn, size, frame rate, start view, backdrop; motion plays on the video clock, frame-accurate. |
 | MED-07 | P1 | Scene template saving | Partial | Saved looks (lighting, backdrop, lens) reusable across projects on this device; not shared with a workspace yet. |
 | MED-08 | P2 | Keyframe timeline | Not started |  |
 | MED-09 | P2 | Batch gallery generator | Done | Every colourway × every chosen view, named files or one contact sheet. |
 | MED-10 | P2 | Lifestyle model images | Not started |  |
-| MED-11 | P2 | 3D animation states | Partial | Static, wind, float and knit states for every garment. No hanger, retail fold or mannequin. |
+| MED-11 | P2 | 3D animation states | Partial | Static, walk, wind, hanger, float and knit states for every garment, with pressed, natural or relaxed drape. No retail fold or visible mannequin. |
 | MED-12 | P2 | Campaign storyboard (new) | Not started |  |
 
 ## Export
@@ -189,7 +189,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | --- | --- | --- | --- | --- |
 | EXP-01 | P0 | Immediate screen image | Done | Snapshot button saves the current view at up to twice the stage size. |
 | EXP-02 | P0 | Export preset | Done | Quick front/back 4:5 export and social aspect presets in Wovexa Render. |
-| EXP-03 | P1 | High-resolution image output | Partial | Single-pass offscreen renders sized to tested GPU limits (up to 6144 px). No tiling or remote fallback. |
+| EXP-03 | P1 | High-resolution image output | Partial | Real-time renders in one offscreen pass up to tested GPU limits (6144 px). Photoreal renders in overlapping tiles, so GPU memory stays bounded at any size. No remote fallback. |
 | EXP-04 | P1 | Isolated print artwork | Done | Transparent PNG per zone at true physical size and chosen DPI; finish simulation excluded. |
 | EXP-05 | P1 | Production ZIP | Done | One production ZIP: print files with dpi written in, screen films, team files, placement drawings, product images, client proof PDF, tech sheet, cut-and-sew panels, 3D model, colour CSV and a manifest with SHA-256 for every file. |
 | EXP-06 | P1 | Tech pack PDF | Done | Two-page client proof PDF (product per colourway with colour values, then placements with sizes and methods) and a self-contained HTML tech sheet in the package. |

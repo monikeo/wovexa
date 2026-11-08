@@ -120,6 +120,8 @@ export interface GarmentGeometry {
   torsoEdges: EdgePoint[][];
   /** Kangaroo pocket outline in torso texture space (mm), for its stitching. */
   pocket?: { x0: number; x1: number; y0: number; y1: number };
+  /** Where each limb swings from when walking (mm): 1 left sleeve, 2 right sleeve, 3 left leg, 4 right leg. */
+  limbPivots: Partial<Record<1 | 2 | 3 | 4, [number, number, number]>>;
 }
 
 type Detail = 'low' | 'high';
@@ -154,12 +156,19 @@ function arcFromCentre(xs: Float64Array, ys: Float64Array, zs: Float64Array, cen
   return s;
 }
 
-export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Detail = 'high'): GarmentGeometry {
+/**
+ * @param drape How much the cloth falls into folds under its own weight: 0 pressed flat,
+ * 1 natural, up to 2 relaxed.
+ */
+export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Detail = 'high', drape = 1): GarmentGeometry {
   const s = size.scale;
-  const H = model.bodyLengthMm * s;
-  const chest = model.chestHalfWidthMm * s;
-  const depth = model.bodyHalfDepthMm * s;
-  const shoulder = model.shoulderHalfWidthMm * s;
+  // Each size follows its size chart: widths by the chest, height by the body length, sleeves
+  // and pants by their own measurements. Small details (neck, trims) use the overall scale.
+  const sW = size.chestFlatMm / (2 * model.chestHalfWidthMm);
+  const H = size.bodyLengthMm;
+  const chest = model.chestHalfWidthMm * sW;
+  const depth = model.bodyHalfDepthMm * sW;
+  const shoulder = model.shoulderHalfWidthMm * sW;
   const neckR = model.neckRadiusMm * s;
   const sleeveless = !model.sleeve;
   const vNeck = model.neckline === 'v' || model.neckline === 'dobok';
@@ -367,10 +376,10 @@ export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Det
   if (model.sleeve) {
     const sl = model.sleeve;
     const alpha = (sl.angleDeg * Math.PI) / 180;
-    const r0 = sl.rootRadiusMm * s;
-    const r1 = sl.cuffRadiusMm * s;
+    const r0 = sl.rootRadiusMm * sW;
+    const r1 = sl.cuffRadiusMm * sW;
     const ratio = 0.8;
-    const length = sl.lengthMm * s + inset;
+    const length = (size.sleeveLengthMm ?? sl.lengthMm * s) + inset;
     sleeveLen = length;
     const ring = arcTable(1, ratio, 512);
     const SU = detail === 'high' ? 96 : 56;
@@ -402,7 +411,12 @@ export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Det
           // φ = π is the top of the sleeve, mid-texture, where sleeve prints sit.
           const phi = ring.thetaAt(i / SU) + Math.PI;
           const ribbed = sl.cuff === 'rib' && t > cuffT ? 1 + Math.sin(phi * 70) * 0.008 : 1;
-          const wrinkle = (1 + Math.sin(phi * 5 + t * 9) * 0.012 * (1 - t * 0.5) + (t > 0.92 ? (t - 0.92) * 0.25 : 0)) * ribbed;
+          // Drape: the sleeve twists a little as it hangs, more toward the cuff, and a long
+          // sleeve stacks into soft rings just above a rib cuff. Whole turns of φ keep the seam closed.
+          const twist = (Math.sin(phi * 3 + t * 2.6 + 0.5) * 0.032 + Math.sin(phi * 5 - t * 3.4 + 1.9) * 0.013) * smoothstep(0.08, 0.9, t) * (sl.cuff === 'rib' ? 1 - smoothstep(cuffT - 0.04, cuffT, t) : 1);
+          const stack = sl.cuff === 'rib' ? Math.sin(((t * length) / (36 * s)) * Math.PI * 2) * 0.03 * smoothstep(cuffT - 0.32, cuffT - 0.08, t) * (1 - smoothstep(cuffT - 0.05, cuffT, t)) : 0;
+          const fold = drape * (twist + stack);
+          const wrinkle = (1 + Math.sin(phi * 5 + t * 9) * 0.012 * (1 - t * 0.5) + (t > 0.92 ? (t - 0.92) * 0.25 : 0) + fold) * ribbed;
           tmp.copy(center)
             .addScaledVector(n, radius * Math.cos(phi) * wrinkle)
             .addScaledVector(kz, radius * ratio * -Math.sin(phi) * wrinkle);
@@ -413,7 +427,8 @@ export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Det
           const junction = 1 - smoothstep(0, 0.18, t);
           const underside = Math.max(0, -Math.cos(phi));
           const cuff = smoothstep(0.93, 1, t);
-          const ao = 1 - 0.24 * junction - 0.1 * underside - 0.06 * cuff;
+          // Fold valleys catch less light.
+          const ao = (1 - 0.24 * junction - 0.1 * underside - 0.06 * cuff) * (1 - Math.min(0.14, Math.max(0, -fold) * 4));
           shade[o * 3] = shade[o * 3 + 1] = shade[o * 3 + 2] = ao;
         }
       }
@@ -520,15 +535,56 @@ export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Det
   let bottomMm = 0;
   if (model.pants) {
     const pm = model.pants;
+    // Pants follow the chart's waist and length where it gives them.
+    const pw = size.waistFlatMm && pm.waistFlatMm ? size.waistFlatMm / pm.waistFlatMm : s;
+    const pl = size.pantsLengthMm ? size.pantsLengthMm / (pm.riseMm + pm.inseamMm) : s;
     const waistY = H - pm.waistFromHpsMm * s;
-    const len = (pm.riseMm + pm.inseamMm) * s;
+    const len = (pm.riseMm + pm.inseamMm) * pl;
     legLen = len;
     bottomMm = waistY - len;
-    const legs = buildLegs(pm, s, waistY, detail);
+    const legs = buildLegs(pm, pw, pl, waistY, detail);
     legW = legs.width;
     parts.push({ id: 'legLeft', geometry: legs.left }, { id: 'legRight', geometry: legs.right });
     islands.push({ id: 'left-leg', label: 'Left leg', part: 'legLeft', uv: legs.outlines[0] }, { id: 'right-leg', label: 'Right leg', part: 'legRight', uv: legs.outlines[1] });
     if (model.belt) trims.push(...beltTrims(waistY, halfWidth(waistY), halfDepth(waistY), model.belt.widthMm * s, s));
+  }
+
+  // ---- Drape ----
+  // Real cloth hangs from the shoulders and falls into folds under its own weight. Hanging folds
+  // start below the underarm and grow toward the hem, gathered into groups so they read as folds
+  // rather than ribbing; the hem waves a little; the body gathers softly under each arm. The
+  // field depends only on position, with whole-number fold counts around the body, and moves
+  // along welded normals, so seams never open and trims at the same place (pocket, belt) move
+  // with the body. Nothing moves above the underarm, so sleeves, collar and hood still meet it.
+  if (drape > 0) {
+    const R = (chest + depth) / 2;
+    const around = (wavelengthMm: number) => Math.max(1, Math.round((2 * Math.PI * R) / (wavelengthMm * s)));
+    const kHang = around(105);
+    const kFine = around(62);
+    const kGroup = around(330);
+    const kHem = around(170);
+    const kDiag = around(80);
+    const torsoFold = (x: number, y: number, z: number) => {
+      const th = Math.atan2(x, z);
+      const w = Math.min(1, Math.max(0, 1 - y / Math.max(1, armpitY)));
+      let d = 0;
+      if (w > 0) {
+        // Two hanging scales drifting as they fall, and a diagonal family that breaks up the rhythm.
+        const hang = Math.sin(kHang * th + (y * 0.0045) / s + 0.8) + 0.45 * Math.sin(kFine * th - (y * 0.008) / s + 2.1) + 0.35 * Math.sin(kDiag * th + (y * 0.016) / s + 4.2);
+        const grouped = 0.4 + 0.6 * Math.max(0, Math.sin(kGroup * th + 1.3));
+        const hem = (1 - smoothstep(0, 110 * s, y)) * Math.sin(kHem * th + 0.4);
+        d += 3.4 * s * hang * grouped * w ** 1.2 + 2 * s * hem * w;
+      }
+      if (!sleeveless) {
+        const ax = Math.abs(x) - chest * 0.9;
+        const ay = y - (armpitY - 75 * s);
+        const near = Math.exp(-(ax * ax + ay * ay) / (2 * (70 * s) ** 2)) * smoothstep(armpitY, armpitY - 50 * s, y);
+        d += near * Math.sin((Math.abs(x) * 0.75 + y * 0.66) / (30 * s)) * 1.7 * s;
+      }
+      return d * drape;
+    };
+    for (const p of parts) if (p.id === 'torso') displaceAlongNormals(p.geometry, torsoFold, 3.5 * s * drape);
+    for (const t of trims) if (t.key === 'pocket' || t.key.startsWith('belt')) displaceAlongNormals(t.geometry, torsoFold, 0);
   }
 
   // Motion weight per vertex (see motion.ts): held above the underarm, free toward the hem, the
@@ -541,14 +597,39 @@ export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Det
     for (let i = 0; i < pos.count; i++) out[i] = f(pos.getY(i), i);
     g.setAttribute('aFree', new THREE.BufferAttribute(out, 1));
   };
+  // Limbs swing about a pivot when walking: each sleeve from its shoulder, each leg from the hip.
+  // `aLimb` is (limb number, how far along the limb), 0 at the pivot and 1 at the cuff or hem.
+  const limbPivots: GarmentGeometry['limbPivots'] = {};
+  const setLimb = (g: THREE.BufferGeometry, limb: 1 | 2 | 3 | 4, along: (i: number) => number, atPivot: (i: number) => boolean) => {
+    const pos = g.getAttribute('position');
+    const out = new Float32Array(pos.count * 2);
+    const pivot = [0, 0, 0];
+    let n = 0;
+    for (let i = 0; i < pos.count; i++) {
+      out[i * 2] = limb;
+      out[i * 2 + 1] = along(i);
+      if (!atPivot(i)) continue;
+      pivot[0] += pos.getX(i);
+      pivot[1] += pos.getY(i);
+      pivot[2] += pos.getZ(i);
+      n++;
+    }
+    g.setAttribute('aLimb', new THREE.BufferAttribute(out, 2));
+    if (n) limbPivots[limb] = [pivot[0] / n, pivot[1] / n, pivot[2] / n];
+  };
   for (const p of parts) {
     if (p.id === 'sleeveLeft' || p.id === 'sleeveRight') {
       // Sleeve v runs from 1 at the shoulder to 0 at the cuff.
       const uv = p.geometry.getAttribute('uv');
       setFree(p.geometry, (_y, i) => clamp01(1 - uv.getY(i)) ** 1.5);
+      setLimb(p.geometry, p.id === 'sleeveLeft' ? 1 : 2, (i) => clamp01(1 - uv.getY(i)) ** 1.1, (i) => uv.getY(i) > 0.999);
     } else if (p.id === 'legLeft' || p.id === 'legRight') {
       const top = model.pants ? H - model.pants.waistFromHpsMm * s : 0;
       setFree(p.geometry, (y) => clamp01((top - y) / Math.max(1, legLen)) ** 1.2);
+      const pos = p.geometry.getAttribute('position');
+      // Legs bend from the seat, a little below the waistband.
+      const hipY = top - (model.pants?.riseMm ?? 0) * s * 0.55;
+      setLimb(p.geometry, p.id === 'legLeft' ? 3 : 4, (i) => clamp01((hipY - pos.getY(i)) / Math.max(1, legLen * 0.8)) ** 1.1, (i) => Math.abs(pos.getY(i) - hipY) < 12 * s);
     } else {
       setFree(p.geometry, torsoFree);
     }
@@ -568,6 +649,7 @@ export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Det
     trims,
     torsoEdges,
     pocket,
+    limbPivots,
     layout: {
       torsoCircumferenceMm: torsoW,
       torsoHeightMm: H,
@@ -583,6 +665,45 @@ export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Det
       bottomMm,
     },
   };
+}
+
+/**
+ * Move each vertex `offset(x, y, z)` millimetres along its normal, with normals averaged across
+ * vertices that share a position (seams), so both sides of a seam move together. With `shadeMm`,
+ * fold valleys that deep or deeper are shaded up to 16% darker in the vertex colours.
+ */
+function displaceAlongNormals(g: THREE.BufferGeometry, offset: (x: number, y: number, z: number) => number, shadeMm: number) {
+  const pos = g.getAttribute('position') as THREE.BufferAttribute;
+  const nor = g.getAttribute('normal') as THREE.BufferAttribute | undefined;
+  if (!nor) return;
+  const key = (i: number) => `${Math.round(pos.getX(i) * 20)},${Math.round(pos.getY(i) * 20)},${Math.round(pos.getZ(i) * 20)}`;
+  const welded = new Map<string, [number, number, number]>();
+  for (let i = 0; i < pos.count; i++) {
+    const k = key(i);
+    const n = welded.get(k) ?? [0, 0, 0];
+    n[0] += nor.getX(i);
+    n[1] += nor.getY(i);
+    n[2] += nor.getZ(i);
+    welded.set(k, n);
+  }
+  const color = g.getAttribute('color') as THREE.BufferAttribute | undefined;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const d = offset(x, y, z);
+    if (!d) continue;
+    const n = welded.get(key(i))!;
+    const len = Math.hypot(n[0], n[1], n[2]) || 1;
+    pos.setXYZ(i, x + (n[0] / len) * d, y + (n[1] / len) * d, z + (n[2] / len) * d);
+    if (color && shadeMm > 0 && d < 0) {
+      const k = 1 - 0.16 * Math.min(1, -d / shadeMm);
+      color.setXYZ(i, color.getX(i) * k, color.getY(i) * k, color.getZ(i) * k);
+    }
+  }
+  pos.needsUpdate = true;
+  if (color) color.needsUpdate = true;
+  g.computeVertexNormals();
 }
 
 function mergeGeometries(geoms: THREE.BufferGeometry[]) {
@@ -740,8 +861,9 @@ function drawcords(H: number, model: GarmentModel, s: number): TrimMesh[] {
  * Wide uniform pants: two leg tubes that meet at the centre line from the waist to the crotch
  * and hang apart below it. UVs run around from the outside of each leg, down from the waist.
  */
-function buildLegs(pm: NonNullable<GarmentModel['pants']>, s: number, waistY: number, detail: Detail) {
-  const len = (pm.riseMm + pm.inseamMm) * s;
+/** `sw` grades widths (by the waist), `sl` grades length. */
+function buildLegs(pm: NonNullable<GarmentModel['pants']>, sw: number, sl: number, waistY: number, detail: Detail) {
+  const len = (pm.riseMm + pm.inseamMm) * sl;
   const tc = pm.riseMm / (pm.riseMm + pm.inseamMm);
   const NU = detail === 'high' ? 80 : 48;
   const NV = detail === 'high' ? 110 : 64;
@@ -760,10 +882,10 @@ function buildLegs(pm: NonNullable<GarmentModel['pants']>, s: number, waistY: nu
       // so the pair reads as one waist and seat. Below it, each leg is its own round tube.
       const legs = smoothstep(tc - 0.05, tc + 0.12, t);
       const below = smoothstep(tc - 0.04, 1, t);
-      const seatW = lerp(pm.waistHalfWidthMm, pm.hipHalfWidthMm, hip) * s;
-      const seatZ = lerp(pm.waistHalfDepthMm, pm.waistHalfDepthMm * 1.12, hip) * s;
-      const cx = (pm.hipHalfWidthMm * s) / 2;
-      const rx = lerp(pm.thighRadiusMm * s, pm.hemRadiusMm * s, smoothstep(tc, 1, t));
+      const seatW = lerp(pm.waistHalfWidthMm, pm.hipHalfWidthMm, hip) * sw;
+      const seatZ = lerp(pm.waistHalfDepthMm, pm.waistHalfDepthMm * 1.12, hip) * sw;
+      const cx = (pm.hipHalfWidthMm * sw) / 2;
+      const rx = lerp(pm.thighRadiusMm * sw, pm.hemRadiusMm * sw, smoothstep(tc, 1, t));
       const rz = lerp(seatZ, rx * 1.04, legs);
       for (let i = 0; i <= NU; i++) {
         // i = NU/2 is the outside of the leg; the inseam is at the texture edges.

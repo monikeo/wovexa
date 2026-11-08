@@ -8,7 +8,7 @@ import { Bookmark, ImagePlus, Plus, Trash2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import * as cmd from '@/domain/commands';
 import { newId } from '@/domain/factory';
-import { MOTIONS, motionOf, SCENE_PRESETS, sceneOf } from '@/domain/scene';
+import { DRAPES, drapeOf, MOTIONS, motionOf, SCENE_PRESETS, sceneOf, toneOf, TONES } from '@/domain/scene';
 import type { Scene } from '@/domain/schema';
 import { AssetError, importImageFile, loadAssetImage } from '@/lib/assets';
 import { deleteScene, listScenes, saveScene, type StoredScene } from '@/lib/local-db';
@@ -138,6 +138,14 @@ export function ScenePanel({ onClose, compact }: { onClose: () => void; compact?
             ))}
           </div>
           <p className="text-[11px] text-fg-3">{SCENE_PRESETS.find((p) => p.id === scene.presetId)?.description}</p>
+          <div className="seg" role="group" aria-label="Tone">
+            {TONES.map((t) => (
+              <button key={t.id} aria-pressed={toneOf(scene) === t.id} onClick={() => set({ tone: t.id }, `Tone: ${t.label.toLowerCase()}`)} title={t.description}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-fg-3">{TONES.find((t) => t.id === toneOf(scene))?.description}</p>
           <Slider id="scene-exposure" label="Exposure" value={scene.exposure} min={0.4} max={2} step={0.05} format={(v) => `${v.toFixed(2)}×`} onChange={(v) => set({ exposure: v }, 'Exposure', 'exposure')} />
           <Slider id="scene-rotation" label="Light angle" value={scene.envRotationDeg} min={-180} max={180} step={5} format={(v) => `${v}°`} onChange={(v) => set({ envRotationDeg: v }, 'Light angle', 'rotation')} />
           <label className="flex items-center gap-2 text-sm">
@@ -147,8 +155,20 @@ export function ScenePanel({ onClose, compact }: { onClose: () => void; compact?
         </section>
 
         <section className="space-y-2">
+          <h3 className="label font-semibold text-fg">Drape</h3>
+          <div className="seg" role="group" aria-label="Drape">
+            {DRAPES.map((d) => (
+              <button key={d.id} aria-pressed={drapeOf(scene) === d.id} onClick={() => set({ drape: d.id }, `Drape: ${d.label.toLowerCase()}`)} title={d.description}>
+                {d.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-fg-3">{DRAPES.find((d) => d.id === drapeOf(scene))?.description}</p>
+        </section>
+
+        <section className="space-y-2">
           <h3 className="label font-semibold text-fg">Motion</h3>
-          <div className="grid grid-cols-4 gap-1" role="group" aria-label="Garment motion">
+          <div className="grid grid-cols-3 gap-1" role="group" aria-label="Garment motion">
             {MOTIONS.map((m) => (
               <button
                 key={m.id}

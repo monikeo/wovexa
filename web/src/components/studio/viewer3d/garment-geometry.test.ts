@@ -4,6 +4,68 @@ import { designDocumentSchema } from '@/domain/schema';
 import { createDocument } from '@/domain/factory';
 import { buildGarment } from './garment-geometry';
 
+describe('size charts', () => {
+  it('builds every dobok size to its chart: jacket, chest, sleeve and pants', () => {
+    for (const code of ['100', '140', '170', '210']) {
+      const size = getSize(DOBOK, code);
+      const geo = buildGarment(DOBOK, size, 'low', 0);
+      expect(geo.layout.torsoHeightMm).toBe(size.bodyLengthMm);
+      // Sleeve from the shoulder seam, plus the part tucked into the armhole.
+      expect(geo.layout.sleeveLengthMm - geo.layout.sleeveSeamOffsetMm).toBeCloseTo(size.sleeveLengthMm!, 0);
+      expect(geo.layout.legLengthMm).toBeCloseTo(size.pantsLengthMm!, 0);
+    }
+    expect(DOBOK.sizes.map((s) => s.code)).toEqual(['100', '110', '120', '130', '140', '150', '160', '170', '180', '190', '200', '210']);
+  });
+
+  it('grades shirts by real steps, kids to 8XL, each style keeping its own cut', () => {
+    const m = getSize(TEE_CLASSIC, 'M');
+    const xl = getSize(TEE_CLASSIC, 'XL');
+    // Chest grows 3 cm a size, length only 2 cm: not one percentage.
+    expect(xl.chestFlatMm - m.chestFlatMm).toBe(60);
+    expect(xl.bodyLengthMm - m.bodyLengthMm).toBe(40);
+    expect(TEE_CLASSIC.sizes.map((s) => s.code)).toEqual(['K2', 'K4', 'K6', 'K8', 'K10', 'K12', 'K14', 'XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', '6XL', '7XL', '8XL']);
+    for (const model of GARMENT_LIST) {
+      const chests = model.sizes.map((s) => s.chestFlatMm);
+      const lengths = model.sizes.map((s) => s.bodyLengthMm);
+      expect(chests).toEqual([...chests].sort((a, b) => a - b));
+      expect(lengths).toEqual([...lengths].sort((a, b) => a - b));
+      // The base size is the style's own pattern.
+      const base = getSize(model, model.defaultSize);
+      expect(base.chestFlatMm).toBeCloseTo(model.chestHalfWidthMm * 2, -1);
+      expect(base.bodyLengthMm).toBe(model.bodyLengthMm);
+    }
+  });
+});
+
+describe('drape', () => {
+  for (const model of GARMENT_LIST) {
+    it(`folds the ${model.shortName} without opening a seam`, () => {
+      const size = getSize(model, model.defaultSize);
+      const flat = buildGarment(model, size, 'low', 0);
+      const draped = buildGarment(model, size, 'low', 1.8);
+      let deepest = 0;
+      for (const part of draped.parts) {
+        const a = flat.parts.find((p) => p.id === part.id)!.geometry.getAttribute('position');
+        const b = part.geometry.getAttribute('position');
+        expect(b.count).toBe(a.count);
+        // Vertices that meet when pressed flat (seams) must still meet when draped.
+        const seams = new Map<string, number[]>();
+        for (let i = 0; i < a.count; i++) {
+          const k = `${Math.round(a.getX(i) * 20)},${Math.round(a.getY(i) * 20)},${Math.round(a.getZ(i) * 20)}`;
+          seams.set(k, [...(seams.get(k) ?? []), i]);
+          deepest = Math.max(deepest, Math.hypot(b.getX(i) - a.getX(i), b.getY(i) - a.getY(i), b.getZ(i) - a.getZ(i)));
+        }
+        for (const ids of seams.values()) {
+          for (const i of ids.slice(1)) expect(Math.hypot(b.getX(i) - b.getX(ids[0]), b.getY(i) - b.getY(ids[0]), b.getZ(i) - b.getZ(ids[0]))).toBeLessThan(0.05);
+        }
+      }
+      // The cloth really does fold, but within a believable depth.
+      expect(deepest).toBeGreaterThan(2);
+      expect(deepest).toBeLessThan(20);
+    });
+  }
+});
+
 describe('procedural garments', () => {
   for (const model of GARMENT_LIST) {
     it(`builds the ${model.shortName} with pattern pieces and motion weights`, () => {
@@ -70,7 +132,9 @@ describe('procedural garments', () => {
 
   it('stands the dobok on its pant hems, with a seat above the crotch', () => {
     const geo = buildGarment(DOBOK, getSize(DOBOK, '170'), 'low');
-    expect(geo.layout.bottomMm).toBeLessThan(-700);
+    // Size 170: an 83 cm jacket over 105 cm pants whose waist sits 47 cm below the shoulder.
+    expect(geo.layout.torsoHeightMm).toBe(830);
+    expect(geo.layout.bottomMm).toBeCloseTo(830 - 470 - 1050, 0);
     expect(geo.islands.map((i) => i.id)).toEqual(['front-body', 'back-body', 'left-sleeve', 'right-sleeve', 'left-leg', 'right-leg']);
   });
 });

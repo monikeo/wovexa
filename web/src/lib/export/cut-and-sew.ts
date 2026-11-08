@@ -23,7 +23,8 @@ const MARGIN_MM = 14;
 export function renderCutAndSew(doc: DesignDocument, colorway: Colorway, caption: string): CutPiece[] {
   const model = getGarment(doc.garment.modelId);
   const size = getSize(model, doc.garment.sizeCode);
-  const geo = buildGarment(model, size, 'high');
+  // Flat pattern pieces only: no need to build the 3D folds.
+  const geo = buildGarment(model, size, 'high', 0);
   const textures = new Map<PartId, HTMLCanvasElement>();
   const pieces: CutPiece[] = [];
   try {
