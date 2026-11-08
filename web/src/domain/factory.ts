@@ -1,4 +1,4 @@
-import { COLORWAY_PRESETS, getGarment, TEE_CLASSIC } from './garments';
+import { colorwayPresetsFor, getGarment, TEE_CLASSIC, type ColorwayPreset } from './garments';
 import {
   defaultProduction,
   SCHEMA_VERSION,
@@ -29,8 +29,10 @@ export function contrastInk(fabricHex: string): string {
   return luminance < 0.18 ? '#FFFFFF' : '#111111';
 }
 
-export function createColorway(preset: { name: string; parts: Colorway['parts'] }): Colorway {
-  return { id: newId(), name: preset.name, parts: { ...preset.parts } };
+export function createColorway(preset: { name: string; parts: Colorway['parts']; surfaces?: Colorway['surfaces'] }): Colorway {
+  const colorway: Colorway = { id: newId(), name: preset.name, parts: { ...preset.parts } };
+  if (preset.surfaces) colorway.surfaces = structuredClone(preset.surfaces);
+  return colorway;
 }
 
 function emptyZone(zoneId: ZoneId): ZoneDesign {
@@ -39,13 +41,19 @@ function emptyZone(zoneId: ZoneId): ZoneDesign {
 
 export function createDocument(opts: { projectId: string; title: string; modelId?: string; colorwayIndex?: number }): DesignDocument {
   const model = getGarment(opts.modelId ?? TEE_CLASSIC.id);
-  // The three core presets, plus the requested one when it is not among them.
-  const core: readonly (typeof COLORWAY_PRESETS)[number][] = COLORWAY_PRESETS.slice(0, 3);
-  const wanted = COLORWAY_PRESETS[opts.colorwayIndex ?? 0] ?? COLORWAY_PRESETS[0];
+  const presets = colorwayPresetsFor(model);
+  // The garment's three core presets, plus the requested one when it is not among them.
+  const core: readonly ColorwayPreset[] = presets.slice(0, 3);
+  const wanted = presets[opts.colorwayIndex ?? 0] ?? presets[0];
   const list = core.includes(wanted) ? core : [wanted, ...core];
   const colorways = list.map(createColorway);
   const active = colorways[list.indexOf(wanted)];
   const zones = Object.fromEntries(ZONE_IDS.map((z) => [z, emptyZone(z)])) as DesignDocument['zones'];
+  // Each zone starts on a method the garment offers there (a dobok has no direct-to-garment).
+  for (const z of ZONE_IDS) {
+    const methods = model.zones[z]?.methods;
+    if (methods?.length && !methods.includes(zones[z].printMethod)) zones[z].printMethod = methods[0];
+  }
   return {
     schemaVersion: SCHEMA_VERSION,
     id: newId(),
@@ -102,24 +110,67 @@ export function createTextLayer(zone: { printableWidthMm: number; printableHeigh
   };
 }
 
-export function createShapeLayer(zone: { printableWidthMm: number; printableHeightMm: number }, shape: ShapeContent['shape']): ArtworkLayer {
-  const size = Math.min(zone.printableWidthMm, zone.printableHeightMm) * 0.4;
+export const SHAPE_NAMES: Record<ShapeContent['shape'], string> = {
+  rect: 'Rectangle',
+  ellipse: 'Ellipse',
+  triangle: 'Triangle',
+  star: 'Star',
+  polygon: 'Hexagon',
+  heart: 'Heart',
+  line: 'Line',
+  path: 'Graphic',
+};
+
+/** A library graphic (SVG path in a 0–100 box) as an editable shape layer, centred in the zone. */
+export function createGraphicLayer(
+  zone: { printableWidthMm: number; printableHeightMm: number },
+  graphic: { id: string; name: string; path: string; aspect: number },
+  fill = '#111111',
+): ArtworkLayer {
+  const size = Math.min(zone.printableWidthMm, zone.printableHeightMm) * 0.45;
+  const widthMm = graphic.aspect >= 1 ? size : size * graphic.aspect;
   return {
     id: newId(),
-    name: shape === 'rect' ? 'Rectangle' : shape === 'ellipse' ? 'Ellipse' : 'Triangle',
+    name: graphic.name,
     visible: true,
     locked: false,
     transform: {
       centerXmm: zone.printableWidthMm / 2,
       centerYmm: zone.printableHeightMm / 2,
-      widthMm: size,
-      heightMm: size,
+      widthMm,
+      heightMm: widthMm / graphic.aspect,
       rotationDeg: 0,
       flipX: false,
       flipY: false,
     },
     style: { ...baseStyle },
-    content: { kind: 'shape', shape, fill: '#2B59FF', cornerRadiusMm: 0 },
+    content: { kind: 'shape', shape: 'path', fill, cornerRadiusMm: 0, path: graphic.path, graphicId: graphic.id },
+  };
+}
+
+export function createShapeLayer(zone: { printableWidthMm: number; printableHeightMm: number }, shape: ShapeContent['shape']): ArtworkLayer {
+  const size = Math.min(zone.printableWidthMm, zone.printableHeightMm) * 0.4;
+  // A line is a bar: as long as most of the zone, as thick as a bold stroke, with round ends.
+  const line = shape === 'line';
+  const content: ShapeContent = { kind: 'shape', shape, fill: '#2B59FF', cornerRadiusMm: line ? 2 : 0 };
+  if (shape === 'star') Object.assign(content, { points: 5, innerRatio: 0.45 });
+  if (shape === 'polygon') content.points = 6;
+  return {
+    id: newId(),
+    name: SHAPE_NAMES[shape],
+    visible: true,
+    locked: false,
+    transform: {
+      centerXmm: zone.printableWidthMm / 2,
+      centerYmm: zone.printableHeightMm / 2,
+      widthMm: line ? Math.min(zone.printableWidthMm * 0.7, 240) : size,
+      heightMm: line ? 4 : shape === 'heart' ? size * 0.9 : size,
+      rotationDeg: 0,
+      flipX: false,
+      flipY: false,
+    },
+    style: { ...baseStyle },
+    content,
   };
 }
 

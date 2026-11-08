@@ -2,8 +2,9 @@
 /** Studio actions shared by the tool rail, mobile sheets, keyboard shortcuts and drag-and-drop. */
 import { alignUnits, distributeUnits, expandToGroups, selectionUnits, type AlignMode, type DistributeAxis } from '@/domain/arrange';
 import * as cmd from '@/domain/commands';
-import { contrastInk, createImageLayer, createShapeLayer, createTextLayer, newId } from '@/domain/factory';
-import { getGarment } from '@/domain/garments';
+import { contrastInk, createGraphicLayer, createImageLayer, createShapeLayer, createTextLayer, newId } from '@/domain/factory';
+import { getGarment, partColor, zoneSpecOrFirst } from '@/domain/garments';
+import type { Graphic } from '@/domain/graphics';
 import type { ShapeContent } from '@/domain/schema';
 import { AssetError, importImageFile } from '@/lib/assets';
 import { textAspect } from '@/lib/render/zone-renderer';
@@ -13,9 +14,9 @@ import { useStudio } from '@/stores/studio-store';
 function context() {
   const s = useStudio.getState();
   if (!s.document) return null;
-  const spec = getGarment(s.document.garment.modelId).zones[s.activeZoneId];
+  const spec = zoneSpecOrFirst(getGarment(s.document.garment.modelId), s.activeZoneId);
   const colorway = s.document.colorways.find((c) => c.id === s.document!.activeColorwayId) ?? s.document.colorways[0];
-  const fabric = spec.part === 'torso' ? colorway.parts.body : colorway.parts.sleeves;
+  const fabric = partColor(colorway, spec.part === 'torso' ? 'body' : spec.part === 'legLeft' || spec.part === 'legRight' ? 'pants' : 'sleeves');
   return { s, spec, zoneId: s.activeZoneId, ink: contrastInk(fabric) };
 }
 
@@ -40,6 +41,92 @@ export function addShape(shape: ShapeContent['shape']) {
   const layer = createShapeLayer(c.spec, shape);
   c.s.dispatch(cmd.addLayer(c.zoneId, layer));
   c.s.select([layer.id]);
+}
+
+/** A library graphic, in an ink that reads on the garment colour. */
+export function addGraphic(graphic: Graphic) {
+  const c = context();
+  if (!c) return;
+  const layer = createGraphicLayer(c.spec, graphic, c.ink);
+  c.s.dispatch(cmd.addLayer(c.zoneId, layer));
+  c.s.select([layer.id]);
+}
+
+/** Standard print placements for the active zone, as targets for the selected layer. */
+export interface Placement {
+  id: string;
+  label: string;
+  /** Target box in the zone, mm: centre and the largest width and height the artwork may take. */
+  cx: number;
+  cy: number;
+  maxW: number;
+  maxH: number;
+}
+
+export function placementsFor(spec: { id: string; part: string; printableWidthMm: number; printableHeightMm: number; topFromHpsMm?: number }): Placement[] {
+  const W = spec.printableWidthMm;
+  const H = spec.printableHeightMm;
+  if (spec.part === 'torso' && spec.id === 'front') {
+    // Left chest sits on the wearer's left, which is the viewer's right on the flat.
+    const chest = Math.min(95, W * 0.32);
+    return [
+      { id: 'left-chest', label: 'Left chest', cx: W * 0.75, cy: Math.min(H * 0.22, chest * 0.55 + 12), maxW: chest, maxH: chest },
+      { id: 'right-chest', label: 'Right chest', cx: W * 0.25, cy: Math.min(H * 0.22, chest * 0.55 + 12), maxW: chest, maxH: chest },
+      { id: 'centre-chest', label: 'Centre chest', cx: W / 2, cy: Math.min(H * 0.3, 70), maxW: W * 0.62, maxH: H * 0.34 },
+      { id: 'full-front', label: 'Full front', cx: W / 2, cy: H / 2, maxW: W * 0.94, maxH: H * 0.94 },
+      { id: 'lower-front', label: 'Lower front', cx: W / 2, cy: H * 0.82, maxW: W * 0.7, maxH: H * 0.28 },
+    ];
+  }
+  if (spec.part === 'torso') {
+    return [
+      { id: 'nape', label: 'Below collar', cx: W / 2, cy: Math.min(40, H * 0.1), maxW: Math.min(90, W * 0.32), maxH: Math.min(50, H * 0.14) },
+      { id: 'upper-back', label: 'Upper back', cx: W / 2, cy: H * 0.2, maxW: W * 0.88, maxH: H * 0.28 },
+      { id: 'full-back', label: 'Full back', cx: W / 2, cy: H / 2, maxW: W * 0.94, maxH: H * 0.94 },
+      { id: 'lower-back', label: 'Lower back', cx: W / 2, cy: H * 0.82, maxW: W * 0.7, maxH: H * 0.28 },
+    ];
+  }
+  if (spec.part === 'legLeft' || spec.part === 'legRight') {
+    return [
+      { id: 'leg-top', label: 'Hip', cx: W / 2, cy: Math.min(H * 0.12, 70), maxW: W * 0.9, maxH: H * 0.2 },
+      { id: 'leg-full', label: 'Down the leg', cx: W / 2, cy: H / 2, maxW: W * 0.92, maxH: H * 0.94 },
+      { id: 'leg-low', label: 'Above hem', cx: W / 2, cy: H * 0.86, maxW: W * 0.9, maxH: H * 0.2 },
+    ];
+  }
+  return [
+    { id: 'sleeve-centre', label: 'Centred', cx: W / 2, cy: H / 2, maxW: W * 0.86, maxH: H * 0.86 },
+    { id: 'sleeve-top', label: 'Upper sleeve', cx: W / 2, cy: H * 0.3, maxW: W * 0.86, maxH: H * 0.4 },
+  ];
+}
+
+/** Move and fit the selection (as one unit, proportions kept) into a standard placement. */
+export function placeSelection(placement: Placement) {
+  const c = context();
+  if (!c || !c.s.document) return;
+  const zone = c.s.document.zones[c.zoneId];
+  const layers = selectionUnits(zone, c.s.selectedLayerIds)
+    .flat()
+    .filter((l) => !l.locked);
+  if (!layers.length) return;
+  const xs = layers.flatMap((l) => [l.transform.centerXmm - l.transform.widthMm / 2, l.transform.centerXmm + l.transform.widthMm / 2]);
+  const ys = layers.flatMap((l) => [l.transform.centerYmm - l.transform.heightMm / 2, l.transform.centerYmm + l.transform.heightMm / 2]);
+  const box = { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+  const bw = Math.max(0.1, box.x1 - box.x0);
+  const bh = Math.max(0.1, box.y1 - box.y0);
+  const k = Math.min(placement.maxW / bw, placement.maxH / bh);
+  const ox = (box.x0 + box.x1) / 2;
+  const oy = (box.y0 + box.y1) / 2;
+  const changes = Object.fromEntries(
+    layers.map((l) => [
+      l.id,
+      {
+        centerXmm: placement.cx + (l.transform.centerXmm - ox) * k,
+        centerYmm: placement.cy + (l.transform.centerYmm - oy) * k,
+        widthMm: l.transform.widthMm * k,
+        heightMm: l.transform.heightMm * k,
+      },
+    ]),
+  );
+  c.s.dispatch(cmd.updateTransforms(c.zoneId, changes, `Place: ${placement.label.toLowerCase()}`));
 }
 
 export async function addImages(files: FileList | File[]) {
@@ -132,6 +219,14 @@ export function ungroupSelection() {
   if (!selectedLayerIds.length) return;
   dispatch(cmd.ungroupLayers(activeZoneId, selectedLayerIds));
   select([...selectedLayerIds]);
+}
+
+/** Select every visible, unlocked layer in the active zone (Ctrl+A). */
+export function selectAll() {
+  const { document, activeZoneId, select } = useStudio.getState();
+  if (!document) return;
+  const zone = document.zones[activeZoneId];
+  select(zone.orderedLayerIds.filter((id) => zone.layers[id]?.visible && !zone.layers[id]?.locked));
 }
 
 /** Select layers from a list click, expanding to whole groups. */

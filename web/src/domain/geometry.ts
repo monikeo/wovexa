@@ -40,6 +40,69 @@ export function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+/** Whether a zone point (mm) falls inside a layer's rotated box. */
+export function pointInLayer(t: Pick<LayerTransform, 'centerXmm' | 'centerYmm' | 'widthMm' | 'heightMm' | 'rotationDeg'>, xMm: number, yMm: number) {
+  const r = (-t.rotationDeg * Math.PI) / 180;
+  const dx = xMm - t.centerXmm;
+  const dy = yMm - t.centerYmm;
+  const lx = dx * Math.cos(r) - dy * Math.sin(r);
+  const ly = dx * Math.sin(r) + dy * Math.cos(r);
+  return Math.abs(lx) <= t.widthMm / 2 && Math.abs(ly) <= t.heightMm / 2;
+}
+
+/** Topmost visible layer under a zone point, or null (spec ED3-04 surface selection). */
+export function hitTestLayer(zone: { orderedLayerIds: string[]; layers: Record<string, { visible: boolean; transform: LayerTransform }> }, xMm: number, yMm: number): string | null {
+  for (let i = zone.orderedLayerIds.length - 1; i >= 0; i--) {
+    const id = zone.orderedLayerIds[i];
+    const layer = zone.layers[id];
+    if (layer?.visible && pointInLayer(layer.transform, xMm, yMm)) return id;
+  }
+  return null;
+}
+
+/** Rotation folded into [-180, 180). */
+export function normalizeDeg(deg: number) {
+  return ((((deg + 180) % 360) + 360) % 360) - 180;
+}
+
+type Box = Pick<LayerTransform, 'centerXmm' | 'centerYmm' | 'widthMm' | 'heightMm' | 'rotationDeg'>;
+
+/**
+ * Scale and rotate a selection about the centre of its bounds, as one rigid unit (direct
+ * manipulation on the 3D garment: pinch, twist, wheel). No layer shrinks below `minMm`.
+ */
+export function scaleRotateAbout(transforms: Record<string, Box>, scale: number, rotateDeg: number, minMm = 2): Record<string, Box> {
+  const ids = Object.keys(transforms);
+  if (!ids.length) return {};
+  const bounds = ids.map((id) => rotatedBounds(transforms[id]));
+  const x0 = Math.min(...bounds.map((b) => b.x));
+  const y0 = Math.min(...bounds.map((b) => b.y));
+  const x1 = Math.max(...bounds.map((b) => b.x + b.width));
+  const y1 = Math.max(...bounds.map((b) => b.y + b.height));
+  const cx = (x0 + x1) / 2;
+  const cy = (y0 + y1) / 2;
+  const smallest = Math.min(...ids.map((id) => Math.min(transforms[id].widthMm, transforms[id].heightMm)));
+  const largest = Math.max(...ids.map((id) => Math.max(transforms[id].widthMm, transforms[id].heightMm)));
+  const k = clamp(scale, minMm / smallest, 3000 / largest);
+  const a = (rotateDeg * Math.PI) / 180;
+  const cos = Math.cos(a);
+  const sin = Math.sin(a);
+  const out: Record<string, Box> = {};
+  for (const id of ids) {
+    const t = transforms[id];
+    const dx = t.centerXmm - cx;
+    const dy = t.centerYmm - cy;
+    out[id] = {
+      centerXmm: cx + (dx * cos - dy * sin) * k,
+      centerYmm: cy + (dx * sin + dy * cos) * k,
+      widthMm: t.widthMm * k,
+      heightMm: t.heightMm * k,
+      rotationDeg: normalizeDeg(t.rotationDeg + rotateDeg),
+    };
+  }
+  return out;
+}
+
 /** Round to a sensible display precision for millimetres. */
 export const roundMm = (mm: number) => Math.round(mm * 10) / 10;
 

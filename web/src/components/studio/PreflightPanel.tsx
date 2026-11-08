@@ -20,7 +20,7 @@ export function IssueItem({ issue, onSelect }: { issue: PreflightIssue; onSelect
   const doc = useStudio((s) => s.document);
   const { label, Icon, className } = SEVERITY[issue.severity];
   const layerName = issue.layerId ? doc?.zones[issue.zoneId].layers[issue.layerId]?.name : undefined;
-  const zoneLabel = doc ? getGarment(doc.garment.modelId).zones[issue.zoneId].label : issue.zoneId;
+  const zoneLabel = (doc ? getGarment(doc.garment.modelId).zones[issue.zoneId]?.label : undefined) ?? issue.zoneId.replace('_', ' ');
   const body = (
     <>
       <Icon size={16} className={`mt-0.5 flex-none ${className}`} aria-hidden />
@@ -30,7 +30,7 @@ export function IssueItem({ issue, onSelect }: { issue: PreflightIssue; onSelect
           {issue.message}
         </span>
         {issue.fix ? <span className="mt-0.5 block text-xs text-fg-2">{issue.fix}</span> : null}
-        {issue.code !== 'empty_design' ? (
+        {issue.code !== 'empty_design' && issue.code !== 'allover_print' ? (
           <span className="mt-0.5 block text-xs text-fg-3">
             {zoneLabel}
             {layerName ? `, ${layerName}` : ''}

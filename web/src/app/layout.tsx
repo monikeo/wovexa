@@ -25,6 +25,8 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
+  // Android Chrome shrinks the layout for the on-screen keyboard; iOS is handled in the bottom sheet.
+  interactiveWidget: 'resizes-content',
   themeColor: [
     { media: '(prefers-color-scheme: light)', color: '#ffffff' },
     { media: '(prefers-color-scheme: dark)', color: '#0d0e11' },

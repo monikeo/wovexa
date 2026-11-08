@@ -7,6 +7,7 @@
 import type {
   ArtworkLayer,
   BomItem,
+  CameraBookmark,
   Colorway,
   DesignDocument,
   GarmentPart,
@@ -16,9 +17,12 @@ import type {
   PrintMethod,
   ProductionData,
   QaItem,
+  Scene,
+  Surface,
   ZoneDesign,
   ZoneId,
 } from './schema';
+import type { GarmentModel } from './garments';
 
 export interface Command {
   label: string;
@@ -30,6 +34,16 @@ export interface Command {
 /** Mark a command as part of a continuous gesture. */
 export function coalescing(command: Command, key: string): Command {
   return { ...command, coalesceKey: key };
+}
+
+/** Several commands as one undo step. */
+export function batch(label: string, commands: Command[]): Command {
+  return {
+    label,
+    recipe: (d) => {
+      for (const c of commands) c.recipe(d);
+    },
+  };
 }
 
 // ---- Stacking helpers: grouped layers always move as one contiguous block ----
@@ -141,7 +155,13 @@ export function updateLayer(zoneId: ZoneId, layerId: string, patch: LayerPatch, 
       if (patch.name !== undefined) layer.name = patch.name;
       if (patch.visible !== undefined) layer.visible = patch.visible;
       if (patch.locked !== undefined) layer.locked = patch.locked;
-      if (patch.style) Object.assign(layer.style, patch.style);
+      if (patch.style) {
+        // An explicit undefined removes an optional style field (e.g. switching distress off).
+        for (const [k, v] of Object.entries(patch.style)) {
+          if (v === undefined) delete (layer.style as Record<string, unknown>)[k];
+          else (layer.style as Record<string, unknown>)[k] = v;
+        }
+      }
       if (patch.transform) Object.assign(layer.transform, patch.transform);
       if (patch.content) {
         const { kind, ...rest } = patch.content as Partial<LayerContent> & { kind?: string };
@@ -276,6 +296,46 @@ export function setGarmentSize(sizeCode: string): Command {
   return { label: `Size ${sizeCode}`, recipe: (d) => void (d.garment.sizeCode = sizeCode) };
 }
 
+/**
+ * Switch the garment style. Artwork stays where it is: layers on zones the new garment lacks
+ * are kept (and flagged by preflight) so switching back restores them. Size and fabric fall
+ * back to the new garment's defaults when it doesn't offer the current ones.
+ */
+export function setGarmentModel(model: Pick<GarmentModel, 'id' | 'assetVersion' | 'name' | 'sizes' | 'defaultSize' | 'fabricPresets'> & Partial<Pick<GarmentModel, 'zones'>>): Command {
+  return {
+    label: `Garment: ${model.name}`,
+    recipe: (d) => {
+      d.garment.modelId = model.id;
+      d.garment.assetVersion = model.assetVersion;
+      if (!model.sizes.some((s) => s.code === d.garment.sizeCode)) d.garment.sizeCode = model.defaultSize;
+      if (!model.fabricPresets.some((f) => f.id === d.garment.fabricPresetId)) d.garment.fabricPresetId = model.fabricPresets[0].id;
+      // Keep each zone on a print method the new garment offers there.
+      if (model.zones) {
+        for (const [zoneId, zone] of Object.entries(d.zones) as [ZoneId, ZoneDesign][]) {
+          const methods = model.zones[zoneId]?.methods;
+          if (methods?.length && !methods.includes(zone.printMethod)) zone.printMethod = methods[0];
+        }
+      }
+    },
+  };
+}
+
+/** Set or clear the all-over print on a fabric part of a colourway. */
+export function setColorwaySurface(colorwayId: string, part: 'body' | 'sleeves' | 'pants', surface: Surface | undefined, label = 'Fabric print'): Command {
+  return {
+    label,
+    recipe: (d) => {
+      const cw = d.colorways.find((c) => c.id === colorwayId);
+      if (!cw) return;
+      const surfaces = { ...(cw.surfaces ?? {}) };
+      if (surface) surfaces[part] = structuredClone(surface);
+      else delete surfaces[part];
+      if (Object.keys(surfaces).length) cw.surfaces = surfaces;
+      else delete cw.surfaces;
+    },
+  };
+}
+
 export function setFabricPreset(presetId: string): Command {
   return { label: 'Change fabric', recipe: (d) => void (d.garment.fabricPresetId = presetId) };
 }
@@ -290,6 +350,39 @@ export function setBrandKit(brandKitId: string | undefined): Command {
     recipe: (d) => {
       if (brandKitId) d.brandKitId = brandKitId;
       else delete d.brandKitId;
+    },
+  };
+}
+
+// ---- Studio scene and camera views (spec ED3-06, ED3-09, ED3-10, MED-02…04) ----
+
+export function updateScene(base: Scene, patch: Partial<Omit<Scene, 'cameras'>>, label = 'Change scene'): Command {
+  return {
+    label,
+    recipe: (d) => {
+      // An existing scene is an Immer draft (not cloneable); patch it in place.
+      if (d.scene) Object.assign(d.scene, structuredClone(patch));
+      else d.scene = { ...structuredClone(base), ...structuredClone(patch) };
+    },
+  };
+}
+
+export function addCameraBookmark(base: Scene, bookmark: CameraBookmark): Command {
+  return {
+    label: `Save view ${bookmark.name}`,
+    recipe: (d) => {
+      const scene = d.scene ?? structuredClone(base);
+      scene.cameras = [...scene.cameras.filter((c) => c.id !== bookmark.id), bookmark].slice(-12);
+      d.scene = scene;
+    },
+  };
+}
+
+export function removeCameraBookmark(bookmarkId: string): Command {
+  return {
+    label: 'Delete saved view',
+    recipe: (d) => {
+      if (d.scene) d.scene.cameras = d.scene.cameras.filter((c) => c.id !== bookmarkId);
     },
   };
 }
@@ -352,6 +445,8 @@ export function restoreSnapshot(snapshot: DesignDocument, label = 'Restore versi
       d.production = structuredClone(snapshot.production);
       if (snapshot.brandKitId) d.brandKitId = snapshot.brandKitId;
       else delete d.brandKitId;
+      if (snapshot.scene) d.scene = structuredClone(snapshot.scene);
+      else delete d.scene;
     },
   };
 }

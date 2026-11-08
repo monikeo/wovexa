@@ -21,6 +21,8 @@ export interface PreflightIssue {
     | 'small_text'
     | 'method_unsupported'
     | 'embroidery_raster'
+    | 'zone_unavailable'
+    | 'allover_print'
     | 'empty_design';
   message: string;
   /** Action-oriented resolution, only when it can be computed exactly. */
@@ -44,18 +46,22 @@ const MIN_TEXT_HEIGHT_MM: Record<PrintMethod, number> = {
   EMBROIDERY: 5,
 };
 
-/** Effective print resolution of an image layer at its placed size. */
+/** Effective print resolution of an image layer at its placed size (per tile for repeat patterns). */
 export function effectiveDpi(layer: ArtworkLayer): { x: number; y: number; min: number } | null {
-  if (layer.content.kind !== 'image') return null;
-  if (layer.content.mime === 'image/svg+xml') return null; // vector source: resolution independent
-  const x = layer.content.naturalWidthPx / mmToInch(layer.transform.widthMm);
-  const y = layer.content.naturalHeightPx / mmToInch(layer.transform.heightMm);
+  const c = layer.content;
+  if (c.kind !== 'image') return null;
+  if (c.mime === 'image/svg+xml') return null; // vector source: resolution independent
+  const widthMm = c.repeat ? c.repeat.tileWidthMm : layer.transform.widthMm;
+  const heightMm = c.repeat ? (c.repeat.tileWidthMm * c.naturalHeightPx) / c.naturalWidthPx : layer.transform.heightMm;
+  const x = c.naturalWidthPx / mmToInch(widthMm);
+  const y = c.naturalHeightPx / mmToInch(heightMm);
   return { x, y, min: Math.min(x, y) };
 }
 
-/** Largest width (mm) an image can be printed at while staying at `dpi`. */
+/** Largest width (mm) an image (or one repeat tile) can be printed at while staying at `dpi`. */
 export function maxWidthAtDpi(layer: ArtworkLayer, dpi: number): number | null {
   if (layer.content.kind !== 'image') return null;
+  if (layer.content.repeat) return (layer.content.naturalWidthPx / dpi) * 25.4;
   const byWidth = (layer.content.naturalWidthPx / dpi) * 25.4;
   const byHeight = (layer.content.naturalHeightPx / dpi) * 25.4 * (layer.transform.widthMm / layer.transform.heightMm);
   return Math.min(byWidth, byHeight);
@@ -105,6 +111,7 @@ export function checkLayer(layer: ArtworkLayer, zone: ZoneSpec, method: PrintMet
   const dpi = effectiveDpi(layer);
   if (dpi) {
     const shown = Math.round(dpi.min);
+    const sizeIt = layer.content.kind === 'image' && layer.content.repeat ? 'make each tile' : 'print it';
     if (dpi.min < opts.minimumDpi) {
       const maxW = maxWidthAtDpi(layer, opts.minimumDpi);
       issues.push({
@@ -113,7 +120,7 @@ export function checkLayer(layer: ArtworkLayer, zone: ZoneSpec, method: PrintMet
         severity: 'error',
         code: 'low_dpi',
         message: `Prints at ${shown} dpi, below the ${opts.minimumDpi} dpi minimum`,
-        fix: maxW ? `Use a larger source image, or print it at most ${roundMm(maxW)} mm wide` : undefined,
+        fix: maxW ? `Use a larger source image, or ${sizeIt} at most ${roundMm(maxW)} mm wide` : undefined,
       });
     } else if (dpi.min < opts.goodDpi) {
       const maxW = maxWidthAtDpi(layer, opts.goodDpi);
@@ -123,7 +130,7 @@ export function checkLayer(layer: ArtworkLayer, zone: ZoneSpec, method: PrintMet
         severity: 'warning',
         code: 'marginal_dpi',
         message: `Prints at ${shown} dpi; edges may look soft`,
-        fix: maxW ? `For ${opts.goodDpi} dpi, print it at most ${roundMm(maxW)} mm wide` : undefined,
+        fix: maxW ? `For ${opts.goodDpi} dpi, ${sizeIt} at most ${roundMm(maxW)} mm wide` : undefined,
       });
     }
   }
@@ -167,6 +174,20 @@ export function runPreflight(doc: DesignDocument, opts: PreflightOptions = DEFAU
     const zone = doc.zones[zoneId];
     const spec = model.zones[zoneId];
     const layers = zone.orderedLayerIds.map((id) => zone.layers[id]).filter((l) => l && l.visible);
+    if (!spec) {
+      // Artwork kept from another garment style, on a zone this one doesn't have.
+      if (layers.length) {
+        issues.push({
+          id: `${zoneId}:unavailable`,
+          zoneId,
+          severity: 'error',
+          code: 'zone_unavailable',
+          message: `The ${model.shortName.toLowerCase()} has no ${zoneId.replace('_', ' ')}: ${layers.length} layer${layers.length === 1 ? '' : 's'} there won't be printed`,
+          fix: 'Switch back to a garment with this zone, or rebuild the artwork on another zone',
+        });
+      }
+      continue;
+    }
     visibleLayers += layers.length;
     if (layers.length && !spec.methods.includes(zone.printMethod)) {
       issues.push({
@@ -179,6 +200,18 @@ export function runPreflight(doc: DesignDocument, opts: PreflightOptions = DEFAU
       });
     }
     for (const layer of layers) issues.push(...checkLayer(layer, spec, zone.printMethod, opts));
+  }
+
+  const colorway = doc.colorways.find((c) => c.id === doc.activeColorwayId) ?? doc.colorways[0];
+  const printed = Object.keys(colorway?.surfaces ?? {});
+  if (printed.length) {
+    issues.push({
+      id: 'doc:allover',
+      zoneId: 'front',
+      severity: 'info',
+      code: 'allover_print',
+      message: `All-over print on ${printed.join(' and ')}: made by sublimation or printed fabric, quoted separately from zone prints`,
+    });
   }
 
   if (visibleLayers === 0) {

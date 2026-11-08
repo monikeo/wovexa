@@ -4,11 +4,12 @@
  * Browser storage is not an encrypted vault (spec §23.3): signing out clears it.
  *
  * Database versions: 1 projects, documents, assets. 2 adds versions, templates, brand kits.
+ * 3 adds the font library (uploaded fonts) and saved scene looks. 4 to 6 add the export history.
  */
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import { createDocument, newId } from '@/domain/factory';
 import { documentHash } from '@/domain/hash';
-import { migrateDesignDocument, type DesignDocument } from '@/domain/schema';
+import { migrateDesignDocument, type DesignDocument, type Scene } from '@/domain/schema';
 
 export type SyncState = 'local' | 'synced' | 'pending' | 'conflict' | 'error';
 
@@ -98,20 +99,65 @@ export interface BrandKit {
   updatedAt: number;
 }
 
+/** A font uploaded to this device (spec AST-07). Stored with the licence statement given at upload. */
+export interface StoredFont {
+  id: string;
+  family: string;
+  fileName: string;
+  format: 'ttf' | 'otf' | 'woff' | 'woff2';
+  bytes: number;
+  sha256: string;
+  blob: Blob;
+  licenseNote: string;
+  licenseConfirmedAt: number;
+  createdAt: number;
+}
+
+/** A reusable studio look: lighting, exposure, backdrop and lens, without saved camera views (spec MED-07). */
+export interface StoredScene {
+  id: string;
+  name: string;
+  scene: Omit<Scene, 'cameras'>;
+  createdAt: number;
+}
+
+export type ExportKind = 'package' | 'print' | 'proof' | 'team' | 'manifest' | 'mockups';
+
+/** A finished export (spec EXP-10): what was made, from which revision, without the files themselves. */
+export interface ExportRecord {
+  id: string;
+  projectId: string;
+  createdAt: number;
+  kind: ExportKind;
+  label: string;
+  revision: number;
+  /** v3, r12 or a design ID, as in the exported file names. */
+  revisionLabel?: string;
+  contentHash: string;
+  fileName: string;
+  fileCount: number;
+  bytes: number;
+  settings: Record<string, unknown>;
+}
+
 interface WovexaDB extends DBSchema {
+  exports: { key: string; value: ExportRecord; indexes: { projectId: string } };
   projects: { key: string; value: ProjectMeta; indexes: { updatedAt: number } };
   documents: { key: string; value: { projectId: string; document: unknown; savedAt: number } };
   assets: { key: string; value: StoredAsset; indexes: { sha256: string; createdAt: number } };
   versions: { key: string; value: StoredVersion; indexes: { projectId: string } };
   templates: { key: string; value: StoredTemplate; indexes: { createdAt: number } };
   brandKits: { key: string; value: BrandKit; indexes: { updatedAt: number } };
+  fonts: { key: string; value: StoredFont; indexes: { createdAt: number } };
+  scenes: { key: string; value: StoredScene; indexes: { createdAt: number } };
 }
 
 let dbPromise: Promise<IDBPDatabase<WovexaDB>> | null = null;
+const DB_VERSION = 6;
 
 export function db() {
   if (typeof indexedDB === 'undefined') throw new Error('IndexedDB is not available in this browser');
-  dbPromise ??= openDB<WovexaDB>('wovexa', 2, {
+  dbPromise ??= openDB<WovexaDB>('wovexa', DB_VERSION, {
     upgrade(database, oldVersion) {
       if (oldVersion < 1) {
         const projects = database.createObjectStore('projects', { keyPath: 'id' });
@@ -126,6 +172,23 @@ export function db() {
         database.createObjectStore('templates', { keyPath: 'id' }).createIndex('createdAt', 'createdAt');
         database.createObjectStore('brandKits', { keyPath: 'id' }).createIndex('updatedAt', 'updatedAt');
       }
+      if (oldVersion < 3) {
+        database.createObjectStore('fonts', { keyPath: 'id' }).createIndex('createdAt', 'createdAt');
+        database.createObjectStore('scenes', { keyPath: 'id' }).createIndex('createdAt', 'createdAt');
+      }
+      // Export history (versions 4 to 6). Checked by name rather than by version, so a database
+      // that reached a newer version without the store still gets it.
+      if (!database.objectStoreNames.contains('exports')) {
+        database.createObjectStore('exports', { keyPath: 'id' }).createIndex('projectId', 'projectId');
+      }
+    },
+    // Another tab is upgrading the database: step aside so it can, and reopen on next use.
+    blocking() {
+      void dbPromise?.then((d) => d.close());
+      dbPromise = null;
+    },
+    terminated() {
+      dbPromise = null;
     },
   });
   return dbPromise;
@@ -159,9 +222,9 @@ export async function getProject(id: string) {
   return (await db()).get('projects', id);
 }
 
-export async function createProject(title: string, colorwayIndex = 0): Promise<ProjectMeta> {
+export async function createProject(title: string, colorwayIndex = 0, modelId?: string): Promise<ProjectMeta> {
   const projectId = newId();
-  const document = createDocument({ projectId, title, colorwayIndex });
+  const document = createDocument({ projectId, title, colorwayIndex, modelId });
   return saveDocument(document);
 }
 
@@ -253,12 +316,39 @@ export async function archiveProject(id: string, archived: boolean) {
 /** Permanent local delete, including the project's version history. Callers confirm first. */
 export async function deleteProject(id: string) {
   const database = await db();
-  const tx = database.transaction(['projects', 'documents', 'versions'], 'readwrite');
+  const tx = database.transaction(['projects', 'documents', 'versions', 'exports'], 'readwrite');
   await tx.objectStore('projects').delete(id);
   await tx.objectStore('documents').delete(id);
   const versionKeys = await tx.objectStore('versions').index('projectId').getAllKeys(id);
   await Promise.all(versionKeys.map((k) => tx.objectStore('versions').delete(k)));
+  const exportKeys = await tx.objectStore('exports').index('projectId').getAllKeys(id);
+  await Promise.all(exportKeys.map((k) => tx.objectStore('exports').delete(k)));
   await tx.done;
+}
+
+// ---- Export history (spec EXP-10) ----
+
+const EXPORTS_KEPT = 40;
+
+export async function addExportRecord(record: Omit<ExportRecord, 'id' | 'createdAt'>): Promise<ExportRecord> {
+  const database = await db();
+  const full: ExportRecord = { ...record, id: newId(), createdAt: Date.now() };
+  await database.put('exports', full);
+  // Keep the newest few per project.
+  const all = (await database.getAllFromIndex('exports', 'projectId', record.projectId)).sort((a, b) => b.createdAt - a.createdAt);
+  await Promise.all(all.slice(EXPORTS_KEPT).map((r) => database.delete('exports', r.id)));
+  return full;
+}
+
+export async function listExports(projectId: string, limit = 12): Promise<ExportRecord[]> {
+  const all = await (await db()).getAllFromIndex('exports', 'projectId', projectId);
+  return all.sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
+}
+
+export async function clearExports(projectId: string) {
+  const database = await db();
+  const keys = await database.getAllKeysFromIndex('exports', 'projectId', projectId);
+  await Promise.all(keys.map((k) => database.delete('exports', k)));
 }
 
 // ---- Versions (spec PRJ-08, COL-04, FAC-06) ----
@@ -344,6 +434,40 @@ export async function deleteBrandKit(id: string) {
   await (await db()).delete('brandKits', id);
 }
 
+// ---- Font library (spec AST-07) ----
+
+export async function listFonts(): Promise<StoredFont[]> {
+  return (await (await db()).getAllFromIndex('fonts', 'createdAt')).reverse();
+}
+
+export async function getFont(id: string) {
+  return (await db()).get('fonts', id);
+}
+
+export async function putFont(font: StoredFont) {
+  await (await db()).put('fonts', font);
+}
+
+export async function deleteFont(id: string) {
+  await (await db()).delete('fonts', id);
+}
+
+// ---- Saved scene looks (spec MED-07) ----
+
+export async function listScenes(): Promise<StoredScene[]> {
+  return (await (await db()).getAllFromIndex('scenes', 'createdAt')).reverse();
+}
+
+export async function saveScene(name: string, scene: Omit<Scene, 'cameras'>): Promise<StoredScene> {
+  const stored: StoredScene = { id: newId(), name: name.slice(0, 40), scene, createdAt: Date.now() };
+  await (await db()).put('scenes', stored);
+  return stored;
+}
+
+export async function deleteScene(id: string) {
+  await (await db()).delete('scenes', id);
+}
+
 // ---- Assets ----
 
 export async function putAsset(asset: StoredAsset) {
@@ -378,10 +502,10 @@ export async function deleteAsset(id: string) {
   await (await db()).delete('assets', id);
 }
 
-/** Clears every local project, version, template, brand kit and asset. Used at sign-out (spec §23.3). */
+/** Clears every local project, version, template, brand kit, asset, font and saved look. Used at sign-out (spec §23.3). */
 export async function clearLocalData() {
   const database = await db();
-  const stores = ['projects', 'documents', 'assets', 'versions', 'templates', 'brandKits'] as const;
+  const stores = ['projects', 'documents', 'assets', 'versions', 'templates', 'brandKits', 'fonts', 'scenes', 'exports'] as const;
   const tx = database.transaction([...stores], 'readwrite');
   await Promise.all(stores.map((s) => tx.objectStore(s).clear()));
   await tx.done;

@@ -7,7 +7,7 @@ import { applyCommand, emptyHistory, redo, undo } from './history';
 import { effectiveDpi, runPreflight, summarize } from './preflight';
 import { migrateDesignDocument, parseDesignDocument } from './schema';
 
-const front = TEE_CLASSIC.zones.front;
+const front = TEE_CLASSIC.zones.front!;
 
 function docWithText() {
   const doc = createDocument({ projectId: 'p1', title: 'Test tee' });
@@ -164,7 +164,7 @@ describe('preflight', () => {
     const ok = runPreflight(r.document).some((i) => i.code === 'method_unsupported');
     expect(ok).toBe(false);
     const s = applyCommand(r.document, r.history, cmd.setPrintMethod('left_sleeve', 'SUBLIMATION'));
-    const withLayer = applyCommand(s.document, s.history, cmd.addLayer('left_sleeve', createTextLayer(TEE_CLASSIC.zones.left_sleeve, 'W')));
+    const withLayer = applyCommand(s.document, s.history, cmd.addLayer('left_sleeve', createTextLayer(TEE_CLASSIC.zones.left_sleeve!, 'W')));
     expect(runPreflight(withLayer.document).some((i) => i.code === 'method_unsupported')).toBe(true);
   });
 });

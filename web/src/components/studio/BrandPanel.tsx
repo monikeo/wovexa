@@ -8,7 +8,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import * as cmd from '@/domain/commands';
 import { createImageLayer } from '@/domain/factory';
-import { getGarment } from '@/domain/garments';
+import { getGarment, zoneSpecOrFirst } from '@/domain/garments';
 import type { TextContent } from '@/domain/schema';
 import { nearestWeight } from '@/lib/fonts';
 import { getAsset, listBrandKits, type BrandKit, type StoredAsset } from '@/lib/local-db';
@@ -34,7 +34,7 @@ function useAssets(ids: string[]) {
 function insertLogo(asset: StoredAsset) {
   const s = useStudio.getState();
   if (!s.document) return;
-  const spec = getGarment(s.document.garment.modelId).zones[s.activeZoneId];
+  const spec = zoneSpecOrFirst(getGarment(s.document.garment.modelId), s.activeZoneId);
   const layer = createImageLayer(spec, { id: asset.id, width: asset.width, height: asset.height, mime: asset.mime, name: asset.name });
   s.dispatch(cmd.addLayer(s.activeZoneId, layer));
   s.select([layer.id]);

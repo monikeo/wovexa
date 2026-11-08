@@ -2,8 +2,9 @@
 import { Archive, ArchiveRestore, Copy, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { COLORWAY_PRESETS } from '@/domain/garments';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { GARMENT_LIST } from '@/domain/garments';
+import { GarmentGlyph } from '@/components/studio/GarmentGlyph';
 import {
   approvalState,
   archiveProject,
@@ -14,7 +15,7 @@ import {
   renameProject,
   type ProjectMeta,
 } from '@/lib/local-db';
-import { ConfirmDialog, toast } from '@/components/ui/primitives';
+import { ConfirmDialog, toast, useMenuKeyboard } from '@/components/ui/primitives';
 
 export function useProjects(includeArchived = false) {
   const [projects, setProjects] = useState<ProjectMeta[] | null>(null);
@@ -68,7 +69,7 @@ export function relativeTime(ms: number) {
 }
 
 /** Tee silhouette in the project's body colour, used until a real thumbnail exists. */
-function TeeGlyph({ color }: { color: string }) {
+export function TeeGlyph({ color }: { color: string }) {
   return (
     <svg viewBox="0 0 120 110" className="h-3/5 w-auto" aria-hidden>
       <path
@@ -94,16 +95,18 @@ export function ProjectActions({ meta, onChanged }: { meta: ProjectMeta; onChang
   const [open, setOpen] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const closeMenu = useCallback((restore: boolean) => {
+    setOpen(false);
+    if (restore) triggerRef.current?.focus();
+  }, []);
+  useMenuKeyboard(menuRef, open, closeMenu);
   useEffect(() => {
     if (!open) return;
-    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
-    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
-    document.addEventListener('mousedown', close);
-    document.addEventListener('keydown', esc);
-    return () => {
-      document.removeEventListener('mousedown', close);
-      document.removeEventListener('keydown', esc);
-    };
+    const close = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
   }, [open]);
   const act = (fn: () => Promise<unknown>, message: string) => async () => {
     setOpen(false);
@@ -114,11 +117,24 @@ export function ProjectActions({ meta, onChanged }: { meta: ProjectMeta; onChang
   const item = 'flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm hover:bg-hover';
   return (
     <div className="relative" ref={ref}>
-      <button className="icon-btn" aria-label={`Actions for ${meta.title}`} aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen((o) => !o)}>
+      <button
+        ref={triggerRef}
+        className="icon-btn"
+        aria-label={`Actions for ${meta.title}`}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown' && !open) {
+            e.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
         <MoreHorizontal size={18} />
       </button>
       {open ? (
-        <div role="menu" className="absolute right-0 top-full z-30 mt-1 w-48 rounded-xl border border-line bg-floating p-1 shadow-xl">
+        <div ref={menuRef} role="menu" aria-label={`Actions for ${meta.title}`} className="absolute right-0 top-full z-30 mt-1 w-48 rounded-xl border border-line bg-floating p-1 shadow-xl">
           <button
             role="menuitem"
             className={item}
@@ -222,26 +238,34 @@ export function NewProjectButton({ className = 'btn btn-primary' }: { className?
   );
 }
 
+/** Start a blank design on any garment: the flats come from the same pattern data as the 3D model. */
 export function QuickStart() {
   const router = useRouter();
-  const starts = useMemo(() => COLORWAY_PRESETS.slice(0, 3).map((p, i) => ({ ...p, index: i })), []);
+  const [busy, setBusy] = useState<string | null>(null);
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-      {starts.map((p) => (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {GARMENT_LIST.map((m) => (
         <button
-          key={p.name}
-          className="flex items-center gap-4 rounded-xl border border-line bg-panel p-3 text-left hover:border-line-strong"
+          key={m.id}
+          disabled={busy !== null}
+          className="group flex flex-col items-start gap-2 rounded-xl border border-line bg-panel p-3 text-left transition-colors hover:border-line-strong disabled:opacity-60"
           onClick={async () => {
-            const meta = await createProject(`${p.name} tee`, p.index);
-            router.push(`/studio/${meta.id}`);
+            setBusy(m.id);
+            try {
+              const meta = await createProject(`Untitled ${m.shortName.toLowerCase()}`, 0, m.id);
+              router.push(`/studio/${meta.id}`);
+            } catch (e) {
+              toast(e instanceof Error ? e.message : 'The project could not be created.', 'error');
+              setBusy(null);
+            }
           }}
         >
-          <span className="grid h-14 w-14 flex-none place-items-center rounded-lg bg-[var(--surface-hover)]">
-            <TeeGlyph color={p.parts.body} />
+          <span className="grid aspect-[4/3] w-full place-items-center rounded-lg bg-[var(--surface-hover)] text-fg-2 group-hover:text-fg">
+            <GarmentGlyph model={m} className="h-16 w-16" />
           </span>
-          <span>
-            <span className="block text-sm font-semibold">{p.name} crew tee</span>
-            <span className="block text-xs text-fg-2">Front, back and both sleeves</span>
+          <span className="min-w-0">
+            <span className="block text-sm font-semibold">{m.name}</span>
+            <span className="mt-0.5 line-clamp-2 block text-xs text-fg-2">{m.description}</span>
           </span>
         </button>
       ))}

@@ -8,10 +8,10 @@ import { rotatedBounds } from './geometry';
 import { canonicalJson, documentHash } from './hash';
 import { applyCommand, emptyHistory, undo } from './history';
 import { runPreflight } from './preflight';
-import { migrateDesignDocument, migrateV1toV2, parseDesignDocument, type DesignDocument } from './schema';
+import { migrateDesignDocument, migrateV1toV2, parseDesignDocument, SCHEMA_VERSION, ZONE_IDS, type DesignDocument } from './schema';
 import { BUILT_IN_TEMPLATES, instantiateTemplate } from './templates';
 
-const front = TEE_CLASSIC.zones.front;
+const front = TEE_CLASSIC.zones.front!;
 const area = { x: 0, y: 0, width: front.printableWidthMm, height: front.printableHeightMm };
 
 function apply(doc: DesignDocument, ...commands: cmd.Command[]) {
@@ -47,7 +47,10 @@ describe('schema v2 migration', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.migratedFrom).toBe(1);
-    expect(result.document.schemaVersion).toBe(2);
+    expect(result.document.schemaVersion).toBe(SCHEMA_VERSION);
+    // v3 adds the uniform's leg zones, empty.
+    expect(result.document.zones.left_leg.orderedLayerIds).toEqual([]);
+    expect(result.document.zones.right_leg.printMethod).toBe('DTG');
     expect(result.document.production.constructionNotes).toBe('Double-needle hem');
     expect(result.document.production.bom.every((r) => !r.confirmed)).toBe(true);
     const text = Object.values(result.document.zones.front.layers)[0];
@@ -63,7 +66,29 @@ describe('schema v2 migration', () => {
     const doc = createDocument({ projectId: 'p1', title: 'New' });
     const same = migrateDesignDocument(doc);
     expect(same.ok && same.migratedFrom).toBe(undefined);
-    expect(migrateDesignDocument({ ...doc, schemaVersion: 3 }).ok).toBe(false);
+    expect(migrateDesignDocument({ ...doc, schemaVersion: SCHEMA_VERSION + 1 }).ok).toBe(false);
+  });
+
+  it('upgrades a v2 document to v3 without touching its artwork', () => {
+    const v3 = createDocument({ projectId: 'p1', title: 'Old' });
+    const { left_leg: _l, right_leg: _r, ...zones } = v3.zones;
+    void _l;
+    void _r;
+    const v2 = { ...structuredClone(v3), schemaVersion: 2, zones: structuredClone(zones) };
+    const result = migrateDesignDocument(v2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.migratedFrom).toBe(2);
+    expect(result.document.zones.front).toEqual(v3.zones.front);
+    expect(Object.keys(result.document.zones).sort()).toEqual([...ZONE_IDS].sort());
+  });
+
+  it('starts every zone on a method its garment offers', () => {
+    const dobok = createDocument({ projectId: 'p2', title: 'Club', modelId: 'taekwondo-dobok' });
+    expect(dobok.zones.front.printMethod).not.toBe('DTG');
+    expect(dobok.zones.left_leg.printMethod).not.toBe('DTG');
+    const tee = createDocument({ projectId: 'p3', title: 'Tee' });
+    expect(tee.zones.front.printMethod).toBe('DTG');
   });
 });
 

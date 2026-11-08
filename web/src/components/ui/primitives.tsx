@@ -1,5 +1,5 @@
 'use client';
-import { X } from 'lucide-react';
+import { Pipette, X } from 'lucide-react';
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { create } from 'zustand';
 
@@ -70,6 +70,90 @@ export function Toaster() {
   );
 }
 
+// ---- Keyboard helpers: focus trapping and menu navigation (spec DSK-06, §21.6 rule 5) ----
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** Keep Tab and Shift+Tab inside a modal container. */
+export function trapTab(e: React.KeyboardEvent | KeyboardEvent, container: HTMLElement) {
+  if (e.key !== 'Tab') return;
+  const items = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => el.getClientRects().length > 0);
+  if (!items.length) {
+    e.preventDefault();
+    container.focus();
+    return;
+  }
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement;
+  if (!container.contains(active)) {
+    e.preventDefault();
+    first.focus();
+  } else if (e.shiftKey && (active === first || active === container)) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
+/**
+ * Menu keyboard pattern: focus the first item on open, arrows and Home/End move,
+ * Escape closes and returns focus to the trigger, Tab closes and moves on.
+ */
+export function useMenuKeyboard(menuRef: React.RefObject<HTMLElement | null>, open: boolean, onClose: (restoreFocus: boolean) => void) {
+  useEffect(() => {
+    const menu = menuRef.current;
+    if (!open || !menu) return;
+    const items = () => Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"]):not(:disabled)'));
+    items()[0]?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      const list = items();
+      const i = list.indexOf(document.activeElement as HTMLElement);
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        list[(i + 1) % list.length]?.focus();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        list[(i - 1 + list.length) % list.length]?.focus();
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        list[0]?.focus();
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        list[list.length - 1]?.focus();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose(true);
+      } else if (e.key === 'Tab') {
+        onClose(false);
+      }
+    };
+    menu.addEventListener('keydown', onKey);
+    return () => menu.removeEventListener('keydown', onKey);
+  }, [open, menuRef, onClose]);
+}
+
+/** Height of the on-screen keyboard over the layout viewport (iOS doesn't resize the page for it). */
+function useKeyboardInset(active: boolean) {
+  const [state, setState] = useState({ inset: 0, height: 0 });
+  useEffect(() => {
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    if (!active || !vv) return;
+    const update = () => setState({ inset: Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)), height: vv.height });
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+    };
+  }, [active]);
+  return state;
+}
+
 // ---- Sheet: bottom sheet on phones, side drawer on tablets (spec MOB-03, TAB-03) ----
 
 export function Sheet({
@@ -77,53 +161,104 @@ export function Sheet({
   onClose,
   title,
   side = 'bottom',
+  modal = true,
+  wide = false,
   children,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   side?: 'bottom' | 'right' | 'left';
+  /** A wider side drawer, for panels with more to show (export). */
+  wide?: boolean;
+  /** A non-modal panel leaves the rest of the studio visible and usable (e.g. the 3D view while rendering). */
+  modal?: boolean;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
+  const keyboard = useKeyboardInset(open && side === 'bottom');
+  const [dragY, setDragY] = useState(0);
+  const [drag, setDrag] = useState<{ startY: number; id: number } | null>(null);
+
   useEffect(() => {
     if (!open) return;
     const previous = document.activeElement as HTMLElement | null;
     ref.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      previous?.focus?.();
-    };
-  }, [open, onClose]);
+    return () => previous?.focus?.();
+  }, [open]);
   if (!open) return null;
+
   const position =
     side === 'bottom'
-      ? 'inset-x-0 bottom-0 max-h-[78dvh] rounded-t-[var(--sheet-radius)] safe-bottom'
+      ? 'inset-x-0 bottom-0 max-h-[78dvh] rounded-t-[var(--sheet-radius)] safe-bottom safe-x'
       : side === 'right'
-        ? 'inset-y-0 right-0 w-[min(360px,92vw)]'
-        : 'inset-y-0 left-0 w-[min(320px,88vw)]';
+        ? `inset-y-0 right-0 ${wide ? 'w-[min(420px,94vw)]' : 'w-[min(360px,92vw)]'} safe-right`
+        : 'inset-y-0 left-0 w-[min(320px,88vw)] safe-left';
+
+  // Swipe the handle down to dismiss a bottom sheet (touch, pen or mouse).
+  const handlers =
+    side === 'bottom'
+      ? {
+          onPointerDown: (e: React.PointerEvent) => {
+            if ((e.target as HTMLElement).closest('button')) return;
+            setDrag({ startY: e.clientY, id: e.pointerId });
+            (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+          },
+          onPointerMove: (e: React.PointerEvent) => {
+            if (drag?.id === e.pointerId) setDragY(Math.max(0, e.clientY - drag.startY));
+          },
+          onPointerUp: (e: React.PointerEvent) => {
+            if (drag?.id !== e.pointerId) return;
+            setDrag(null);
+            if (dragY > 90) onClose();
+            setDragY(0);
+          },
+          onPointerCancel: () => {
+            setDrag(null);
+            setDragY(0);
+          },
+        }
+      : {};
+
   return (
-    <div className="fixed inset-0 z-50">
-      <div className="absolute inset-0" style={{ background: 'var(--overlay-scrim)' }} onClick={onClose} aria-hidden />
+    <div className={`fixed inset-0 z-50 ${modal ? '' : 'pointer-events-none'}`}>
+      {modal ? <div className="absolute inset-0" style={{ background: 'var(--overlay-scrim)' }} onClick={onClose} aria-hidden /> : null}
       <div
         ref={ref}
         role="dialog"
-        aria-modal="true"
+        aria-modal={modal ? 'true' : undefined}
         aria-labelledby={titleId}
         tabIndex={-1}
-        className={`absolute flex flex-col overflow-hidden border-line bg-panel shadow-2xl outline-none ${position}`}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            e.stopPropagation();
+            onClose();
+          }
+          if (modal && ref.current) trapTab(e, ref.current);
+        }}
+        style={
+          side === 'bottom'
+            ? {
+                bottom: keyboard.inset || undefined,
+                maxHeight: keyboard.inset ? keyboard.height * 0.92 : undefined,
+                transform: dragY ? `translateY(${dragY}px)` : undefined,
+                transition: drag ? 'none' : 'transform var(--motion-normal) var(--motion-ease)',
+              }
+            : undefined
+        }
+        className={`pointer-events-auto absolute flex flex-col overflow-hidden border-line bg-panel shadow-2xl outline-none ${position} ${modal ? '' : side === 'left' ? 'border-r' : side === 'right' ? 'border-l' : 'border-t'}`}
       >
-        {side === 'bottom' ? <div className="mx-auto mt-2 h-1 w-10 rounded-full bg-line-strong" aria-hidden /> : null}
-        <div className="flex items-center justify-between px-4 pb-2 pt-3">
-          <h2 id={titleId} className="panel-title text-base">
-            {title}
-          </h2>
-          <button className="icon-btn" onClick={onClose} aria-label="Close">
-            <X size={18} />
-          </button>
+        <div className={side === 'bottom' ? 'touch-none select-none' : ''} {...handlers}>
+          {side === 'bottom' ? <div className="mx-auto mt-2 h-1 w-10 rounded-full bg-line-strong" aria-hidden /> : null}
+          <div className="flex items-center justify-between px-4 pb-2 pt-3">
+            <h2 id={titleId} className="panel-title text-base">
+              {title}
+            </h2>
+            <button className="icon-btn" onClick={onClose} aria-label="Close">
+              <X size={18} />
+            </button>
+          </div>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">{children}</div>
       </div>
@@ -150,17 +285,30 @@ export function ConfirmDialog({
 }) {
   const titleId = useId();
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
+    const previous = document.activeElement as HTMLElement | null;
     cancelRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onCancel();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onCancel]);
+    return () => previous?.focus?.();
+  }, [open]);
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[70] grid place-items-center p-4" style={{ background: 'var(--overlay-scrim)' }}>
-      <div role="alertdialog" aria-modal="true" aria-labelledby={titleId} className="w-full max-w-sm rounded-2xl bg-panel p-5 shadow-2xl">
+      <div
+        ref={boxRef}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="w-full max-w-sm rounded-2xl bg-panel p-5 shadow-2xl"
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            e.stopPropagation();
+            onCancel();
+          }
+          if (boxRef.current) trapTab(e, boxRef.current);
+        }}
+      >
         <h2 id={titleId} className="text-base font-semibold">
           {title}
         </h2>
@@ -255,6 +403,32 @@ export function NumberField({
   );
 }
 
+const noSubscribe = () => () => {};
+
+/** Whether the browser can sample a colour from anywhere on screen (EyeDropper API, Chromium). */
+export function useEyeDropperSupport() {
+  return useSyncExternalStore(noSubscribe, () => 'EyeDropper' in window, () => false);
+}
+
+/** "#rrggbb" or "rgb(r, g, b)" from the EyeDropper → "#RRGGBB". */
+export function normalizeHex(value: string): string | null {
+  if (/^#[0-9a-f]{6}$/i.test(value)) return value.toUpperCase();
+  const m = value.match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/i);
+  if (!m) return null;
+  return `#${[m[1], m[2], m[3]].map((n) => Math.min(255, Number(n)).toString(16).padStart(2, '0')).join('')}`.toUpperCase();
+}
+
+export async function pickScreenColor(): Promise<string | null> {
+  const Dropper = (window as Window & { EyeDropper?: new () => { open: () => Promise<{ sRGBHex: string }> } }).EyeDropper;
+  if (!Dropper) return null;
+  try {
+    const { sRGBHex } = await new Dropper().open();
+    return normalizeHex(sRGBHex);
+  } catch {
+    return null; // cancelled with Escape
+  }
+}
+
 export function ColorField({
   label,
   value,
@@ -268,6 +442,7 @@ export function ColorField({
   swatches?: { name: string; hex: string }[];
 }) {
   const id = useId();
+  const canSample = useEyeDropperSupport();
   const [draft, setDraft] = useState(value);
   // Follow outside changes (undo, colourway switch) unless the user is mid-edit.
   const [synced, setSynced] = useState(value);
@@ -297,6 +472,20 @@ export function ColorField({
           onBlur={() => (/^#[0-9a-f]{6}$/i.test(draft) ? onChange(draft.toUpperCase()) : setDraft(value))}
           onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
         />
+        {canSample ? (
+          <button
+            type="button"
+            className="icon-btn h-[34px] w-[34px] border border-line"
+            aria-label={`Sample ${label.toLowerCase()} from the screen`}
+            title="Pick a colour from anywhere on screen (spec ED2-16)"
+            onClick={async () => {
+              const hex = await pickScreenColor();
+              if (hex) onChange(hex);
+            }}
+          >
+            <Pipette size={15} />
+          </button>
+        ) : null}
       </div>
       {swatches?.length ? (
         <div className="col-start-2 flex flex-wrap gap-1" role="group" aria-label={`${label}: brand colours`}>
@@ -308,7 +497,7 @@ export function ColorField({
               aria-label={`Use ${s.name}`}
               aria-pressed={s.hex.toUpperCase() === value.toUpperCase()}
               onClick={() => onChange(s.hex.toUpperCase())}
-              className="h-6 w-6 rounded-md border border-line aria-pressed:ring-2 aria-pressed:ring-[var(--focus-ring)] aria-pressed:ring-offset-1"
+              className="touch-hit-square h-6 w-6 rounded-md border border-line aria-pressed:ring-2 aria-pressed:ring-[var(--focus-ring)] aria-pressed:ring-offset-1"
               style={{ background: s.hex }}
             />
           ))}

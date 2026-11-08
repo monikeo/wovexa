@@ -328,3 +328,50 @@
     padding-bottom: env(safe-area-inset-bottom);
   }
 }
+
+/*
+ * Input-modality rules (spec MOB-04, TAB-01, §21.6). These sit outside any cascade layer on
+ * purpose: unlayered styles beat Tailwind's size utilities, so a coarse pointer always gets
+ * a full touch target even where a component asks for a compact size.
+ */
+@media (pointer: coarse) {
+  .icon-btn,
+  .touch-hit-square {
+    min-width: var(--touch-target);
+    min-height: var(--touch-target);
+  }
+  .btn,
+  .seg > button,
+  .touch-hit,
+  [role="tab"],
+  [role="menuitem"] {
+    min-height: var(--touch-target);
+  }
+}
+
+/* Controls that appear on hover only where hovering exists; touch screens always see them. */
+@media (hover: hover) and (pointer: fine) {
+  .hover-reveal {
+    opacity: 0;
+    transition: opacity var(--motion-fast) var(--motion-ease);
+  }
+  .group:hover .hover-reveal,
+  .group:focus-within .hover-reveal {
+    opacity: 1;
+  }
+}
+
+/* Notches, rounded corners and home indicators (viewport-fit=cover). */
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+.safe-x {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+.safe-left {
+  padding-left: env(safe-area-inset-left);
+}
+.safe-right {
+  padding-right: env(safe-area-inset-right);
+}
