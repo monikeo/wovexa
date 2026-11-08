@@ -5,7 +5,7 @@
  */
 import type { CameraBookmark, ZoneId } from '@/domain/schema';
 
-export type ViewPreset = 'front' | 'back' | 'left' | 'right' | 'three_quarter';
+export type ViewPreset = 'front' | 'back' | 'left' | 'right' | 'three_quarter' | 'top' | 'bottom';
 
 /** Lens the preset distances were tuned for. Other lenses move the camera so framing stays the same. */
 export const BASE_FOV = 28;
@@ -17,6 +17,9 @@ export const VIEW_PRESETS: Record<ViewPreset, { label: string; long: string; key
   left: { label: 'Left', long: 'Left side', key: '3', position: [D, 0.04, 0] },
   right: { label: 'Right', long: 'Right side', key: '4', position: [-D, 0.04, 0] },
   three_quarter: { label: '¾', long: 'Three-quarter', key: '5', position: [D * 0.68, 0.32, D * 0.72] },
+  // Straight down into the neck and straight up through the hem; a hair off the axis keeps "up" defined.
+  top: { label: 'Top', long: 'Top', key: '6', position: [0, D, D * 0.02] },
+  bottom: { label: 'Under', long: 'Underneath', key: '7', position: [0, -D, D * 0.02] },
 };
 
 export const ZONE_VIEW: Record<ZoneId, ViewPreset> = { front: 'front', back: 'back', left_sleeve: 'left', right_sleeve: 'right', left_leg: 'left', right_leg: 'right' };
@@ -43,7 +46,30 @@ export interface CaptureOptions {
   background?: RenderBackground;
   /** "Current view" captures exactly the render frame shown over the stage, not the whole stage. */
   frameCurrent?: boolean;
+  /** Path trace instead of the real-time renderer: physical light, slower. */
+  photoreal?: PhotorealSettings;
 }
+
+/** A path-traced still. Light bounces between surfaces and every shadow is soft. */
+export interface PhotorealSettings {
+  /** Samples per pixel: more is cleaner and slower. */
+  samples: number;
+  /** Smooth the remaining grain while keeping edges (default on). */
+  denoise?: boolean;
+  /** Depth of field as an f-number (smaller is blurrier), focused on the garment. Omit for all sharp. */
+  fStop?: number;
+  /** 0–1 across all shots of one capture. */
+  onProgress?: (fraction: number) => void;
+  signal?: AbortSignal;
+}
+
+/** Photoreal quality presets: what each is for, and its samples per pixel. */
+export const PHOTOREAL_PRESETS = [
+  { id: 'draft', label: 'Draft', samples: 64, hint: 'A quick look at light and shadow.' },
+  { id: 'studio', label: 'Studio', samples: 256, hint: 'Clean product images for shops and posts.' },
+  { id: 'final', label: 'Final', samples: 1024, hint: 'Hero images and print. Slowest.' },
+] as const;
+export type PhotorealPreset = (typeof PHOTOREAL_PRESETS)[number]['id'];
 
 export interface CapturedShot {
   key: string;

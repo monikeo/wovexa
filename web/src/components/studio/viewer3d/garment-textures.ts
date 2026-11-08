@@ -7,7 +7,7 @@
  */
 import { partColor, type GarmentModel, type PartId } from '@/domain/garments';
 import type { Colorway, DesignDocument, LayerTransform, Surface, ZoneId } from '@/domain/schema';
-import { drawZone, paintFabric } from '@/lib/render/zone-renderer';
+import { drawZone, drawZoneSurface, paintFabric } from '@/lib/render/zone-renderer';
 import type { EdgePoint, GarmentGeometry } from './garment-geometry';
 import { zoneOrigin } from './uv-mapping';
 
@@ -51,6 +51,11 @@ export interface PaintContext {
   guides?: Guides;
   /** Fabric for printing: no simulated stitching, which is sewn rather than printed. */
   production?: boolean;
+  /**
+   * Shade puff, embroidery and foil into the colour. Off when a surface map carries them as real
+   * relief, gloss and metal (see drawPartSurface).
+   */
+  simulateFinish?: boolean;
 }
 
 export function partSizeMm(geo: GarmentGeometry, part: PartId) {
@@ -241,9 +246,39 @@ export function drawPart(canvas: HTMLCanvasElement, part: PartId, c: PaintContex
         originX: o.x * ppm,
         originY: o.y * ppm,
         overrides: live?.zoneId === zoneId ? live.overrides : undefined,
-        simulateFinish: sewn,
+        simulateFinish: sewn && (c.simulateFinish ?? true),
       }) && complete;
     drawGuides(ctx, c, zoneId, o, ppm);
+  }
+  return complete;
+}
+
+/**
+ * A part's print surface as a material map, the same size as its colour texture: red is ink
+ * height (bump), green roughness, blue metalness. Bare fabric is flat at the fabric's own
+ * roughness; each print method and finish sets how high and glossy its ink sits (see inkLook).
+ */
+export function drawPartSurface(canvas: HTMLCanvasElement, part: PartId, c: PaintContext, fabricRoughness: number): boolean {
+  const { model, geo, quality, doc, live } = c;
+  const { w: wMm, h: hMm } = partSizeMm(geo, part);
+  const ppm = sized(canvas, wMm, hMm, quality);
+  const ctx = canvas.getContext('2d')!;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = `rgb(0, ${Math.round(fabricRoughness * 255)}, 0)`;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  let complete = true;
+  for (const zoneId of zonesOnPart(model, part)) {
+    const o = zoneOrigin(model, geo.layout, zoneId);
+    const zone = doc.zones[zoneId];
+    complete =
+      drawZoneSurface(ctx, zone, {
+        pxPerMm: ppm,
+        originX: o.x * ppm,
+        originY: o.y * ppm,
+        overrides: live?.zoneId === zoneId ? live.overrides : undefined,
+        method: zone.printMethod,
+      }) && complete;
   }
   return complete;
 }

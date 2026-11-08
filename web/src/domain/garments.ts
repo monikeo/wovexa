@@ -33,10 +33,19 @@ export interface ZoneSpec {
 
 export interface GarmentSize {
   code: string;
-  /** Uniform grading factor applied to the base pattern. Print zones stay in true millimetres. */
+  /** Overall grading factor for small details (neck, trims). Print zones stay in true millimetres. */
   scale: number;
+  /** Chest measured flat, armpit to armpit (half the chest round). */
   chestFlatMm: number;
+  /** Body length from the high point of shoulder (jacket length for uniforms). */
   bodyLengthMm: number;
+  /** Sleeve from the shoulder seam to the cuff, when the size chart gives one. */
+  sleeveLengthMm?: number;
+  /** Uniform pants: relaxed waist measured flat, and outside length. */
+  waistFlatMm?: number;
+  pantsLengthMm?: number;
+  /** Letter size for a height-coded size, such as L for 170. */
+  alias?: string;
 }
 
 export interface SleeveSpec {
@@ -59,6 +68,8 @@ export interface PantsSpec {
   hemRadiusMm: number;
   /** Where the waistband sits, measured down from the top's high point of shoulder. */
   waistFromHpsMm: number;
+  /** Relaxed waist measured flat at the base size, for grading by a size chart. */
+  waistFlatMm?: number;
 }
 
 export interface FabricPreset {
@@ -122,15 +133,69 @@ const TOP_PARTS: GarmentModel['colorParts'] = [
   { part: 'stitching', label: 'Stitch' },
 ];
 
-/** S to 2XL from a base chest flat and body length (size M), graded 6% per size. */
-function adultSizes(chestFlatMm: number, bodyLengthMm: number): GarmentSize[] {
-  return [
-    ['S', 0.94],
-    ['M', 1],
-    ['L', 1.06],
-    ['XL', 1.12],
-    ['2XL', 1.18],
-  ].map(([code, scale]) => ({ code: code as string, scale: scale as number, chestFlatMm: Math.round(chestFlatMm * (scale as number)), bodyLengthMm: Math.round(bodyLengthMm * (scale as number)) }));
+/** A size chart row in centimetres, measured flat: chest (armpit to armpit), length from the high point of shoulder, sleeve from the shoulder seam. */
+type ChartRow = readonly [code: string, chest: number, length: number, sleeve?: number];
+
+/** Adult sportswear shirts, XS to 8XL. Chest steps 3 cm (2 cm at 3XL), length 2 cm; the sleeve is a long sleeve. */
+const ADULT_SHIRTS: ChartRow[] = [
+  ['XS', 48, 67, 56], ['S', 51, 70, 58], ['M', 54, 72, 60], ['L', 57, 74, 62], ['XL', 60, 76, 64], ['2XL', 63, 78, 66],
+  ['3XL', 65, 80, 68], ['4XL', 68, 82, 70], ['5XL', 71, 84, 72], ['6XL', 74, 86, 74], ['7XL', 77, 88, 76], ['8XL', 80, 90, 78],
+];
+const KIDS_SHIRTS: ChartRow[] = [['K2', 34, 45], ['K4', 36, 48], ['K6', 38, 50], ['K8', 40, 54], ['K10', 42, 58], ['K12', 44, 62], ['K14', 46, 65]];
+const ADULT_SINGLETS: ChartRow[] = [
+  ['XS', 49, 67.5], ['S', 51.5, 70], ['M', 54, 72.5], ['L', 56.5, 75], ['XL', 59, 77.5], ['2XL', 61.5, 80],
+  ['3XL', 64, 82.5], ['4XL', 67, 84], ['5XL', 70, 86], ['6XL', 72, 88], ['7XL', 75, 90], ['8XL', 78, 92],
+];
+const KIDS_SINGLETS: ChartRow[] = [['K2', 35, 48], ['K4', 37, 50], ['K6', 39, 53], ['K8', 41, 56], ['K10', 43, 59], ['K12', 45, 62], ['K14', 47, 65]];
+
+/**
+ * Sizes graded by a size chart's real steps from its M. Each style keeps its own cut at M (a
+ * boxy tee stays boxy) and moves by the chart's increments, which are not one percentage: chest
+ * grows faster than length. Sleeves step in proportion to their length, so a short sleeve grows
+ * less than a long one. Kids rows grade from the same adult M.
+ */
+function gradedSizes(base: { chestFlatMm: number; bodyLengthMm: number; sleeveMm?: number }, rows: ChartRow[], ref: ChartRow = ADULT_SHIRTS[2]): GarmentSize[] {
+  const [, refChest, refLength, refSleeve] = ref;
+  return rows.map(([code, chest, length, sleeve]) => {
+    const chestFlatMm = Math.round(base.chestFlatMm + (chest - refChest) * 10);
+    const bodyLengthMm = Math.round(base.bodyLengthMm + (length - refLength) * 10);
+    const sleeveLengthMm = base.sleeveMm && sleeve !== undefined && refSleeve ? Math.round(base.sleeveMm * (1 + (sleeve - refSleeve) / refSleeve)) : undefined;
+    return { code, scale: Math.sqrt((chestFlatMm / base.chestFlatMm) * (bodyLengthMm / base.bodyLengthMm)), chestFlatMm, bodyLengthMm, sleeveLengthMm };
+  });
+}
+
+/** Taekwondo dobok by height (cm): jacket length, chest flat, sleeve, relaxed waist flat, pants length. */
+const DOBOK_CHART: readonly [code: string, alias: string, jacket: number, chest: number, sleeve: number, waist: number, pants: number][] = [
+  ['100', '5XS', 51, 42.5, 34, 25, 65], ['110', '4XS', 56, 45.5, 37, 25, 70], ['120', '3XS', 61, 48.5, 40, 26, 74], ['130', '2XS', 66, 51.5, 42, 27, 84],
+  ['140', 'XS', 71, 54.5, 44.5, 29, 90], ['150', 'S', 77, 56, 49, 30, 94.5], ['160', 'M', 80, 59, 50, 32, 100], ['170', 'L', 83, 61, 54, 34, 105],
+  ['180', 'XL', 86, 64, 56.5, 36, 110], ['190', '2XL', 89, 66.5, 60.5, 38, 114], ['200', '3XL', 92, 69, 62, 40, 119], ['210', '4XL', 95, 71.5, 64, 41, 123],
+];
+
+/** How a size reads in pickers and specs: "170 cm (L)", "K8 (kids 8)", "XL". */
+export function sizeLabel(model: GarmentModel, size: GarmentSize): string {
+  if (model.category === 'uniform') return `${size.code} cm${size.alias ? ` (${size.alias})` : ''}`;
+  return size.code.startsWith('K') ? `${size.code} (kids ${size.code.slice(1)})` : size.code;
+}
+
+/** Sleeve length from the shoulder seam for a size: from its chart, or graded with the size. */
+export function sleeveLengthOf(model: GarmentModel, size: GarmentSize): number | undefined {
+  return model.sleeve ? (size.sleeveLengthMm ?? Math.round(model.sleeve.lengthMm * size.scale)) : undefined;
+}
+
+/** Points of measure for every size, in millimetres, for the size guide and the tech sheet. */
+export function sizeChart(model: GarmentModel) {
+  const columns: { key: 'chest' | 'length' | 'sleeve' | 'waist' | 'pants'; label: string; hint: string }[] = [
+    { key: 'chest', label: 'Chest', hint: 'Flat, armpit to armpit' },
+    { key: 'length', label: model.category === 'uniform' ? 'Jacket' : 'Length', hint: 'From the high point of the shoulder' },
+  ];
+  if (model.sleeve) columns.push({ key: 'sleeve', label: 'Sleeve', hint: 'From the shoulder seam' });
+  if (model.pants) columns.push({ key: 'waist', label: 'Waist', hint: 'Flat, relaxed' }, { key: 'pants', label: 'Pants', hint: 'Outside length' });
+  const rows = model.sizes.map((s) => ({
+    code: s.code,
+    label: sizeLabel(model, s),
+    values: { chest: s.chestFlatMm, length: s.bodyLengthMm, sleeve: sleeveLengthOf(model, s), waist: s.waistFlatMm, pants: s.pantsLengthMm } as Record<string, number | undefined>,
+  }));
+  return { columns, rows };
 }
 
 function torsoZone(id: 'front' | 'back', w: number, h: number, top: number, methods: PrintMethod[] = [...ALL_FLAT, 'SUBLIMATION']): ZoneSpec {
@@ -175,7 +240,7 @@ export const TEE_CLASSIC: GarmentModel = {
   zones: { front: torsoZone('front', 300, 400, 170), back: torsoZone('back', 300, 420, 110), ...sleeveZones(90, 90, 95) },
   zoneOrder: FOUR_ZONES,
   colorParts: TOP_PARTS,
-  sizes: adultSizes(524, 720),
+  sizes: gradedSizes({ chestFlatMm: 524, bodyLengthMm: 720, sleeveMm: 215 }, [...KIDS_SHIRTS, ...ADULT_SHIRTS]),
   defaultSize: 'M',
   fabricPresets: TEE_FABRICS,
 };
@@ -189,6 +254,7 @@ export const TEE_LONG: GarmentModel = {
   category: 'longsleeve',
   sleeve: { lengthMm: 600, angleDeg: 52, rootRadiusMm: 102, cuffRadiusMm: 46, cuff: 'rib' },
   zones: { front: torsoZone('front', 300, 400, 170), back: torsoZone('back', 300, 420, 110), ...sleeveZones(90, 380, 260) },
+  sizes: gradedSizes({ chestFlatMm: 524, bodyLengthMm: 720, sleeveMm: 600 }, [...KIDS_SHIRTS, ...ADULT_SHIRTS]),
 };
 
 export const TEE_OVERSIZED: GarmentModel = {
@@ -206,7 +272,7 @@ export const TEE_OVERSIZED: GarmentModel = {
   shoulderSlope: 0.18,
   sleeve: { lengthMm: 270, angleDeg: 40, rootRadiusMm: 128, cuffRadiusMm: 112, cuff: 'hem' },
   zones: { front: torsoZone('front', 340, 440, 175), back: torsoZone('back', 350, 470, 115), ...sleeveZones(100, 110, 110) },
-  sizes: adultSizes(600, 750),
+  sizes: gradedSizes({ chestFlatMm: 600, bodyLengthMm: 750, sleeveMm: 270 }, ADULT_SHIRTS),
   fabricPresets: [{ id: 'heavy-260', label: 'Heavyweight cotton, 260 gsm', gsm: 260, surface: 'jersey' }, ...TEE_FABRICS],
 };
 
@@ -233,7 +299,7 @@ export const POLO: GarmentModel = {
     { part: 'collar', label: 'Collar and cuffs' },
     { part: 'stitching', label: 'Stitch' },
   ],
-  sizes: adultSizes(530, 710),
+  sizes: gradedSizes({ chestFlatMm: 524, bodyLengthMm: 710, sleeveMm: 225 }, ADULT_SHIRTS),
   fabricPresets: [
     { id: 'pique-210', label: 'Cotton piqué, 210 gsm', gsm: 210, surface: 'pique' },
     { id: 'poly-pique-170', label: 'Performance piqué, 170 gsm', gsm: 170, surface: 'pique' },
@@ -265,7 +331,7 @@ export const TANK: GarmentModel = {
     { part: 'collar', label: 'Binding' },
     { part: 'stitching', label: 'Stitch' },
   ],
-  sizes: adultSizes(510, 720),
+  sizes: gradedSizes({ chestFlatMm: 510, bodyLengthMm: 720 }, [...KIDS_SINGLETS, ...ADULT_SINGLETS], ADULT_SINGLETS[2]),
   fabricPresets: [
     { id: 'jersey-160', label: 'Cotton jersey, 160 gsm', gsm: 160, surface: 'jersey' },
     { id: 'mesh-130', label: 'Athletic mesh, 130 gsm', gsm: 130, surface: 'mesh' },
@@ -302,7 +368,7 @@ export const HOODIE: GarmentModel = {
     { part: 'collar', label: 'Rib and cords' },
     { part: 'stitching', label: 'Stitch' },
   ],
-  sizes: adultSizes(584, 700),
+  sizes: gradedSizes({ chestFlatMm: 584, bodyLengthMm: 700, sleeveMm: 590 }, ADULT_SHIRTS),
   fabricPresets: [
     { id: 'fleece-320', label: 'Brushed fleece, 320 gsm', gsm: 320, surface: 'fleece' },
     { id: 'terry-280', label: 'French terry, 280 gsm', gsm: 280, surface: 'fleece' },
@@ -337,7 +403,7 @@ export const JERSEY: GarmentModel = {
     { part: 'collar', label: 'Neck trim' },
     { part: 'stitching', label: 'Stitch' },
   ],
-  sizes: adultSizes(552, 730),
+  sizes: gradedSizes({ chestFlatMm: 552, bodyLengthMm: 730, sleeveMm: 235 }, [...KIDS_SHIRTS, ...ADULT_SHIRTS]),
   fabricPresets: [
     { id: 'mesh-140', label: 'Performance mesh, 140 gsm', gsm: 140, surface: 'mesh' },
     { id: 'poly-150', label: 'Smooth polyester, 150 gsm', gsm: 150, surface: 'jersey' },
@@ -361,8 +427,9 @@ export const DOBOK: GarmentModel = {
   shortName: 'Taekwondo',
   description: 'V-neck dobok top with collar trim, wide pants and a rank belt. Club name across the back, flag and name on the chest, text down the leg.',
   category: 'uniform',
-  bodyLengthMm: 740,
-  chestHalfWidthMm: 300,
+  // Base pattern is size 170 (L) of the dobok size chart below.
+  bodyLengthMm: 830,
+  chestHalfWidthMm: 305,
   bodyHalfDepthMm: 128,
   shoulderHalfWidthMm: 262,
   neckRadiusMm: 104,
@@ -371,10 +438,10 @@ export const DOBOK: GarmentModel = {
   shoulderSlope: 0.2,
   neckline: 'dobok',
   trimWidthMm: 44,
-  sleeve: { lengthMm: 560, angleDeg: 48, rootRadiusMm: 126, cuffRadiusMm: 96, cuff: 'open' },
+  sleeve: { lengthMm: 540, angleDeg: 48, rootRadiusMm: 126, cuffRadiusMm: 96, cuff: 'open' },
   hem: 'slits',
   extras: {},
-  pants: { waistHalfWidthMm: 232, waistHalfDepthMm: 128, hipHalfWidthMm: 296, riseMm: 330, inseamMm: 740, thighRadiusMm: 140, hemRadiusMm: 118, waistFromHpsMm: 470 },
+  pants: { waistHalfWidthMm: 232, waistHalfDepthMm: 128, hipHalfWidthMm: 296, riseMm: 330, inseamMm: 720, thighRadiusMm: 140, hemRadiusMm: 118, waistFromHpsMm: 470, waistFlatMm: 340 },
   belt: { widthMm: 45 },
   zones: {
     front: torsoZone('front', 300, 260, 300, ['EMBROIDERY', 'SCREEN_PRINT', 'HEAT_TRANSFER', 'DTF']),
@@ -398,13 +465,16 @@ export const DOBOK: GarmentModel = {
     { name: 'Poom, red collar', parts: { body: '#F7F7F4', sleeves: '#F7F7F4', collar: '#B3122E', stitching: '#E2E2DD', pants: '#F7F7F4', belt: '#C8102E' } },
     { name: 'Demo team black', parts: { body: '#16161A', sleeves: '#16161A', collar: '#F7F7F4', stitching: '#2A2A30', pants: '#16161A', belt: '#16161A' } },
   ],
-  sizes: [
-    ['130', 0.78],
-    ['150', 0.89],
-    ['170', 1],
-    ['180', 1.05],
-    ['190', 1.1],
-  ].map(([code, scale]) => ({ code: code as string, scale: scale as number, chestFlatMm: Math.round(600 * (scale as number)), bodyLengthMm: Math.round(740 * (scale as number)) })),
+  sizes: DOBOK_CHART.map(([code, alias, jacket, chest, sleeve, waist, pants]) => ({
+    code,
+    alias,
+    scale: Math.sqrt((chest / 61) * (jacket / 83)),
+    chestFlatMm: chest * 10,
+    bodyLengthMm: jacket * 10,
+    sleeveLengthMm: sleeve * 10,
+    waistFlatMm: waist * 10,
+    pantsLengthMm: pants * 10,
+  })),
   defaultSize: '170',
   fabricPresets: [
     { id: 'diamond-300', label: 'Poly-cotton, diamond weave, 300 gsm', gsm: 300, surface: 'diamond' },

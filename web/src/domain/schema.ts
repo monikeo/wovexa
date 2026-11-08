@@ -49,7 +49,7 @@ export const transformSchema = z.object({
 });
 export type LayerTransform = z.infer<typeof transformSchema>;
 
-export const finishSchema = z.enum(['flat_ink', 'puff', 'embroidery', 'metallic', 'distressed']);
+export const finishSchema = z.enum(['flat_ink', 'puff', 'embroidery', 'metallic', 'distressed', 'cracked']);
 
 export const layerStyleSchema = z.object({
   opacity: finite.min(0).max(1),
@@ -272,7 +272,11 @@ export const sceneSchema = z.object({
   fovDeg: finite.min(10).max(80),
   cameras: z.array(cameraBookmarkSchema).max(12),
   /** Garment motion in the live view and video: wind through the fabric, a float, or a knit reveal. */
-  motion: z.object({ kind: z.enum(['still', 'wind', 'float', 'knit']), speed: finite.min(0.1).max(3) }).optional(),
+  motion: z.object({ kind: z.enum(['still', 'wind', 'float', 'knit', 'walk', 'hanger']), speed: finite.min(0.1).max(3) }).optional(),
+  /** How light turns into screen colour: true colour (default), filmic (AgX) or cinematic (ACES). */
+  tone: z.enum(['neutral', 'agx', 'aces']).optional(),
+  /** How the cloth falls in 3D: pressed flat, natural folds (default) or relaxed. */
+  drape: z.enum(['pressed', 'natural', 'relaxed']).optional(),
 });
 export type Scene = z.infer<typeof sceneSchema>;
 

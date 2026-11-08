@@ -8,7 +8,7 @@
  * thread, metallic sheen) is preview-only (spec TYP-06): callers opt in with `simulateFinish`,
  * and print files never do.
  */
-import type { ArtworkLayer, FillStyle, ImageAdjust, ImageContent, ImageRepeat, LayerStyle, LayerTransform, ShapeContent, Surface, TextContent, ZoneDesign } from '@/domain/schema';
+import type { ArtworkLayer, FillStyle, ImageAdjust, ImageContent, ImageRepeat, LayerStyle, LayerTransform, PrintMethod, ShapeContent, Surface, TextContent, ZoneDesign } from '@/domain/schema';
 import { getLoadedImage } from '@/lib/assets';
 import { ensureCustomFonts } from '@/lib/font-library';
 import { loadFontStylesheets, scriptFallbacks } from '@/lib/fonts';
@@ -999,6 +999,60 @@ export function distressAt(xMm: number, yMm: number, d: NonNullable<LayerStyle['
 
 const maskCache = new CanvasCache(24e6, 12e6);
 
+/**
+ * Cracked plastisol: a network of fine cracks like a heavy print after many washes. Cells are a
+ * few millimetres across; each crack is the thin band where two cells meet (Voronoi edges), with
+ * a finer second network of hairline cracks. Returns how much ink a crack removes (0–1).
+ */
+export function crackAt(xMm: number, yMm: number, cellMm: number, seed: number) {
+  const edge = (cell: number, s: number) => {
+    const gx = xMm / cell;
+    const gy = yMm / cell;
+    const ix = Math.floor(gx);
+    const iy = Math.floor(gy);
+    let f1 = Infinity;
+    let f2 = Infinity;
+    for (let j = -1; j <= 1; j++) {
+      for (let i = -1; i <= 1; i++) {
+        const cx = ix + i;
+        const cy = iy + j;
+        const d = Math.hypot(gx - (cx + 0.12 + 0.76 * hash2(cx, cy, s)), gy - (cy + 0.12 + 0.76 * hash2(cx, cy, s + 17)));
+        if (d < f1) {
+          f2 = f1;
+          f1 = d;
+        } else if (d < f2) f2 = d;
+      }
+    }
+    return ((f2 - f1) * cell) / 2;
+  };
+  const wobble = 0.6 + 0.8 * valueNoise(xMm / 3, yMm / 3, seed + 5);
+  const main = 1 - Math.min(1, Math.max(0, (edge(cellMm, seed) - 0.12 * wobble) / 0.12));
+  const fine = 1 - Math.min(1, Math.max(0, (edge(cellMm * 0.45, seed + 3) - 0.05) / 0.06));
+  // Hairlines only run part of the way, so the fine network stays broken.
+  const reach = valueNoise(xMm / (cellMm * 0.8), yMm / (cellMm * 0.8), seed + 9) > 0.55 ? 1 : 0;
+  return Math.min(1, Math.max(main, fine * reach * 0.85));
+}
+
+function crackMask(widthMm: number, heightMm: number, bleedMm: number, seed: number, pxPerMm: number) {
+  // Cracks are fractions of a millimetre, so the mask keeps up to 8 px/mm.
+  const r = Math.min(pxPerMm, 8);
+  const W = Math.max(1, Math.ceil((widthMm + 2 * bleedMm) * r));
+  const H = Math.max(1, Math.ceil((heightMm + 2 * bleedMm) * r));
+  const key = ['crack', W, H, bleedMm.toFixed(3), seed, r.toFixed(3)].join('|');
+  const hit = maskCache.get(key);
+  if (hit) return hit;
+  const mask = makeCanvas(W, H);
+  const ctx = mask.getContext('2d')!;
+  const img = ctx.createImageData(W, H);
+  for (let py = 0; py < H; py++) {
+    const y = (py + 0.5) / r - bleedMm;
+    for (let px = 0; px < W; px++) img.data[(py * W + px) * 4 + 3] = crackAt((px + 0.5) / r - bleedMm, y, 4.5, seed) * 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  maskCache.set(key, mask);
+  return mask;
+}
+
 function distressMask(widthMm: number, heightMm: number, bleedMm: number, d: NonNullable<LayerStyle['distress']>, pxPerMm: number) {
   // Masks are computed at up to 6 px/mm and scaled; their features are millimetres, not pixels.
   const r = Math.min(pxPerMm, 6);
@@ -1131,7 +1185,7 @@ function bleedPx(layer: ArtworkLayer, pxPerMm: number, simulate: boolean) {
 
 /** Whether a layer needs the offscreen effect pass rather than drawing straight onto the target. */
 export function needsEffectPass(layer: ArtworkLayer, simulate = false) {
-  return !!effectiveDistress(layer) || (layer.content.kind === 'text' && !!layer.content.shadow) || (simulate && SIMULATED.has(layer.style.finish));
+  return !!effectiveDistress(layer) || layer.style.finish === 'cracked' || (layer.content.kind === 'text' && !!layer.content.shadow) || (simulate && SIMULATED.has(layer.style.finish));
 }
 
 function drawRaw(ctx: Ctx, layer: ArtworkLayer, w: number, h: number, pxPerMm: number): boolean {
@@ -1171,6 +1225,13 @@ function renderEffects(layer: ArtworkLayer, w: number, h: number, pxPerMm: numbe
   b.setTransform(1, 0, 0, 1, 0, 0);
   if (distress) {
     const mask = distressMask(w / pxPerMm, h / pxPerMm, bleed / pxPerMm, distress, pxPerMm);
+    b.globalCompositeOperation = 'destination-out';
+    b.drawImage(mask, 0, 0, w + 2 * bleed, h + 2 * bleed);
+    b.globalCompositeOperation = 'source-over';
+  }
+  // Cracks remove ink, so like distress they are part of the print, not a preview effect.
+  if (layer.style.finish === 'cracked') {
+    const mask = crackMask(w / pxPerMm, h / pxPerMm, bleed / pxPerMm, hashString(layer.id) % 100000, pxPerMm);
     b.globalCompositeOperation = 'destination-out';
     b.drawImage(mask, 0, 0, w + 2 * bleed, h + 2 * bleed);
     b.globalCompositeOperation = 'source-over';
@@ -1239,6 +1300,125 @@ export function drawZone(ctx: Ctx, zone: ZoneDesign, opts: DrawZoneOptions): boo
     ctx.rotate((t.rotationDeg * Math.PI) / 180);
     ctx.scale(t.flipX ? -1 : 1, t.flipY ? -1 : 1);
     complete = drawLayerContent(ctx, layer, t.widthMm * pxPerMm, t.heightMm * pxPerMm, pxPerMm, opts) && complete;
+    ctx.restore();
+  }
+  return complete;
+}
+
+// ---------------------------------------------------------------------------
+// Print surface: how the ink sits on the fabric, for physically based 3D shading
+// ---------------------------------------------------------------------------
+
+/** How a print reads under light: relative height, roughness and metalness, 0–1. */
+export interface InkLook {
+  height: number;
+  roughness: number;
+  metal: number;
+  /** Soft, rounded edges (puff ink spreads as it rises), in mm. */
+  blurMm?: number;
+  /** Satin-stitch thread ridges. */
+  stitch?: boolean;
+}
+
+/** The ink each method lays down. Sublimation dyes the fibres and leaves the surface as it was. */
+const METHOD_INK: Record<PrintMethod, InkLook | null> = {
+  DTG: { height: 0.03, roughness: 0.9, metal: 0 },
+  SCREEN_PRINT: { height: 0.16, roughness: 0.6, metal: 0 },
+  DTF: { height: 0.2, roughness: 0.48, metal: 0 },
+  HEAT_TRANSFER: { height: 0.14, roughness: 0.36, metal: 0 },
+  PUFF_PRINT: { height: 1, roughness: 0.74, metal: 0, blurMm: 0.9 },
+  EMBROIDERY: { height: 0.72, roughness: 0.42, metal: 0, stitch: true },
+  SUBLIMATION: null,
+};
+
+export function inkLook(method: PrintMethod, finish: LayerStyle['finish']): InkLook | null {
+  if (finish === 'puff') return METHOD_INK.PUFF_PRINT;
+  if (finish === 'embroidery') return METHOD_INK.EMBROIDERY;
+  const base = METHOD_INK[method];
+  if (finish === 'metallic') return { height: Math.max(0.1, base?.height ?? 0.1), roughness: 0.2, metal: 0.92 };
+  return base;
+}
+
+const byte = (v: number) => Math.round(Math.min(1, Math.max(0, v)) * 255);
+
+/** Thread crowns for satin stitches, encoded as height over a constant thread roughness. */
+function stitchTile(look: InkLook, pxPerMm: number) {
+  // Satin columns about 1.8 mm apart: each thread rounds up to a glossy crown and dips into
+  // a matte groove, which is what makes embroidery catch the light in rows.
+  const period = Math.max(5, Math.round(1.8 * pxPerMm));
+  const tile = makeCanvas(period, 1);
+  const t = tile.getContext('2d')!;
+  const img = t.createImageData(period, 1);
+  for (let x = 0; x < period; x++) {
+    const crown = Math.sin((Math.PI * (x + 0.5)) / period) ** 0.7;
+    img.data[x * 4] = byte(look.height * (0.18 + 0.82 * crown));
+    img.data[x * 4 + 1] = byte(Math.min(1, look.roughness + (1 - crown) * 0.3));
+    img.data[x * 4 + 2] = byte(look.metal);
+    img.data[x * 4 + 3] = 255;
+  }
+  t.putImageData(img, 0, 0);
+  return tile;
+}
+
+/** A layer's printed coverage (with any wear, cracks and text shadow), layer-local with bleed. */
+function coverage(layer: ArtworkLayer, w: number, h: number, pxPerMm: number): { canvas: HTMLCanvasElement; bleed: number } | null {
+  if (needsEffectPass(layer, false)) return renderEffects(layer, w, h, pxPerMm, false);
+  const bleed = bleedPx(layer, pxPerMm, false);
+  const canvas = makeCanvas(Math.ceil(w) + 2 * bleed, Math.ceil(h) + 2 * bleed);
+  const c = canvas.getContext('2d')!;
+  c.translate(bleed + w / 2, bleed + h / 2);
+  return drawRaw(c, layer, w, h, pxPerMm) ? { canvas, bleed } : null;
+}
+
+export interface SurfaceDrawOptions {
+  pxPerMm: number;
+  originX?: number;
+  originY?: number;
+  overrides?: Record<string, Partial<LayerTransform>>;
+  method: PrintMethod;
+}
+
+/**
+ * Paint a zone's print surface into a material map: red is ink height (for bump), green is
+ * roughness, blue is metalness, all linear 0–1. The canvas should already hold the bare fabric.
+ * Returns false if any image was still loading.
+ */
+export function drawZoneSurface(ctx: CanvasRenderingContext2D, zone: ZoneDesign, opts: SurfaceDrawOptions): boolean {
+  let complete = true;
+  const { pxPerMm, originX = 0, originY = 0, overrides } = opts;
+  for (const id of zone.orderedLayerIds) {
+    const layer = zone.layers[id];
+    if (!layer || !layer.visible) continue;
+    const look = inkLook(opts.method, layer.style.finish);
+    if (!look) continue;
+    const t = overrides?.[id] ? { ...layer.transform, ...overrides[id] } : layer.transform;
+    const w = t.widthMm * pxPerMm;
+    const h = t.heightMm * pxPerMm;
+    const cov = coverage(layer, w, h, pxPerMm);
+    if (!cov) {
+      complete = false;
+      continue;
+    }
+    // Tint the coverage with the ink's material values.
+    const tinted = makeCanvas(cov.canvas.width, cov.canvas.height);
+    const tc = tinted.getContext('2d')!;
+    tc.drawImage(cov.canvas, 0, 0);
+    tc.globalCompositeOperation = 'source-in';
+    if (look.stitch) {
+      const pattern = tc.createPattern(stitchTile(look, pxPerMm), 'repeat');
+      pattern?.setTransform(new DOMMatrix().rotate(-38));
+      tc.fillStyle = pattern ?? `rgb(${byte(look.height)}, ${byte(look.roughness)}, ${byte(look.metal)})`;
+    } else {
+      tc.fillStyle = `rgb(${byte(look.height)}, ${byte(look.roughness)}, ${byte(look.metal)})`;
+    }
+    tc.fillRect(0, 0, tinted.width, tinted.height);
+    ctx.save();
+    ctx.globalAlpha = layer.style.opacity;
+    ctx.translate(originX + t.centerXmm * pxPerMm, originY + t.centerYmm * pxPerMm);
+    ctx.rotate((t.rotationDeg * Math.PI) / 180);
+    ctx.scale(t.flipX ? -1 : 1, t.flipY ? -1 : 1);
+    if (look.blurMm) ctx.filter = `blur(${(look.blurMm * pxPerMm).toFixed(2)}px)`;
+    ctx.drawImage(tinted, -w / 2 - cov.bleed, -h / 2 - cov.bleed);
     ctx.restore();
   }
   return complete;
