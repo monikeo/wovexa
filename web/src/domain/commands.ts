@@ -296,6 +296,17 @@ export function setGarmentSize(sizeCode: string): Command {
   return { label: `Size ${sizeCode}`, recipe: (d) => void (d.garment.sizeCode = sizeCode) };
 }
 
+/** Use a custom 3D shape (from this style's GLB template) instead of the built-in one, or go back with null. */
+export function setGarmentShape(shape: NonNullable<DesignDocument['garment']['shape']> | null): Command {
+  return {
+    label: shape ? `3D shape: ${shape.name}` : 'Built-in 3D shape',
+    recipe: (d) => {
+      if (shape) d.garment.shape = shape;
+      else delete d.garment.shape;
+    },
+  };
+}
+
 /**
  * Switch the garment style. Artwork stays where it is: layers on zones the new garment lacks
  * are kept (and flagged by preflight) so switching back restores them. Size and fabric fall
@@ -305,6 +316,8 @@ export function setGarmentModel(model: Pick<GarmentModel, 'id' | 'assetVersion' 
   return {
     label: `Garment: ${model.name}`,
     recipe: (d) => {
+      // A custom 3D shape belongs to one style.
+      if (d.garment.shape && d.garment.shape.modelId !== model.id) delete d.garment.shape;
       d.garment.modelId = model.id;
       d.garment.assetVersion = model.assetVersion;
       if (!model.sizes.some((s) => s.code === d.garment.sizeCode)) d.garment.sizeCode = model.defaultSize;

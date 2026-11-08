@@ -50,13 +50,13 @@ Nothing here has been run against a live Supabase project: the app works fully i
 
 | ID | Priority | Feature | Status | Notes |
 | --- | --- | --- | --- | --- |
-| GAR-01 | P0 | Starter garment | Partial | Eight procedural garments built from pattern measurements: arc-length UVs, edge-conforming necklines and armholes, per-panel cloth folds, baked AO. Not validated, calibrated GLBs (marked uncalibrated in the UI). |
-| GAR-02 | P1 | Garment types | Partial | Crew tee, oversized tee, long-sleeve tee, piqué polo, tank, pullover hoodie, V-neck jersey and Taekwondo dobok (top, pants and rank belt). No sweatshirt, jacket, shorts or track wear yet. |
+| GAR-01 | P0 | Starter garment | Partial | Eleven procedural garments built from pattern measurements: arc-length UVs, edge-conforming necklines and armholes, drape folds, GPU-baked AO. Every style downloads as a garment template GLB (named parts, print-layout UVs, print areas drawn on); a shape reshaped from it in Blender, Clo3D or Marvelous Designer loads back in place of the built-in one, with prints, shading, motion and renders following it. No validated, calibrated GLBs ship with the app (marked uncalibrated in the UI). |
+| GAR-02 | P1 | Garment types | Partial | Crew tee, oversized tee, cropped tee, long-sleeve tee, piqué polo, tank, pullover hoodie, crewneck sweatshirt, V-neck jersey, basketball jersey and Taekwondo dobok (top, pants and rank belt). No jacket, shorts or track wear yet. |
 | GAR-03 | P0 | Garment zones | Partial | Front, back, sleeves and, on the dobok, both legs; each garment lists only the zones it really has. Collar/neck zone not yet. |
 | GAR-04 | P1 | Construction variants | Partial | Per model: fit, sleeve length and cuff, neckline (crew, V, scoop, polo, hood, dobok), rib or slit hems, hood, kangaroo pocket, placket, drawcords. Not mixable per project. |
 | GAR-05 | P0 | Per-zone color | Done | Per-garment colour parts (body, sleeves, collar, stitching, pants, belt with rank colours), live in 2D and 3D. |
 | GAR-06 | P1 | Fabric presets | Partial | Fabric presets per garment with GSM and their own surface (jersey, piqué, fleece, mesh, rib, diamond weave). All-over fabric prints: gradient, 8 patterns, image tiles and dye effects (spiral and crumple tie-dye, acid wash, heather, dip-dye, marble). |
-| GAR-07 | P1 | Size variants | Partial | S to 2XL scale the garment; print areas are fixed per model, not per size. |
+| GAR-07 | P1 | Size variants | Partial | Sizes from real charts (shirts K2 to 8XL, singlets, dobok 100 to 210) grade chest, length, sleeve and pants separately; a custom shape grades with them. Print areas are fixed per model, not per size. |
 | GAR-08 | P1 | Tag customization | Not started |  |
 | GAR-09 | P1 | Colorway manager | Partial | Create from presets or custom, rename, recolour, delete, compare. No reorder or duplicate. |
 | GAR-10 | P2 | Material library (new) | Not started |  |
@@ -392,7 +392,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | INIT-001 | – | create Next.js+TypeScript repository, lint/type/test scaffolding, shadcn theme and resp… | Done | Next.js 16 + TypeScript, ESLint, tsc and Vitest; brand tokens. |
 | INIT-002 | – | create organization/project/document schema, Supabase migration and tested RLS policies | Partial | Schema, migration and RLS written; RLS not tested against a live project. |
 | INIT-003 | – | formalize versioned canonical document schema with Zod and sample fixtures | Done | Zod schema, version 2, migrations and fixtures in tests. |
-| INIT-004 | – | build garment authoring checklist, validated T-shirt GLB and physical zone metadata | Partial | Physical zone metadata and a procedural tee; no validated GLB. |
+| INIT-004 | – | build garment authoring checklist, validated T-shirt GLB and physical zone metadata | Partial | Physical zone metadata, procedural garments, and a garment template GLB per style with the authoring rules inside it (keep part names and UVs, trims as trim_*, metres; Meshopt or uncompressed, not Draco); custom shapes are checked on load. No validated GLB authored yet. |
 | INIT-005 | – | implement `StudioDocumentStore` with semantic commands and Undo/Redo tests | Done | Studio store with semantic commands and tested undo/redo. |
 | INIT-006 | – | build Fabric adapter for single-zone text, raster and vector with physical sizing | Done | Fabric adapter for text, raster, vector and shapes at physical size. |
 | INIT-007 | – | implement Three garment viewer with base material and safe camera controls | Done | Three.js viewer with fabric material and bounded camera. |

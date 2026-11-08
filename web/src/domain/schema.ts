@@ -292,6 +292,8 @@ export const designDocumentSchema = z.object({
     assetVersion: z.string().max(32),
     sizeCode: z.string().max(8),
     fabricPresetId: z.string().max(32),
+    /** A 3D shape made from this style's template (GLB) in Blender, Clo3D or Marvelous Designer, used instead of the built-in shape. */
+    shape: z.object({ assetId: id, name: z.string().min(1).max(120), modelId: z.string().max(64), sizeCode: z.string().max(8) }).optional(),
   }),
   activeColorwayId: id,
   colorways: z.array(colorwaySchema).min(1).max(24),

@@ -482,9 +482,10 @@ export async function findAssetByHash(sha256: string) {
   return (await db()).getFromIndex('assets', 'sha256', sha256);
 }
 
-export async function listAssets(): Promise<StoredAsset[]> {
+/** Stored assets, newest first. Images by default; 3D shapes (GLB) live in the same store. */
+export async function listAssets(kind: 'image' | 'all' = 'image'): Promise<StoredAsset[]> {
   const all = await (await db()).getAllFromIndex('assets', 'createdAt');
-  return all.reverse();
+  return (kind === 'all' ? all : all.filter((a) => a.mime.startsWith('image/'))).reverse();
 }
 
 /** Projects, versions and brand kits that reference an asset, so deletes can be refused while in use. */
