@@ -134,3 +134,54 @@ export async function removeBackground(source: HTMLImageElement | ImageBitmap, o
   const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('The image could not be encoded.'))), 'image/png'));
   return { blob, removed: removed / n, background: toHex(Math.round(br), Math.round(bg), Math.round(bb)) };
 }
+
+export interface PaletteColour {
+  hex: string;
+  /** Share of the image's opaque pixels, 0–1. */
+  share: number;
+}
+
+/**
+ * Dominant colours of an image (spec AST-08): suggestions for a palette or brand kit, never a
+ * claim that they match a manufacturing colour. Pure over RGBA pixels, so it is unit-tested.
+ */
+export function paletteFromPixels(data: Uint8ClampedArray, count = 6): PaletteColour[] {
+  const buckets = new Map<number, { n: number; r: number; g: number; b: number }>();
+  let total = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 128) continue;
+    total++;
+    const key = ((data[i] >> 4) << 8) | ((data[i + 1] >> 4) << 4) | (data[i + 2] >> 4);
+    const b = buckets.get(key) ?? { n: 0, r: 0, g: 0, b: 0 };
+    b.n++;
+    b.r += data[i];
+    b.g += data[i + 1];
+    b.b += data[i + 2];
+    buckets.set(key, b);
+  }
+  const ranked = [...buckets.values()].sort((a, b) => b.n - a.n).map((b) => ({ n: b.n, r: b.r / b.n, g: b.g / b.n, b: b.b / b.n }));
+  const picked: { n: number; r: number; g: number; b: number }[] = [];
+  for (const c of ranked) {
+    // Merge near-duplicates so the palette shows distinct colours, not shades of one.
+    const near = picked.find((p) => Math.hypot(p.r - c.r, p.g - c.g, p.b - c.b) < 48);
+    if (near) {
+      near.n += c.n;
+      continue;
+    }
+    if (picked.length < count) picked.push({ ...c });
+  }
+  return picked
+    .sort((a, b) => b.n - a.n)
+    .map((p) => ({ hex: toHex(Math.round(p.r), Math.round(p.g), Math.round(p.b)), share: total ? p.n / total : 0 }));
+}
+
+export function extractPalette(img: CanvasImageSource & { width: number; height: number }, count = 6): PaletteColour[] {
+  const size = 96;
+  const k = Math.min(1, size / Math.max(img.width, img.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(img.width * k));
+  canvas.height = Math.max(1, Math.round(img.height * k));
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return paletteFromPixels(ctx.getImageData(0, 0, canvas.width, canvas.height).data, count);
+}

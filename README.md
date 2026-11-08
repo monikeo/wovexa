@@ -6,5 +6,6 @@ From Concept to Creation.
 |---|---|
 | `WOVEXA_Product_Technical_Specification.md` | The full product and technical specification, WOVEXA edition (v1.1) |
 | `Apparel_Studio_Full_Product_Technical_Specification.md` | The original v1.0 specification, unchanged |
+| `FEATURE_STATUS.md` | Every feature ID in the specification with its status in the code: done, partial or not started |
 | `brand/` | Brand kit: logo files, colour and type tokens, and `brand-guide.html` |
 | `web/` | The web app. See `web/README.md` to run it |

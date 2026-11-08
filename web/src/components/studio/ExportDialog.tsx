@@ -1,340 +1,619 @@
 'use client';
 /**
- * Export centre, tier A browser outputs (spec §15, §31 Tier A): mockup stills from the
- * 3D view, isolated print artwork at true physical size, and a production manifest.
- * Exports always come from the saved document, never unsaved editor state.
+ * Export centre (spec §15, §31 Tier A, EXP-01…10). Everything comes from the saved document:
+ * a production package ZIP, print files with their resolution written into the file,
+ * screen-print films, a client proof PDF, team names and numbers, product images through
+ * Wovexa Render, and a history of what was exported from which revision.
  */
-import { Download, FileJson, Image as ImageIcon, Loader2, Printer } from 'lucide-react';
-import { useState } from 'react';
-import { getGarment, PRINT_METHOD_LABELS } from '@/domain/garments';
-import { runPreflight, summarize } from '@/domain/preflight';
-import { ZONE_IDS, type ZoneId } from '@/domain/schema';
-import { getLoadedImage, loadAssetImage } from '@/lib/assets';
-import { canvasToBlob, downloadBlob, loadImageFromUrl, sha256Hex, slugify } from '@/lib/download';
-import { ensureFonts, renderZoneArtwork } from '@/lib/render/zone-renderer';
-import { toast } from '@/components/ui/primitives';
+import { Archive, Box, Check, Clapperboard, Download, FileText, History, Image as ImageIcon, Loader2, Printer, RotateCcw, Smartphone, Users, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import * as cmd from '@/domain/commands';
+import { createTextLayer } from '@/domain/factory';
+import { getGarment, hasZone, partColor, PRINT_METHOD_LABELS, zoneSpecOrFirst } from '@/domain/garments';
 import { documentHash } from '@/domain/hash';
-import { approvalState } from '@/lib/local-db';
+import { runPreflight, summarize } from '@/domain/preflight';
+import type { DesignDocument, ZoneId } from '@/domain/schema';
+import { canvasToBlob, downloadBlob } from '@/lib/download';
+import { DEFAULT_PRINT_NAME, fileSafe, formatName, isoDate, NAME_TOKENS, revisionLabel, unknownTokens } from '@/lib/export/naming';
+import { buildClientProof, buildProductionPackage, designRevision, prepareDocument, zonesWithArtwork, type PackageOptions, type ProductRenderOptions, type ProductShot } from '@/lib/export/package';
+import { revisionText } from '@/lib/export/proof';
+import { pngBlobWithDpi } from '@/lib/export/png-dpi';
+import { designPlaceholders, parseRoster, sizeBreakdown, type Roster } from '@/lib/export/roster';
+import { addExportRecord, approvalState, clearExports, listExports, type ExportKind, type ExportRecord, type ProjectMeta } from '@/lib/local-db';
+import { renderZoneArtwork } from '@/lib/render/zone-renderer';
+import { toast } from '@/components/ui/primitives';
 import { useLive, useStudio } from '@/stores/studio-store';
-import { VIEW_PRESETS, viewerApi, type ViewPreset } from './viewer3d/Viewer3D';
+import { viewerApi } from './viewer3d/stage';
 
-const BACKGROUNDS = {
-  transparent: { label: 'Transparent', color: null },
-  white: { label: 'White', color: '#FFFFFF' },
-  studio: { label: 'Studio grey', color: '#ECEEF2' },
-} as const;
+type Include = PackageOptions['include'];
+interface Prefs {
+  dpi: number;
+  colorways: 'active' | 'all';
+  include: Include;
+  naming: string;
+}
 
-async function prepareImages(zones: ZoneId[]) {
-  const doc = useStudio.getState().document!;
-  const ids = zones.flatMap((z) => Object.values(doc.zones[z].layers).flatMap((l) => (l.content.kind === 'image' ? [l.content.assetId] : [])));
-  await Promise.all(ids.filter((id) => !getLoadedImage(id)).map((id) => loadAssetImage(id)));
-  await ensureFonts(zones.map((z) => doc.zones[z]));
+const PREFS_KEY = 'wovexa.export.v1';
+const DEFAULT_PREFS: Prefs = {
+  dpi: 300,
+  colorways: 'all',
+  include: { print: true, separations: true, flats: true, mockups: true, proof: true, techSheet: true, cutAndSew: false, model: false },
+  naming: DEFAULT_PRINT_NAME,
+};
+
+function readPrefs(): Prefs {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw) return DEFAULT_PREFS;
+    const p = JSON.parse(raw) as Partial<Prefs>;
+    // The first template wrote "r{rev}"; {rev} now carries its own prefix.
+    if (p.naming === '{project}_{zone}_{w}x{h}mm_{dpi}dpi_r{rev}') p.naming = DEFAULT_PRINT_NAME;
+    return { ...DEFAULT_PREFS, ...p, include: { ...DEFAULT_PREFS.include, ...p.include } };
+  } catch {
+    return DEFAULT_PREFS;
+  }
+}
+
+function writePrefs(p: Prefs) {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+  } catch {}
+}
+
+const nextFrames = () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+
+/** Open the 3D view if it is closed, and wait for it to be ready to render. */
+async function ensureViewer() {
+  if (viewerApi.capture) return true;
+  const s = useStudio.getState();
+  if (s.viewMode === '2d') s.setViewMode('split');
+  for (let i = 0; i < 80 && !viewerApi.capture; i++) await new Promise((r) => setTimeout(r, 100));
+  await nextFrames();
+  return !!viewerApi.capture;
+}
+
+/** Front, back and three-quarter product images of one colourway. */
+async function renderProducts(colorwayId: string, opts: ProductRenderOptions = {}): Promise<ProductShot[]> {
+  if (useLive.getState().colorwayOverride !== colorwayId) {
+    useLive.getState().setColorwayOverride(colorwayId);
+    await nextFrames();
+  }
+  if (!viewerApi.capture) throw new Error('The 3D view closed during export.');
+  const shots = await viewerApi.capture({
+    shots: [
+      { kind: 'preset', view: 'front' },
+      { kind: 'preset', view: 'back' },
+      { kind: 'preset', view: 'three_quarter' },
+    ],
+    width: opts.width ?? 1600,
+    height: opts.height ?? 2000,
+    background: opts.transparent ? 'transparent' : 'scene',
+  });
+  return shots.map((s) => ({ view: s.key, label: s.label, canvas: s.canvas }));
+}
+
+function approvalOf(meta: ProjectMeta | null) {
+  const state = meta ? approvalState(meta) : 'draft';
+  if (meta && state === 'approved') return { label: `Approved, version ${meta.approvedVersionNumber}`, status: 'approved' as const, versionNumber: meta.approvedVersionNumber, hash: meta.approvedHash };
+  if (meta && state === 'changed') return { label: 'Changed since approval', status: 'changed-since-approval' as const, versionNumber: meta.approvedVersionNumber, hash: meta.approvedHash };
+  return { label: 'Draft, not yet approved', status: 'draft' as const };
+}
+
+function formatBytes(n: number) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / 1048576).toFixed(1)} MB`;
+}
+
+function relativeTime(ts: number) {
+  const s = Math.round((ts - Date.now()) / 1000);
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  if (Math.abs(s) < 60) return rtf.format(s, 'second');
+  if (Math.abs(s) < 3600) return rtf.format(Math.round(s / 60), 'minute');
+  if (Math.abs(s) < 86400) return rtf.format(Math.round(s / 3600), 'hour');
+  return rtf.format(Math.round(s / 86400), 'day');
+}
+
+const KIND_ICON: Record<ExportKind, typeof Archive> = { package: Archive, print: Printer, proof: FileText, team: Users, manifest: FileText, mockups: ImageIcon };
+
+function Option({ checked, onChange, title, hint, disabled }: { checked: boolean; onChange: (v: boolean) => void; title: string; hint: string; disabled?: boolean }) {
+  return (
+    <label className={`flex items-start gap-3 rounded-lg px-2 py-1.5 ${disabled ? 'cursor-not-allowed opacity-55' : 'cursor-pointer hover:bg-hover'}`}>
+      <input type="checkbox" className="mt-[3px] h-4 w-4 flex-none accent-[var(--accent)]" checked={checked && !disabled} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
+      <span className="min-w-0">
+        <span className="block text-[13px] font-medium leading-5">{title}</span>
+        <span className="block text-xs leading-4 text-fg-2">{hint}</span>
+      </span>
+    </label>
+  );
+}
+
+/** Name and number layers on the back (or front), ready for a roster. */
+function addTeamLayers(doc: DesignDocument) {
+  const model = getGarment(doc.garment.modelId);
+  const zoneId: ZoneId = hasZone(model, 'back') ? 'back' : model.zoneOrder[0];
+  const spec = zoneSpecOrFirst(model, zoneId);
+  const colorway = doc.colorways.find((c) => c.id === doc.activeColorwayId) ?? doc.colorways[0];
+  const body = partColor(colorway, 'body').replace('#', '');
+  const lum = (parseInt(body.slice(0, 2), 16) * 299 + parseInt(body.slice(2, 4), 16) * 587 + parseInt(body.slice(4, 6), 16) * 114) / 1000;
+  const ink = lum < 140 ? '#FFFFFF' : '#111111';
+  const w = spec.printableWidthMm;
+  const h = spec.printableHeightMm;
+  const name = createTextLayer(spec, '{name}');
+  name.name = 'Player name';
+  Object.assign(name.content, { fontFamily: 'Graduate', fontWeight: 400, fill: ink, letterSpacingEm: 0.04 });
+  Object.assign(name.transform, { centerXmm: w / 2, centerYmm: Math.min(h * 0.12, 60), widthMm: Math.min(w * 0.82, 280), heightMm: Math.min(h * 0.14, 60) });
+  const number = createTextLayer(spec, '{number}');
+  number.name = 'Player number';
+  Object.assign(number.content, { fontFamily: 'Graduate', fontWeight: 400, fill: ink });
+  Object.assign(number.transform, { centerXmm: w / 2, centerYmm: Math.min(h * 0.12, 60) + Math.min(h * 0.44, 210) / 2 + 30, widthMm: Math.min(w * 0.7, 230), heightMm: Math.min(h * 0.44, 210) });
+  const s = useStudio.getState();
+  s.dispatch(cmd.batch('Add name and number', [cmd.addLayer(zoneId, name), cmd.addLayer(zoneId, number)]));
+  s.setActiveZone(zoneId);
 }
 
 export function ExportPanel() {
   const doc = useStudio((s) => s.document);
-  const viewMode = useStudio((s) => s.viewMode);
-  const setViewMode = useStudio((s) => s.setViewMode);
-  const [views, setViews] = useState<ViewPreset[]>(['front', 'back']);
-  const [background, setBackground] = useState<keyof typeof BACKGROUNDS>('white');
-  const [layout, setLayout] = useState<'sheet' | 'separate'>('sheet');
-  const [dpi, setDpi] = useState(300);
-  const [allColorways, setAllColorways] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
   const meta = useStudio((s) => s.meta);
+  const viewMode = useStudio((s) => s.viewMode);
+  const [prefs, setPrefsState] = useState<Prefs>(readPrefs);
+  const [rosterText, setRosterText] = useState('');
+  const [progress, setProgress] = useState<{ label: string; fraction: number } | null>(null);
+  const [history, setHistory] = useState<ExportRecord[]>([]);
+  const [currentHash, setCurrentHash] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const roster = useMemo<Roster>(() => parseRoster(rosterText), [rosterText]);
+  const projectId = doc?.projectId;
+
+  useEffect(() => {
+    if (!projectId) return;
+    let alive = true;
+    void listExports(projectId).then((list) => alive && setHistory(list));
+    return () => {
+      alive = false;
+    };
+  }, [projectId]);
+  useEffect(() => {
+    if (!doc) return;
+    let alive = true;
+    void documentHash(doc).then((h) => alive && setCurrentHash(h));
+    return () => {
+      alive = false;
+    };
+  }, [doc]);
+
   if (!doc) return null;
-
   const model = getGarment(doc.garment.modelId);
-  const base = slugify(doc.title);
-  const colorway = doc.colorways.find((c) => c.id === doc.activeColorwayId)!;
-  const zonesWithArt = ZONE_IDS.filter((z) => doc.zones[z].orderedLayerIds.some((id) => doc.zones[z].layers[id].visible));
+  const zones = zonesWithArtwork(doc);
+  const screenZones = zones.filter((z) => doc.zones[z].printMethod === 'SCREEN_PRINT');
+  const mainColorway = doc.colorways.find((c) => c.id === doc.activeColorwayId) ?? doc.colorways[0];
+  const allOver = !!mainColorway?.surfaces && Object.values(mainColorway.surfaces).some(Boolean);
+  const placeholders = designPlaceholders(doc);
+  const missingFields = roster.rows.length ? placeholders.filter((p) => !roster.fields.includes(p)) : [];
+  const sizes = sizeBreakdown(roster);
   const { errors } = summarize(runPreflight(doc));
-  const viewerReady = viewMode !== '2d';
+  const busy = progress !== null;
+  const team = roster.rows.length && placeholders.length ? roster : null;
+  const approval = approvalOf(meta);
+  const rev = currentHash ? revisionLabel(doc.revision, currentHash, approval.status === 'approved' ? approval.versionNumber : null) : '';
+  const example = formatName(prefs.naming, {
+    project: doc.title,
+    zone: zones[0] ?? 'front',
+    colorway: doc.colorways[0]?.name,
+    size: doc.garment.sizeCode,
+    method: PRINT_METHOD_LABELS[doc.zones[zones[0] ?? 'front'].printMethod],
+    w: zoneSpecOrFirst(model, zones[0] ?? 'front').printableWidthMm,
+    h: zoneSpecOrFirst(model, zones[0] ?? 'front').printableHeightMm,
+    dpi: prefs.dpi,
+    rev,
+    date: isoDate(),
+    name: team?.rows[0]?.name,
+    number: team?.rows[0]?.number,
+  });
+  const strange = unknownTokens(prefs.naming);
 
-  const run = async (name: string, task: () => Promise<void>) => {
-    setBusy(name);
+  const setPrefs = (patch: Partial<Prefs>) =>
+    setPrefsState((p) => {
+      const next = { ...p, ...patch, include: { ...p.include, ...patch.include } };
+      writePrefs(next);
+      return next;
+    });
+  const setInclude = (key: keyof Include, value: boolean) => setPrefs({ include: { ...prefs.include, [key]: value } });
+
+  const record = async (kind: ExportKind, label: string, fileName: string, fileCount: number, bytes: number, settings: Record<string, unknown>) => {
+    const current = useStudio.getState().document!;
+    const revisionLabel = await designRevision(current, approvalOf(useStudio.getState().meta));
+    const rec = await addExportRecord({ projectId: current.projectId, kind, label, revision: current.revision, revisionLabel, contentHash: await documentHash(current), fileName, fileCount, bytes, settings }).catch(() => null);
+    if (rec) setHistory((h) => [rec, ...h].slice(0, 12));
+  };
+
+  /** Save, run an export with progress and cancel, and always restore the live colourway. */
+  const run = async (task: (signal: AbortSignal) => Promise<void>) => {
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setProgress({ label: 'Saving the design', fraction: 0 });
     try {
       await useStudio.getState().saveNow();
-      await task();
+      await task(controller.signal);
     } catch (error) {
-      toast(error instanceof Error ? error.message : 'Export failed. Try again.', 'error');
+      if (error instanceof DOMException && error.name === 'AbortError') toast('Export cancelled.');
+      else toast(error instanceof Error ? error.message : 'Export failed. Try again.', 'error');
     } finally {
-      setBusy(null);
+      useLive.getState().setColorwayOverride(null);
+      abortRef.current = null;
+      setProgress(null);
     }
   };
 
-  const exportMockups = () =>
-    run('mockups', async () => {
-      if (!viewerApi.capture) throw new Error('Open the 3D or Split view to export mockup images.');
-      const fill = BACKGROUNDS[background].color;
-      if (allColorways && doc.colorways.length > 1) {
-        await exportAllColorways(fill);
-        return;
-      }
-      const shots = await viewerApi.capture({ views, width: 1600, height: 2000 });
-      const flatten = async (dataUrl: string) => {
-        const img = await loadImageFromUrl(dataUrl);
-        const c = document.createElement('canvas');
-        c.width = img.width;
-        c.height = img.height;
-        const ctx = c.getContext('2d')!;
-        if (fill) {
-          ctx.fillStyle = fill;
-          ctx.fillRect(0, 0, c.width, c.height);
-        }
-        ctx.drawImage(img, 0, 0);
-        return c;
-      };
-      const suffix = `${slugify(colorway.name)}-r${doc.revision}`;
-      if (layout === 'separate' || shots.length === 1) {
-        for (const shot of shots) {
-          const c = await flatten(shot.dataUrl);
-          downloadBlob(await canvasToBlob(c), `${base}_${shot.view}_${suffix}.png`);
-        }
-      } else {
-        const tiles = await Promise.all(shots.map((s) => flatten(s.dataUrl)));
-        const cols = tiles.length <= 2 ? tiles.length : 2;
-        const rows = Math.ceil(tiles.length / cols);
-        const w = tiles[0].width;
-        const h = tiles[0].height;
-        const sheet = document.createElement('canvas');
-        sheet.width = w * cols;
-        sheet.height = h * rows;
-        const ctx = sheet.getContext('2d')!;
-        if (fill) {
-          ctx.fillStyle = fill;
-          ctx.fillRect(0, 0, sheet.width, sheet.height);
-        }
-        tiles.forEach((t, i) => ctx.drawImage(t, (i % cols) * w, Math.floor(i / cols) * h));
-        downloadBlob(await canvasToBlob(sheet), `${base}_views_${suffix}.png`);
-      }
-      toast(`Exported ${shots.length} view${shots.length > 1 ? 's' : ''}.`, 'success');
-    });
-
-  /** Batch render (spec MED-09): every colourway × chosen views, one contact sheet or one file each. */
-  const exportAllColorways = async (fill: string | null) => {
-    const live = useLive.getState();
-    const nextFrames = () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
-    const rows: { name: string; tiles: HTMLCanvasElement[] }[] = [];
-    try {
-      for (const c of doc.colorways) {
-        live.setColorwayOverride(c.id);
-        await nextFrames();
-        const shots = await viewerApi.capture!({ views, width: 1200, height: 1500 });
-        const tiles: HTMLCanvasElement[] = [];
-        for (const shot of shots) {
-          const img = await loadImageFromUrl(shot.dataUrl);
-          const t = document.createElement('canvas');
-          t.width = img.width;
-          t.height = img.height;
-          const ctx = t.getContext('2d')!;
-          if (fill) {
-            ctx.fillStyle = fill;
-            ctx.fillRect(0, 0, t.width, t.height);
-          }
-          ctx.drawImage(img, 0, 0);
-          tiles.push(t);
-        }
-        rows.push({ name: c.name, tiles });
-      }
-    } finally {
-      live.setColorwayOverride(null);
-    }
-    if (layout === 'separate') {
-      for (const row of rows) {
-        for (const [i, tile] of row.tiles.entries()) downloadBlob(await canvasToBlob(tile), `${base}_${views[i]}_${slugify(row.name)}_r${doc.revision}.png`);
-      }
-    } else {
-      const w = rows[0].tiles[0].width;
-      const h = rows[0].tiles[0].height;
-      const labelH = 90;
-      const sheet = document.createElement('canvas');
-      sheet.width = w * views.length;
-      sheet.height = (h + labelH) * rows.length;
-      const ctx = sheet.getContext('2d')!;
-      ctx.fillStyle = fill ?? '#FFFFFF';
-      ctx.fillRect(0, 0, sheet.width, sheet.height);
-      rows.forEach((row, r) => {
-        ctx.fillStyle = '#111111';
-        ctx.font = '600 44px system-ui, sans-serif';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(row.name, 48, r * (h + labelH) + labelH / 2);
-        row.tiles.forEach((tile, c) => ctx.drawImage(tile, c * w, r * (h + labelH) + labelH));
+  const exportPackage = (opts: PackageOptions, kind: ExportKind, label: string) =>
+    run(async (signal) => {
+      const viewer = opts.include.mockups || opts.include.model ? await ensureViewer() : false;
+      const current = useStudio.getState().document!;
+      const result = await buildProductionPackage(current, opts, {
+        renderProducts: viewer ? renderProducts : undefined,
+        renderModel: viewer && viewerApi.exportModel ? () => viewerApi.exportModel!('glb') : undefined,
+        approval: approvalOf(useStudio.getState().meta),
+        signal,
+        onProgress: (l, fraction) => setProgress({ label: l, fraction }),
       });
-      downloadBlob(await canvasToBlob(sheet), `${base}_all-colourways_r${doc.revision}.png`);
+      downloadBlob(result.blob, result.fileName);
+      await record(kind, label, result.fileName, result.files.length + 1, result.blob.size, { dpi: opts.dpi, colorways: opts.colorways, include: opts.include, people: opts.roster?.rows.length ?? 0 });
+      toast(`${label}: ${result.files.length + 1} files, ${formatBytes(result.blob.size)}.`, 'success');
+      for (const w of result.warnings.slice(0, 2)) toast(w);
+    });
+
+  const fullPackage = () => exportPackage({ dpi: prefs.dpi, naming: prefs.naming, include: { ...prefs.include, separations: prefs.include.separations && screenZones.length > 0 }, colorways: prefs.colorways, roster: team }, 'package', 'Production package');
+
+  const printFiles = () => {
+    if (!zones.length) {
+      toast('There is no artwork to export yet.', 'error');
+      return;
     }
-    toast(`Exported ${rows.length} colourways × ${views.length} views.`, 'success');
+    if (zones.length > 1) {
+      void exportPackage(
+        { dpi: prefs.dpi, naming: prefs.naming, include: { print: true, separations: false, flats: false, mockups: false, proof: false, techSheet: false }, colorways: 'active', roster: null },
+        'print',
+        'Print files',
+      );
+      return;
+    }
+    void run(async () => {
+      const current = useStudio.getState().document!;
+      const zoneId = zones[0];
+      const spec = zoneSpecOrFirst(model, zoneId);
+      setProgress({ label: `Rendering ${spec.label.toLowerCase()} at ${prefs.dpi} dpi`, fraction: 0.3 });
+      await prepareDocument(current, [zoneId]);
+      const { canvas, dpi } = renderZoneArtwork(current.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, prefs.dpi);
+      const blob = await pngBlobWithDpi(await canvasToBlob(canvas), dpi);
+      const label = await designRevision(current, approvalOf(useStudio.getState().meta));
+      const fileName = `${formatName(prefs.naming, { project: current.title, zone: zoneId, colorway: current.colorways[0]?.name, size: current.garment.sizeCode, method: PRINT_METHOD_LABELS[current.zones[zoneId].printMethod], w: spec.printableWidthMm, h: spec.printableHeightMm, dpi, rev: label, date: isoDate() })}.png`;
+      downloadBlob(blob, fileName);
+      await record('print', 'Print file', fileName, 1, blob.size, { dpi });
+      toast(dpi < prefs.dpi ? `Exported at ${dpi} dpi to stay within the browser's image size limit.` : `Exported ${spec.label.toLowerCase()} at ${dpi} dpi, ${spec.printableWidthMm} × ${spec.printableHeightMm} mm.`, dpi < prefs.dpi ? undefined : 'success');
+    });
   };
 
-  const exportPrintFiles = () =>
-    run('print', async () => {
-      if (!zonesWithArt.length) throw new Error('There is no artwork to export yet.');
-      await prepareImages(zonesWithArt);
+  const proof = () =>
+    run(async (signal) => {
+      const viewer = await ensureViewer();
       const current = useStudio.getState().document!;
-      for (const zoneId of zonesWithArt) {
-        const spec = model.zones[zoneId];
-        const { canvas, dpi: actual } = renderZoneArtwork(current.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, dpi);
-        downloadBlob(await canvasToBlob(canvas), `${base}_${zoneId}_print_${spec.printableWidthMm}x${spec.printableHeightMm}mm_${actual}dpi_r${current.revision}.png`);
-        if (actual < dpi) toast(`${spec.label} was exported at ${actual} dpi to stay within the browser's image size limit.`);
-      }
-      toast(`Exported print files for ${zonesWithArt.length} zone${zonesWithArt.length > 1 ? 's' : ''}.`, 'success');
+      const result = await buildClientProof(current, { colorways: prefs.colorways, roster: team }, { renderProducts: viewer ? renderProducts : undefined, approval: approvalOf(useStudio.getState().meta), signal, onProgress: (l, fraction) => setProgress({ label: l, fraction }) });
+      downloadBlob(result.blob, result.fileName);
+      await record('proof', 'Client proof', result.fileName, 1, result.blob.size, { colorways: prefs.colorways });
+      toast('Client proof ready to send.', 'success');
     });
 
-  const exportManifest = () =>
-    run('manifest', async () => {
-      await prepareImages(zonesWithArt);
+  /** The garment as a 3D model: GLB for viewers and engines, USDZ for AR Quick Look. */
+  const exportModel3d = (format: 'glb' | 'usdz') =>
+    run(async () => {
+      setProgress({ label: 'Opening the 3D view', fraction: 0.1 });
+      if (!(await ensureViewer()) || !viewerApi.exportModel) throw new Error('The 3D view could not open. Try the Split or 3D view, then export again.');
+      setProgress({ label: format === 'glb' ? 'Building the 3D model' : 'Building the AR model', fraction: 0.4 });
       const current = useStudio.getState().document!;
-      const outputs = [];
-      for (const zoneId of zonesWithArt) {
-        const spec = model.zones[zoneId];
-        const { canvas, dpi: actual } = renderZoneArtwork(current.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, dpi);
-        const blob = await canvasToBlob(canvas);
-        outputs.push({
-          zone: zoneId,
-          filename: `${base}_${zoneId}_print_${spec.printableWidthMm}x${spec.printableHeightMm}mm_${actual}dpi_r${current.revision}.png`,
-          format: 'png',
-          colorSpace: 'sRGB',
-          physicalWidthMm: spec.printableWidthMm,
-          physicalHeightMm: spec.printableHeightMm,
-          pixelWidth: canvas.width,
-          pixelHeight: canvas.height,
-          dpi: actual,
-          printMethod: current.zones[zoneId].printMethod,
-          sha256: await sha256Hex(blob),
-        });
-      }
-      const issues = runPreflight(current);
-      const manifest = {
-        packageVersion: 1,
-        generator: 'WOVEXA web',
-        projectId: current.projectId,
-        documentId: current.id,
-        title: current.title,
-        revision: current.revision,
-        garment: { ...current.garment, modelName: model.name, calibrated: model.calibrated },
-        colorway,
-        units: 'mm',
-        outputs,
-        preflight: issues.filter((i) => i.severity !== 'info').map(({ severity, code, zoneId, layerId, message }) => ({ severity, code, zoneId, layerId, message })),
-        approval:
-          meta && approvalState(meta) === 'approved'
-            ? { status: 'approved', versionNumber: meta.approvedVersionNumber, contentHash: meta.approvedHash }
-            : { status: meta?.approvedHash ? 'changed-since-approval' : 'draft', approvedVersionNumber: meta?.approvedVersionNumber ?? null },
-        contentHash: await documentHash(current),
-        production: {
-          constructionNotes: current.production.constructionNotes,
-          factoryContact: current.production.factoryContact,
-          billOfMaterials: current.production.bom,
-          qaChecklist: current.production.qa,
-        },
-        notes: 'Screen colours are sRGB previews. Confirm colour, placement and print method with a physical proof before production.',
-        generatedAt: new Date().toISOString(),
-      };
-      downloadBlob(new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' }), `${base}_manifest_r${current.revision}.json`);
+      const blob = await viewerApi.exportModel(format);
+      const colorway = current.colorways.find((c) => c.id === current.activeColorwayId) ?? current.colorways[0];
+      const fileName = `${fileSafe(current.title) || 'garment'}_${fileSafe(colorway.name)}.${format}`;
+      downloadBlob(blob, fileName);
+      await record('mockups', format === 'glb' ? '3D model' : 'AR model', fileName, 1, blob.size, { format });
+      toast(format === 'glb' ? `Exported a ${formatBytes(blob.size)} GLB. It opens in web viewers, Blender and Android AR.` : `Exported a ${formatBytes(blob.size)} USDZ. Open it on an iPhone or iPad to place the garment in your room.`, 'success');
     });
+
+  const teamFiles = () => exportPackage({ dpi: prefs.dpi, naming: prefs.naming.includes('{name}') ? prefs.naming : `{number}_{name}_${prefs.naming}`, include: { print: false, separations: false, flats: false, mockups: false, proof: false, techSheet: false }, colorways: 'active', roster: team }, 'team', 'Team files');
+
+  const openRender = () => {
+    const s = useStudio.getState();
+    s.setExportOpen(false);
+    s.setMobileSheet(null);
+    s.setPanel('render');
+  };
 
   return (
-    <div className="space-y-6 p-4">
+    <div className="space-y-5 p-4">
       {errors > 0 ? (
-        <p className="rounded-lg border border-danger/40 p-3 text-sm">
-          <span className="font-semibold text-danger">{errors} print {errors === 1 ? 'issue' : 'issues'} to fix.</span> You can still export previews; fix them before sending files to production.
+        <p className="rounded-xl border border-danger/40 px-3 py-2.5 text-[13px]">
+          <span className="font-semibold text-danger">
+            {errors} print {errors === 1 ? 'issue' : 'issues'} to fix.
+          </span>{' '}
+          Previews and proofs can go out now; fix these before files go to production.
         </p>
       ) : null}
 
-      <section>
-        <h3 className="panel-title flex items-center gap-2">
-          <ImageIcon size={15} /> Mockup images
-        </h3>
-        <p className="mt-1 text-xs text-fg-2">1600 × 2000 px per view (4:5, the common shop listing size).</p>
-        <fieldset className="mt-3">
-          <legend className="label mb-1.5">Views</legend>
-          <div className="flex flex-wrap gap-1.5">
-            {(Object.keys(VIEW_PRESETS) as ViewPreset[]).map((v) => {
-              const on = views.includes(v);
-              return (
-                <button
-                  key={v}
-                  className={`btn min-h-8 px-3 text-xs ${on ? 'btn-ink' : 'btn-outline'}`}
-                  aria-pressed={on}
-                  onClick={() => setViews(on ? views.filter((x) => x !== v) : [...views, v])}
-                >
-                  {v === 'three_quarter' ? 'Three-quarter' : VIEW_PRESETS[v].label}
-                </button>
-              );
-            })}
+      {progress ? (
+        <div className="rounded-xl border border-line p-3" role="status" aria-live="polite">
+          <div className="flex items-center justify-between gap-3 text-[13px]">
+            <span className="flex min-w-0 items-center gap-2">
+              <Loader2 size={14} className="flex-none animate-spin text-accent" />
+              <span className="truncate">{progress.label}</span>
+            </span>
+            <span className="num text-xs text-fg-2">{Math.round(progress.fraction * 100)}%</span>
           </div>
-        </fieldset>
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <label className="grid gap-1">
-            <span className="label">Background</span>
-            <select className="field" value={background} onChange={(e) => setBackground(e.target.value as keyof typeof BACKGROUNDS)}>
-              {Object.entries(BACKGROUNDS).map(([k, b]) => (
-                <option key={k} value={k}>
-                  {b.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-1">
-            <span className="label">Files</span>
-            <select className="field" value={layout} onChange={(e) => setLayout(e.target.value as 'sheet' | 'separate')}>
-              <option value="sheet">One sheet</option>
-              <option value="separate">One file per view</option>
-            </select>
-          </label>
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-hover">
+            <div className="h-full rounded-full bg-[var(--accent)] transition-[width] duration-300" style={{ width: `${Math.max(4, progress.fraction * 100)}%` }} />
+          </div>
+          <button className="btn btn-ghost mt-2 min-h-8 px-2 text-xs" onClick={() => abortRef.current?.abort()}>
+            <X size={13} /> Cancel
+          </button>
         </div>
-        {doc.colorways.length > 1 ? (
-          <label className="mt-3 flex items-center gap-2 text-sm">
-            <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]" checked={allColorways} onChange={(e) => setAllColorways(e.target.checked)} />
-            Every colourway ({doc.colorways.length}), not just {doc.colorways.find((c) => c.id === doc.activeColorwayId)?.name}
-          </label>
+      ) : null}
+
+      {/* The production package: the main thing most people export. */}
+      <section className="rounded-2xl border border-line p-4">
+        <div className="flex items-start gap-3">
+          <span className="grid h-9 w-9 flex-none place-items-center rounded-xl bg-inverse text-fg-inverse" aria-hidden>
+            <Archive size={17} />
+          </span>
+          <div className="min-w-0">
+            <h3 className="text-[15px] font-semibold leading-tight">Production package</h3>
+            <p className="mt-0.5 text-xs text-fg-2">Everything a factory or print shop needs, in one ZIP.</p>
+          </div>
+        </div>
+        <div className="mt-3 space-y-0.5">
+          <Option checked={prefs.include.print} onChange={(v) => setInclude('print', v)} title="Print files" hint={zones.length ? `${zones.length} ${zones.length === 1 ? 'zone' : 'zones'}, true size, resolution written into each PNG` : 'Add artwork to make print files'} disabled={!zones.length} />
+          <Option
+            checked={prefs.include.separations}
+            onChange={(v) => setInclude('separations', v)}
+            title="Screen-print films"
+            hint={screenZones.length ? `One film per ink for ${screenZones.length} screen-printed ${screenZones.length === 1 ? 'zone' : 'zones'}, with registration marks` : 'Set a zone to Screen print to make colour films'}
+            disabled={!screenZones.length}
+          />
+          <Option checked={prefs.include.flats} onChange={(v) => setInclude('flats', v)} title="Placement drawings" hint="Each print on the garment flat, per colourway" />
+          <Option checked={prefs.include.mockups} onChange={(v) => setInclude('mockups', v)} title="Product images" hint={viewMode === '2d' ? 'Front, back and three-quarter; the 3D view opens while exporting' : 'Front, back and three-quarter from the 3D view'} />
+          <Option checked={prefs.include.proof} onChange={(v) => setInclude('proof', v)} title="Client proof" hint="Two-page PDF with sizes, colours and an approval line" />
+          <Option checked={prefs.include.techSheet} onChange={(v) => setInclude('techSheet', v)} title="Tech sheet" hint="Colours, fonts, placements, materials and QA, as a web page" />
+          <Option
+            checked={!!prefs.include.cutAndSew}
+            onChange={(v) => setInclude('cutAndSew', v)}
+            title="Cut-and-sew panels"
+            hint={allOver ? 'Every pattern piece with its all-over print, 10 mm bleed, 120 dpi. Recommended for this design' : 'Every pattern piece with its print and 10 mm bleed, for all-over sublimation'}
+          />
+          <Option checked={!!prefs.include.model} onChange={(v) => setInclude('model', v)} title="3D model" hint="GLB in metres, for web viewers, Blender and AR" />
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <div>
+            <span className="label">Resolution</span>
+            <div className="seg mt-1 w-full" role="group" aria-label="Print resolution">
+              {[150, 300, 600].map((d) => (
+                <button key={d} className="flex-1" aria-pressed={prefs.dpi === d} onClick={() => setPrefs({ dpi: d })}>
+                  {d}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <span className="label">Colourways</span>
+            <div className="seg mt-1 w-full" role="group" aria-label="Colourways to include">
+              <button className="flex-1" aria-pressed={prefs.colorways === 'active'} onClick={() => setPrefs({ colorways: 'active' })}>
+                Main
+              </button>
+              <button className="flex-1" aria-pressed={prefs.colorways === 'all'} onClick={() => setPrefs({ colorways: 'all' })} disabled={doc.colorways.length < 2}>
+                All {doc.colorways.length}
+              </button>
+            </div>
+          </div>
+        </div>
+        {team ? (
+          <p className="mt-3 flex items-center gap-2 text-xs text-fg-2">
+            <Users size={13} /> Includes {team.rows.length} personalised team {team.rows.length === 1 ? 'set' : 'sets'}.
+          </p>
         ) : null}
-        {viewerReady ? (
-          <button className="btn btn-primary mt-3 w-full" disabled={!views.length || !!busy} onClick={exportMockups}>
-            {busy === 'mockups' ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} Download mockups
-          </button>
-        ) : (
-          <button className="btn btn-outline mt-3 w-full" onClick={() => setViewMode('split')}>
-            Show the 3D view to export mockups
-          </button>
-        )}
+        <button className="btn btn-primary mt-4 w-full" disabled={busy} onClick={() => void fullPackage()}>
+          <Download size={15} /> Download package
+        </button>
       </section>
 
+      {/* One-off exports. */}
+      <section className="grid grid-cols-2 gap-2">
+        <button className="btn btn-outline h-auto flex-col items-start gap-0.5 px-3 py-2.5 text-left" disabled={busy || !zones.length} onClick={printFiles}>
+          <span className="flex items-center gap-2 text-[13px] font-semibold">
+            <Printer size={14} /> Print files
+          </span>
+          <span className="text-[11px] font-normal text-fg-2">{zones.length > 1 ? `${zones.length} PNGs in a ZIP` : 'True-size PNG'}, {prefs.dpi} dpi</span>
+        </button>
+        <button className="btn btn-outline h-auto flex-col items-start gap-0.5 px-3 py-2.5 text-left" disabled={busy} onClick={() => void proof()}>
+          <span className="flex items-center gap-2 text-[13px] font-semibold">
+            <FileText size={14} /> Client proof
+          </span>
+          <span className="text-[11px] font-normal text-fg-2">PDF for approval</span>
+        </button>
+        <button className="btn btn-outline h-auto flex-col items-start gap-0.5 px-3 py-2.5 text-left" disabled={busy} onClick={() => void exportModel3d('glb')}>
+          <span className="flex items-center gap-2 text-[13px] font-semibold">
+            <Box size={14} /> 3D model
+          </span>
+          <span className="text-[11px] font-normal text-fg-2">GLB for viewers and Blender</span>
+        </button>
+        <button className="btn btn-outline h-auto flex-col items-start gap-0.5 px-3 py-2.5 text-left" disabled={busy} onClick={() => void exportModel3d('usdz')}>
+          <span className="flex items-center gap-2 text-[13px] font-semibold">
+            <Smartphone size={14} /> AR model
+          </span>
+          <span className="text-[11px] font-normal text-fg-2">USDZ for iPhone and iPad</span>
+        </button>
+        <button className="btn btn-outline col-span-2 h-auto items-center justify-start gap-3 px-3 py-2.5 text-left" onClick={openRender} disabled={busy}>
+          <Clapperboard size={15} className="flex-none" />
+          <span className="min-w-0">
+            <span className="block text-[13px] font-semibold">Product images and video</span>
+            <span className="block text-[11px] font-normal text-fg-2">Wovexa Render: shop and social sizes, every colourway, turntables</span>
+          </span>
+        </button>
+      </section>
+
+      {/* What will print. */}
       <section>
         <h3 className="panel-title flex items-center gap-2">
-          <Printer size={15} /> Print files
+          <Printer size={15} /> Print zones
         </h3>
-        <p className="mt-1 text-xs text-fg-2">Artwork only, transparent PNG at true size. No garment, shadows or background.</p>
         <ul className="mt-2 space-y-1 text-[13px]">
-          {ZONE_IDS.map((z) => {
-            const spec = model.zones[z];
-            const has = zonesWithArt.includes(z);
+          {model.zoneOrder.map((z) => {
+            const spec = zoneSpecOrFirst(model, z);
+            const has = zones.includes(z);
             return (
-              <li key={z} className={`flex justify-between ${has ? '' : 'text-fg-3'}`}>
-                <span>
-                  {spec.label}, {PRINT_METHOD_LABELS[doc.zones[z].printMethod]}
+              <li key={z} className={`flex items-baseline justify-between gap-3 ${has ? '' : 'text-fg-3'}`}>
+                <span className="truncate">
+                  {spec.label}
+                  <span className="text-fg-2">, {PRINT_METHOD_LABELS[doc.zones[z].printMethod]}</span>
                 </span>
-                <span className="num">{has ? `${spec.printableWidthMm} × ${spec.printableHeightMm} mm` : 'Empty'}</span>
+                <span className="num flex-none text-xs">{has ? `${spec.printableWidthMm} × ${spec.printableHeightMm} mm` : 'Empty'}</span>
               </li>
             );
           })}
         </ul>
-        <label className="mt-3 grid grid-cols-[1fr_auto] items-center gap-2">
-          <span className="label">Resolution</span>
-          <select className="field w-auto" value={dpi} onChange={(e) => setDpi(Number(e.target.value))}>
-            <option value={150}>150 dpi</option>
-            <option value={300}>300 dpi</option>
-          </select>
-        </label>
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <button className="btn btn-outline" disabled={!zonesWithArt.length || !!busy} onClick={exportPrintFiles}>
-            {busy === 'print' ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} Print PNGs
-          </button>
-          <button className="btn btn-outline" disabled={!!busy} onClick={exportManifest}>
-            {busy === 'manifest' ? <Loader2 size={15} className="animate-spin" /> : <FileJson size={15} />} Manifest
+        <p className="mt-2 text-xs text-fg-3">Print files are RGB PNG. Your print shop converts to CMYK or spot inks with their own profile.</p>
+      </section>
+
+      {/* Team orders. */}
+      <details className="group rounded-xl border border-line" open={roster.rows.length > 0 || undefined}>
+        <summary className="flex cursor-pointer list-none items-center gap-3 px-3 py-3 [&::-webkit-details-marker]:hidden">
+          <Users size={15} className="flex-none" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-[13px] font-semibold">Team names and numbers</span>
+            <span className="block text-xs text-fg-2">One print set per player or student, plus a size list</span>
+          </span>
+          <span className="text-xs text-fg-3 group-open:rotate-180" aria-hidden>
+            ▾
+          </span>
+        </summary>
+        <div className="space-y-3 border-t border-line px-3 pb-3 pt-3">
+          {placeholders.length ? (
+            <p className="text-xs text-fg-2">
+              This design personalises{' '}
+              {placeholders.map((p) => (
+                <code key={p} className="mx-0.5 rounded bg-hover px-1 py-0.5 text-[11px] text-fg">{`{${p}}`}</code>
+              ))}
+              .
+            </p>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs text-fg-2">
+                Type <code className="rounded bg-hover px-1 text-[11px] text-fg">{'{name}'}</code> or <code className="rounded bg-hover px-1 text-[11px] text-fg">{'{number}'}</code> into any text layer, or start with a ready-made back print.
+              </p>
+              <button className="btn btn-outline min-h-8 w-full text-xs" onClick={() => addTeamLayers(doc)}>
+                Add name and number to the {hasZone(model, 'back') ? 'back' : model.zones[model.zoneOrder[0]]?.label.toLowerCase()}
+              </button>
+            </div>
+          )}
+          <label className="grid gap-1">
+            <span className="label">Roster</span>
+            <textarea
+              className="field min-h-[112px] resize-y py-2 font-mono text-xs leading-5"
+              value={rosterText}
+              onChange={(e) => setRosterText(e.target.value)}
+              placeholder={'name, number, size\nSokha, 7, M\nDara, 10, L'}
+              spellCheck={false}
+            />
+          </label>
+          <p className="text-[11px] text-fg-3">Paste from a spreadsheet: a header row with name, number and size works best.</p>
+          {roster.rows.length ? (
+            <div className="rounded-lg bg-hover px-3 py-2 text-xs">
+              <p className="font-medium">
+                {roster.rows.length} {roster.rows.length === 1 ? 'person' : 'people'}
+                {sizes.length ? `: ${sizes.map((s) => `${s.size} × ${s.count}`).join(', ')}` : ''}
+              </p>
+              <p className="mt-0.5 text-fg-2">
+                First: {[roster.rows[0].name, roster.rows[0].number, roster.rows[0].size].filter(Boolean).join(', ') || 'empty row'}
+              </p>
+              {missingFields.length ? <p className="mt-1 text-danger">No {missingFields.map((f) => `“${f}”`).join(' or ')} column in the roster; those placeholders stay as typed.</p> : null}
+            </div>
+          ) : null}
+          <button className="btn btn-outline w-full" disabled={busy || !team} onClick={() => void teamFiles()}>
+            <Download size={15} /> Download team files
           </button>
         </div>
-        <p className="mt-2 text-xs text-fg-3">PNG files are RGB. For CMYK or spot colours, your print shop converts them with their own profile.</p>
+      </details>
+
+      {/* File naming. */}
+      <details className="group rounded-xl border border-line">
+        <summary className="flex cursor-pointer list-none items-center gap-3 px-3 py-3 [&::-webkit-details-marker]:hidden">
+          <FileText size={15} className="flex-none" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-[13px] font-semibold">File names</span>
+            <span className="block truncate text-xs text-fg-2">{example}.png</span>
+          </span>
+          <span className="text-xs text-fg-3 group-open:rotate-180" aria-hidden>
+            ▾
+          </span>
+        </summary>
+        <div className="space-y-2 border-t border-line px-3 pb-3 pt-3">
+          <div className="flex gap-2">
+            <input className="field font-mono text-xs" value={prefs.naming} onChange={(e) => setPrefs({ naming: e.target.value })} aria-label="Print file name template" spellCheck={false} />
+            <button className="icon-btn flex-none" onClick={() => setPrefs({ naming: DEFAULT_PRINT_NAME })} aria-label="Reset file name template" title="Reset">
+              <RotateCcw size={14} />
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {NAME_TOKENS.map((t) => (
+              <button key={t.token} className="rounded-md border border-line px-1.5 py-0.5 font-mono text-[11px] text-fg-2 hover:border-line-strong hover:text-fg" title={t.hint} onClick={() => setPrefs({ naming: `${prefs.naming}_{${t.token}}` })}>
+                {`{${t.token}}`}
+              </button>
+            ))}
+          </div>
+          {strange.length ? <p className="text-xs text-danger">Unknown {strange.map((t) => `{${t}}`).join(', ')} will be left out.</p> : null}
+        </div>
+      </details>
+
+      {/* History. */}
+      <section>
+        <div className="flex items-center justify-between">
+          <h3 className="panel-title flex items-center gap-2">
+            <History size={15} /> Recent exports
+          </h3>
+          {history.length ? (
+            <button
+              className="text-xs text-fg-2 hover:text-fg"
+              onClick={() => {
+                void clearExports(doc.projectId).then(() => setHistory([]));
+              }}
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+        {history.length ? (
+          <ul className="mt-2 divide-y divide-line">
+            {history.map((r) => {
+              const Icon = KIND_ICON[r.kind] ?? Archive;
+              const outdated = currentHash !== null && r.contentHash !== currentHash;
+              return (
+                <li key={r.id} className="flex items-center gap-3 py-2">
+                  <Icon size={15} className="flex-none text-fg-2" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[13px] font-medium">{r.label}</div>
+                    <div className="truncate text-xs text-fg-2">
+                      {relativeTime(r.createdAt)}, {r.revisionLabel ? revisionText(r.revisionLabel).toLowerCase() : `revision ${r.revision}`}, {r.fileCount} {r.fileCount === 1 ? 'file' : 'files'}, {formatBytes(r.bytes)}
+                    </div>
+                  </div>
+                  {outdated ? (
+                    <span className="flex-none rounded-md bg-hover px-1.5 py-0.5 text-[10px] font-semibold text-fg-2" title="The design changed after this export">
+                      Outdated
+                    </span>
+                  ) : (
+                    <Check size={14} className="flex-none text-accent" aria-label="Matches the current design" />
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="mt-1 text-xs text-fg-3">Exports appear here with the revision they came from, so you can tell when files are out of date.</p>
+        )}
       </section>
     </div>
   );

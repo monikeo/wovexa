@@ -8,21 +8,27 @@ import {
   AlertTriangle,
   BadgeCheck,
   Circle,
+  Clapperboard,
   Download,
   Ellipsis,
   FileText,
   GitCompare,
+  Heart,
+  Hexagon,
   Image as ImageIcon,
   Layers,
   LayoutTemplate,
   Loader2,
+  Minus,
   MousePointer2,
   Plus,
   Redo2,
   RotateCcw,
   Settings2,
+  Shapes,
   Shirt,
   Square,
+  Star,
   Triangle,
   Type,
   Undo2,
@@ -33,14 +39,15 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { renameDocument } from '@/domain/commands';
 import { getGarment } from '@/domain/garments';
 import { summarize } from '@/domain/preflight';
-import { ZONE_IDS } from '@/domain/schema';
+import type { ShapeContent } from '@/domain/schema';
 import { ACCEPTED_TYPES } from '@/lib/assets';
 import { approvalState } from '@/lib/local-db';
 import { WovexaSymbol } from '@/components/brand/Logo';
-import { Sheet, toast, Toaster, useLayoutMode } from '@/components/ui/primitives';
+import { Sheet, toast, Toaster, useLayoutMode, useMenuKeyboard } from '@/components/ui/primitives';
 import { useStudio, type StudioPanel, type ViewMode } from '@/stores/studio-store';
 import {
   addImages,
+  addGraphic,
   addShape,
   addText,
   deleteSelection,
@@ -48,6 +55,7 @@ import {
   groupSelection,
   moveSelectionInStack,
   nudgeSelection,
+  selectAll,
   ungroupSelection,
   zoomToSelection,
 } from './actions';
@@ -56,11 +64,14 @@ import { BrandPanel } from './BrandPanel';
 import { ColorwayCompare } from './ColorwayCompare';
 import { ExportPanel } from './ExportDialog';
 import { GarmentPanel } from './GarmentPanel';
+import { GraphicsGrid, GraphicsMenu } from './GraphicsLibrary';
 import { HistoryPanel } from './HistoryPanel';
 import { Inspector } from './Inspector';
 import { LayerPanel } from './LayerPanel';
 import { PreflightPanel, usePreflight } from './PreflightPanel';
+import { RenderPanel } from './RenderPanel';
 import { SaveTemplatePanel } from './SaveTemplatePanel';
+import { StudioTour } from './StudioTour';
 
 const Editor2D = dynamic(() => import('./editor2d/Editor2D').then((m) => m.Editor2D), {
   ssr: false,
@@ -200,18 +211,20 @@ function ApprovalBadge() {
 function MoreMenu() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const setPanel = useStudio((s) => s.setPanel);
   const projectId = useStudio((s) => s.projectId);
+  const closeMenu = useCallback((restore: boolean) => {
+    setOpen(false);
+    if (restore) triggerRef.current?.focus();
+  }, []);
+  useMenuKeyboard(menuRef, open, closeMenu);
   useEffect(() => {
     if (!open) return;
-    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
-    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
-    document.addEventListener('mousedown', close);
-    document.addEventListener('keydown', esc);
-    return () => {
-      document.removeEventListener('mousedown', close);
-      document.removeEventListener('keydown', esc);
-    };
+    const close = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
   }, [open]);
   const item = 'flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm hover:bg-hover';
   const pick = (panel: StudioPanel) => () => {
@@ -220,11 +233,27 @@ function MoreMenu() {
   };
   return (
     <div className="relative" ref={ref}>
-      <button className="icon-btn" aria-label="More project actions" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+      <button
+        ref={triggerRef}
+        className="icon-btn"
+        aria-label="More project actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown' && !open) {
+            e.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
         <Ellipsis size={18} />
       </button>
       {open ? (
-        <div role="menu" className="absolute right-0 top-full z-40 mt-1 w-56 rounded-xl border border-line bg-floating p-1 shadow-xl">
+        <div ref={menuRef} role="menu" aria-label="Project actions" className="absolute right-0 top-full z-40 mt-1 w-56 rounded-xl border border-line bg-floating p-1 shadow-xl">
+          <button role="menuitem" className={item} onClick={pick('render')}>
+            <Clapperboard size={15} /> Wovexa Render
+          </button>
           <button role="menuitem" className={item} onClick={pick('history')}>
             <RotateCcw size={15} /> Versions and approval
           </button>
@@ -253,7 +282,7 @@ function Topbar({ mode, onOpenChecks }: { mode: 'desktop' | 'tablet' | 'mobile';
   const lastLabel = useStudio((s) => s.history.past.at(-1)?.label);
   const nextLabel = useStudio((s) => s.history.future[0]?.label);
   return (
-    <header className="flex h-[var(--toolbar-height)] flex-none items-center gap-2 border-b border-line bg-panel px-2 md:px-3">
+    <header className="flex h-[calc(var(--toolbar-height)+env(safe-area-inset-top))] flex-none items-center gap-2 border-b border-line bg-panel pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] pt-[env(safe-area-inset-top)]">
       <Link href="/dashboard" className="icon-btn" aria-label="Back to projects" title="Projects">
         <WovexaSymbol className="h-[18px] w-auto" />
       </Link>
@@ -339,6 +368,73 @@ function FileButton({ children, className, label }: { children: React.ReactNode;
   );
 }
 
+const SHAPE_ITEMS: { shape: ShapeContent['shape']; label: string; Icon: typeof Square }[] = [
+  { shape: 'rect', label: 'Rectangle', Icon: Square },
+  { shape: 'ellipse', label: 'Ellipse', Icon: Circle },
+  { shape: 'triangle', label: 'Triangle', Icon: Triangle },
+  { shape: 'star', label: 'Star', Icon: Star },
+  { shape: 'polygon', label: 'Hexagon', Icon: Hexagon },
+  { shape: 'heart', label: 'Heart', Icon: Heart },
+  { shape: 'line', label: 'Line', Icon: Minus },
+];
+
+/** All shapes behind one rail button, as a keyboard-navigable menu. */
+function ShapeMenu() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const closeMenu = useCallback((restore: boolean) => {
+    setOpen(false);
+    if (restore) triggerRef.current?.focus();
+  }, []);
+  useMenuKeyboard(menuRef, open, closeMenu);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [open]);
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        ref={triggerRef}
+        className="icon-btn"
+        aria-label="Add a shape"
+        title="Shapes"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => {
+          if ((e.key === 'ArrowRight' || e.key === 'ArrowDown') && !open) {
+            e.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        <Shapes size={18} />
+      </button>
+      {open ? (
+        <div ref={menuRef} role="menu" aria-label="Shapes" className="absolute left-full top-0 z-40 ml-2 grid w-44 gap-0.5 rounded-xl border border-line bg-floating p-1 shadow-xl">
+          {SHAPE_ITEMS.map(({ shape, label, Icon }) => (
+            <button
+              key={shape}
+              role="menuitem"
+              className="flex items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm hover:bg-hover"
+              onClick={() => {
+                addShape(shape);
+                closeMenu(false);
+              }}
+            >
+              <Icon size={15} /> {label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ToolRail({ onLayers, onInspector, tablet }: { onLayers?: () => void; onInspector?: () => void; tablet?: boolean }) {
   const select = useStudio((s) => s.select);
   return (
@@ -358,9 +454,8 @@ function ToolRail({ onLayers, onInspector, tablet }: { onLayers?: () => void; on
       <button className="icon-btn" onClick={() => addShape('ellipse')} aria-label="Add ellipse" title="Ellipse">
         <Circle size={17} />
       </button>
-      <button className="icon-btn" onClick={() => addShape('triangle')} aria-label="Add triangle" title="Triangle">
-        <Triangle size={17} />
-      </button>
+      <ShapeMenu />
+      <GraphicsMenu />
       {tablet ? (
         <>
           <span className="my-1 h-px w-7 bg-line" aria-hidden />
@@ -384,8 +479,8 @@ function ZoneBar() {
   if (!doc) return null;
   const model = getGarment(doc.garment.modelId);
   return (
-    <div className="flex flex-none items-center gap-1 overflow-x-auto border-t border-line bg-panel px-2 py-1.5" role="tablist" aria-label="Print zones">
-      {ZONE_IDS.map((z) => {
+    <div className="safe-x flex flex-none items-center gap-1 overflow-x-auto border-t border-line bg-panel px-2 py-1.5" role="tablist" aria-label="Print zones">
+      {model.zoneOrder.map((z) => {
         const count = doc.zones[z].orderedLayerIds.length;
         const errs = issues.filter((i) => i.zoneId === z && i.severity === 'error').length;
         return (
@@ -396,7 +491,7 @@ function ZoneBar() {
             onClick={() => setActiveZone(z)}
             className={`flex min-h-9 flex-none items-center gap-1.5 rounded-lg px-3 text-[13px] font-medium ${active === z ? 'bg-inverse text-fg-inverse' : 'text-fg-2 hover:bg-hover'}`}
           >
-            {model.zones[z].label}
+            {model.zones[z]?.label}
             {count ? <span className={`num text-xs ${active === z ? 'opacity-70' : 'text-fg-3'}`}>{count}</span> : null}
             {errs ? <span className="h-1.5 w-1.5 rounded-full bg-danger" aria-label={`${errs} issues`} /> : null}
           </button>
@@ -439,10 +534,24 @@ function useShortcuts() {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      // Dialogs and menus own the keyboard while open: Delete or arrows there must not edit the design.
+      if (target.closest('[role="dialog"], [role="alertdialog"], [role="menu"]') || document.querySelector('[aria-modal="true"]')) return;
+      // The 3D view uses arrow keys and +/− to orbit and zoom when it has focus.
+      if (target.closest('[data-viewer3d]') && /^(Arrow|\+|=|-)/.test(e.key)) return;
       const mod = e.metaKey || e.ctrlKey;
       const s = useStudio.getState();
       const key = e.key.toLowerCase();
-      if (mod && key === 'z') {
+      if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('wovexa:open-context-menu'));
+      } else if (mod && key === 'a') {
+        e.preventDefault();
+        selectAll();
+      } else if (!mod && !e.altKey && (e.key === '+' || e.key === '=')) {
+        window.dispatchEvent(new CustomEvent('wovexa:zoom-step', { detail: 1.25 }));
+      } else if (!mod && !e.altKey && (e.key === '-' || e.key === '_')) {
+        window.dispatchEvent(new CustomEvent('wovexa:zoom-step', { detail: 0.8 }));
+      } else if (mod && key === 'z') {
         e.preventDefault();
         if (e.shiftKey) s.redo();
         else s.undo();
@@ -506,23 +615,25 @@ function useShortcuts() {
 function MobileAddSheet({ onDone }: { onDone: () => void }) {
   const item = 'flex min-h-14 flex-col items-center justify-center gap-1.5 rounded-xl border border-line text-[13px] font-medium';
   return (
-    <div className="grid grid-cols-3 gap-2 p-4">
-      <button className={item} onClick={() => { addText(); onDone(); }}>
-        <Type size={20} /> Text
-      </button>
-      <label className={item}>
-        <ImageIcon size={20} /> Image
-        <input type="file" accept={ACCEPTED_TYPES} multiple className="sr-only" onChange={(e) => { if (e.target.files?.length) void addImages(e.target.files); onDone(); }} />
-      </label>
-      <button className={item} onClick={() => { addShape('rect'); onDone(); }}>
-        <Square size={20} /> Rectangle
-      </button>
-      <button className={item} onClick={() => { addShape('ellipse'); onDone(); }}>
-        <Circle size={20} /> Ellipse
-      </button>
-      <button className={item} onClick={() => { addShape('triangle'); onDone(); }}>
-        <Triangle size={20} /> Triangle
-      </button>
+    <div className="space-y-4 p-4">
+      <div className="grid grid-cols-3 gap-2">
+        <button className={item} onClick={() => { addText(); onDone(); }}>
+          <Type size={20} /> Text
+        </button>
+        <label className={`${item} relative`}>
+          <ImageIcon size={20} /> Image
+          <input type="file" accept={ACCEPTED_TYPES} multiple className="sr-only" onChange={(e) => { if (e.target.files?.length) void addImages(e.target.files); onDone(); }} />
+        </label>
+        {SHAPE_ITEMS.map(({ shape, label, Icon }) => (
+          <button key={shape} className={item} onClick={() => { addShape(shape); onDone(); }}>
+            <Icon size={20} /> {label}
+          </button>
+        ))}
+      </div>
+      <section>
+        <h3 className="panel-title mb-2">Graphics</h3>
+        <GraphicsGrid columns={5} onPick={(g) => { addGraphic(g); onDone(); }} />
+      </section>
     </div>
   );
 }
@@ -533,7 +644,7 @@ function MobileRail() {
   const { errors } = summarize(usePreflight());
   const item = 'flex min-h-14 flex-1 flex-col items-center justify-center gap-1 text-[11px] font-medium text-fg-2';
   return (
-    <nav className="safe-bottom flex flex-none border-t border-line bg-panel" aria-label="Studio actions">
+    <nav className="safe-bottom safe-x flex flex-none border-t border-line bg-panel" aria-label="Studio actions">
       <button className={item} onClick={() => setSheet('add')}>
         <Plus size={20} className="text-fg" /> Add
       </button>
@@ -601,7 +712,9 @@ export function StudioShell() {
 
   return (
     <BrandKitProvider>
-    <div className="flex h-dvh flex-col overflow-hidden bg-canvas">
+    {/* Positioned, so visually hidden helpers deep in a scrolling panel stay inside the studio
+        instead of stretching the page and letting the whole studio scroll. */}
+    <div className="relative flex h-dvh flex-col overflow-hidden bg-canvas">
       <Topbar mode={mode} onOpenChecks={() => setChecksOpen(true)} />
 
       {mode === 'mobile' ? (
@@ -658,7 +771,7 @@ export function StudioShell() {
       </Sheet>
 
       {/* Desktop and tablet dialogs */}
-      <Sheet open={mode !== 'mobile' && exportOpen} onClose={closeExport} title="Export" side="right">
+      <Sheet open={mode !== 'mobile' && exportOpen} onClose={closeExport} title="Export" side="right" wide>
         <ExportPanel />
       </Sheet>
       <Sheet open={checksOpen} onClose={closeChecks} title="Print checks" side="right">
@@ -675,7 +788,12 @@ export function StudioShell() {
       <Sheet open={panel === 'save-template'} onClose={closePanel} title="Save as template" side={panelSide}>
         <SaveTemplatePanel onDone={closePanel} />
       </Sheet>
+      {/* Non-modal on larger screens: the 3D view stays visible and usable while framing renders. */}
+      <Sheet open={panel === 'render'} onClose={closePanel} title="Wovexa Render" side={mode === 'mobile' ? 'bottom' : 'left'} modal={mode === 'mobile'}>
+        <RenderPanel />
+      </Sheet>
 
+      <StudioTour mobile={mode === 'mobile'} />
       <Toaster />
     </div>
     </BrandKitProvider>

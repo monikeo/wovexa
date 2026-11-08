@@ -61,7 +61,7 @@ function LayerRow({ layer, index, count, groupEdge }: { layer: ArtworkLayer; ind
           {layer.name}
         </button>
       )}
-      <div className="flex items-center opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
+      <div className="hover-reveal flex items-center">
         <button className="icon-btn h-8 w-8" disabled={index === count - 1} onClick={() => dispatch(cmd.moveLayerBy(zoneId, layer.id, 1))} aria-label={`Move ${layer.name} up`} title="Bring forward (])">
           <ArrowUp size={14} />
         </button>

@@ -1,6 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { NewProjectButton, ProjectCard, QuickStart, useProjects } from '@/components/workspace/projects';
+import { Onboarding } from '@/components/workspace/Onboarding';
 import { BuiltInTemplates } from '@/components/workspace/templates';
 import { PageHeader } from '@/components/workspace/WorkspaceShell';
 
@@ -12,9 +13,11 @@ export function Dashboard() {
     <>
       <PageHeader title="Your studio" description="Pick up where you left off, or start a new garment." action={<NewProjectButton />} />
 
+      <Onboarding />
+
       <section aria-labelledby="start">
         <h2 id="start" className="mb-3 text-sm font-semibold">
-          Start from a blank
+          Start a blank garment
         </h2>
         <QuickStart />
       </section>

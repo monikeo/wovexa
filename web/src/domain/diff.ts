@@ -58,6 +58,7 @@ export function diffDocuments(before: DesignDocument, after: DesignDocument): Ch
   const model = getGarment(after.garment.modelId);
   if (before.title !== after.title) changes.push({ area: 'Project', kind: 'changed', text: `Renamed to “${after.title}”` });
 
+  if (before.garment.modelId !== after.garment.modelId) changes.push({ area: 'Garment', kind: 'changed', text: `Style ${getGarment(before.garment.modelId).name} → ${model.name}` });
   if (before.garment.sizeCode !== after.garment.sizeCode) changes.push({ area: 'Garment', kind: 'changed', text: `Size ${before.garment.sizeCode} → ${after.garment.sizeCode}` });
   if (before.garment.fabricPresetId !== after.garment.fabricPresetId) {
     const label = model.fabricPresets.find((f) => f.id === after.garment.fabricPresetId)?.label ?? after.garment.fabricPresetId;
@@ -83,7 +84,8 @@ export function diffDocuments(before: DesignDocument, after: DesignDocument): Ch
   for (const zoneId of ZONE_IDS) {
     const za = before.zones[zoneId];
     const zb = after.zones[zoneId];
-    const area = model.zones[zoneId].label;
+    if (!za || !zb) continue;
+    const area = model.zones[zoneId]?.label ?? zoneId.replace('_', ' ');
     if (za.printMethod !== zb.printMethod) changes.push({ area, kind: 'changed', text: `Print method changed to ${PRINT_METHOD_LABELS[zb.printMethod]}` });
     for (const id of zb.orderedLayerIds) {
       const a = za.layers[id];

@@ -12,9 +12,9 @@ import { useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import * as cmd from '@/domain/commands';
 import { newId } from '@/domain/factory';
-import { getGarment, getSize, PRINT_METHOD_LABELS } from '@/domain/garments';
+import { getGarment, getSize, partColor, PRINT_METHOD_LABELS, zoneSpecOrFirst } from '@/domain/garments';
 import { effectiveDpi, runPreflight, summarize } from '@/domain/preflight';
-import { migrateDesignDocument, ZONE_IDS, type BomItem, type DesignDocument, type ZoneId } from '@/domain/schema';
+import { migrateDesignDocument, type BomItem, type DesignDocument, type ZoneId } from '@/domain/schema';
 import { WovexaLockup } from '@/components/brand/Logo';
 import { approvalState, getVersion, type StoredVersion } from '@/lib/local-db';
 import { renderZoneSketch } from '@/lib/thumbnail';
@@ -74,7 +74,7 @@ function TechPackBody({ doc, editable, header, projectId }: { doc: DesignDocumen
   const fabric = model.fabricPresets.find((f) => f.id === doc.garment.fabricPresetId);
   const colorway = doc.colorways.find((c) => c.id === doc.activeColorwayId) ?? doc.colorways[0];
   const { errors, warnings } = summarize(runPreflight(doc));
-  const zones = ZONE_IDS.filter((z) => doc.zones[z].orderedLayerIds.length > 0);
+  const zones = model.zoneOrder.filter((z) => doc.zones[z].orderedLayerIds.length > 0);
   const sketchZones: ZoneId[] = zones.length ? zones : ['front'];
   const p = doc.production;
   const approval = header.version?.approval;
@@ -176,14 +176,22 @@ function TechPackBody({ doc, editable, header, projectId }: { doc: DesignDocumen
           <h2 className="text-sm font-semibold">Colour reference</h2>
           <p className="mt-1 text-xs text-fg-2">Screen values only. Match against physical swatches.</p>
           <ul className="mt-3 grid grid-cols-2 gap-2 text-sm">
-            {(Object.entries(colorway.parts) as [string, string][]).map(([part, hex]) => (
-              <li key={part} className="flex items-center gap-2.5">
-                <span className="h-7 w-7 flex-none rounded border border-line" style={{ background: hex }} aria-hidden />
-                <span className="capitalize">{part}</span>
-                <span className="ml-auto font-mono text-xs text-fg-2">{hex}</span>
-              </li>
-            ))}
+            {model.colorParts.map(({ part, label }) => {
+              const hex = partColor(colorway, part);
+              return (
+                <li key={part} className="flex items-center gap-2.5">
+                  <span className="h-7 w-7 flex-none rounded border border-line" style={{ background: hex }} aria-hidden />
+                  <span>{label}</span>
+                  <span className="ml-auto font-mono text-xs text-fg-2">{hex}</span>
+                </li>
+              );
+            })}
           </ul>
+          {colorway.surfaces && Object.keys(colorway.surfaces).length ? (
+            <p className="mt-3 text-xs text-fg-2">
+              All-over print on {Object.keys(colorway.surfaces).join(', ')}: needs sublimation or printed fabric. See the 3D renders for the look.
+            </p>
+          ) : null}
         </div>
       </section>
 
@@ -195,7 +203,7 @@ function TechPackBody({ doc, editable, header, projectId }: { doc: DesignDocumen
           {sketchZones.map((z) => (
             <figure key={z}>
               <Sketch doc={doc} zoneId={z} />
-              <figcaption className="mt-1.5 text-xs text-fg-2">{model.zones[z].label}. Dashed line: print area.</figcaption>
+              <figcaption className="mt-1.5 text-xs text-fg-2">{zoneSpecOrFirst(model, z).label}. Dashed line: print area.</figcaption>
             </figure>
           ))}
         </div>
@@ -229,7 +237,7 @@ function TechPackBody({ doc, editable, header, projectId }: { doc: DesignDocumen
               ) : (
                 zones.flatMap((z) => {
                   const zone = doc.zones[z];
-                  const spec = model.zones[z];
+                  const spec = zoneSpecOrFirst(model, z);
                   return zone.orderedLayerIds.map((id) => {
                     const l = zone.layers[id];
                     const dpi = effectiveDpi(l);

@@ -3,7 +3,7 @@
  * The hash covers design content only: the server revision counter is excluded, so the
  * same design always hashes the same wherever it was saved.
  */
-import type { DesignDocument } from './schema';
+import { V3_ZONES, type DesignDocument } from './schema';
 
 /** JSON with object keys sorted at every level, so equal content always serializes identically. */
 export function canonicalJson(value: unknown): string {
@@ -20,6 +20,20 @@ export async function sha256Text(text: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** Approvals began in format 2, so hashes always use 2 as the format version. */
+const HASH_FORMAT = 2;
+
+/**
+ * A format upgrade must not change the hash of unchanged content: the format version is
+ * fixed, and zones added by an upgrade are left out while they hold no artwork. So a design
+ * approved before an upgrade is still approved after it.
+ */
+function hashable(doc: DesignDocument) {
+  const zones: Record<string, unknown> = { ...doc.zones };
+  for (const zoneId of V3_ZONES) if (!doc.zones[zoneId]?.orderedLayerIds.length) delete zones[zoneId];
+  return { ...doc, revision: 0, schemaVersion: HASH_FORMAT, zones };
+}
+
 export function documentHash(doc: DesignDocument): Promise<string> {
-  return sha256Text(canonicalJson({ ...doc, revision: 0 }));
+  return sha256Text(canonicalJson(hashable(doc)));
 }

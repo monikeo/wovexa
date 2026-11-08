@@ -6,7 +6,7 @@
  */
 import { create } from 'zustand';
 import type { Command } from '@/domain/commands';
-import { getGarment } from '@/domain/garments';
+import { getGarment, hasZone, zoneSpecOrFirst } from '@/domain/garments';
 import { applyCommand, emptyHistory, redo as redoHistory, undo as undoHistory, type History } from '@/domain/history';
 import type { DesignDocument, LayerTransform, ZoneId } from '@/domain/schema';
 import { getProject, loadDocument, saveDocument, type ProjectMeta } from '@/lib/local-db';
@@ -15,7 +15,7 @@ import { renderThumbnail } from '@/lib/thumbnail';
 export type SaveState = 'saved' | 'unsaved' | 'saving' | 'error';
 export type ViewMode = '2d' | 'split' | '3d';
 export type MobileSheet = null | 'add' | 'layers' | 'inspect' | 'garment' | 'preflight' | 'export';
-export type StudioPanel = null | 'history' | 'save-template' | 'compare';
+export type StudioPanel = null | 'history' | 'save-template' | 'compare' | 'render';
 
 interface StudioState {
   status: 'idle' | 'loading' | 'ready' | 'missing' | 'invalid';
@@ -69,9 +69,12 @@ export const useStudio = create<StudioState>((set, get) => {
   }
 
   function afterChange(document: DesignDocument, history: History) {
-    const zone = document.zones[get().activeZoneId];
-    const selected = get().selectedLayerIds.filter((id) => zone.layers[id]);
-    set({ document, history, saveState: 'unsaved', selectedLayerIds: selected });
+    // A garment switch can remove the zone being edited (a tank has no sleeves): fall back to its first zone.
+    const model = getGarment(document.garment.modelId);
+    const activeZoneId = hasZone(model, get().activeZoneId) ? get().activeZoneId : model.zoneOrder[0];
+    const zone = document.zones[activeZoneId];
+    const selected = activeZoneId === get().activeZoneId ? get().selectedLayerIds.filter((id) => zone.layers[id]) : [];
+    set({ document, history, saveState: 'unsaved', selectedLayerIds: selected, activeZoneId });
     scheduleSave();
   }
 
@@ -181,6 +184,8 @@ export const useStudio = create<StudioState>((set, get) => {
     },
 
     setActiveZone(zoneId) {
+      const doc = get().document;
+      if (doc && !hasZone(getGarment(doc.garment.modelId), zoneId)) return;
       set({ activeZoneId: zoneId, selectedLayerIds: [] });
     },
     select(ids) {
@@ -205,11 +210,11 @@ export const useStudio = create<StudioState>((set, get) => {
   };
 });
 
-/** Zone spec for the active zone of the open document. */
+/** Zone spec for the active zone of the open document (the garment's first zone if it lacks the active one). */
 export function useActiveZoneSpec() {
   const modelId = useStudio((s) => s.document?.garment.modelId);
   const zoneId = useStudio((s) => s.activeZoneId);
-  return getGarment(modelId ?? 'tee-classic').zones[zoneId];
+  return zoneSpecOrFirst(getGarment(modelId ?? 'tee-classic'), zoneId);
 }
 
 export function useActiveColorway() {
@@ -221,20 +226,28 @@ export function useActiveColorway() {
 interface LiveState {
   zoneId: ZoneId | null;
   overrides: Record<string, Partial<LayerTransform>>;
+  /** Which view is dragging, so the other one can follow without echoing it back. */
+  source: '2d' | '3d' | null;
   /** Shown instead of the active colourway while batch-rendering every colourway. */
   colorwayOverride: string | null;
-  setOverrides: (zoneId: ZoneId, overrides: Record<string, Partial<LayerTransform>>) => void;
+  /** Output aspect (width / height) the render studio is set to; the 3D view frames it. */
+  renderAspect: number | null;
+  setOverrides: (zoneId: ZoneId, overrides: Record<string, Partial<LayerTransform>>, source?: '2d' | '3d') => void;
   setColorwayOverride: (id: string | null) => void;
+  setRenderAspect: (aspect: number | null) => void;
   clear: () => void;
 }
 
 export const useLive = create<LiveState>((set) => ({
   zoneId: null,
   overrides: {},
+  source: null,
   colorwayOverride: null,
-  setOverrides: (zoneId, overrides) => set({ zoneId, overrides }),
+  renderAspect: null,
+  setOverrides: (zoneId, overrides, source = '2d') => set({ zoneId, overrides, source }),
   setColorwayOverride: (colorwayOverride) => set({ colorwayOverride }),
-  clear: () => set({ zoneId: null, overrides: {} }),
+  setRenderAspect: (renderAspect) => set({ renderAspect }),
+  clear: () => set({ zoneId: null, overrides: {}, source: null }),
 }));
 
 /** The colourway the 3D view should show: a batch-export override, else the active one. */

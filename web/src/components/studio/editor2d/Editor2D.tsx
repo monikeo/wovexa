@@ -8,19 +8,37 @@
 import { ActiveSelection, Canvas as FabricCanvas, FabricImage, Group, Point, type FabricObject, type TPointerEventInfo } from 'fabric';
 import { Focus, Maximize, Minus, Plus } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { unionBounds } from '@/domain/arrange';
+import { expandToGroups, unionBounds } from '@/domain/arrange';
+import { EditorContextMenu } from './ContextMenu';
 import { updateTransforms } from '@/domain/commands';
 import { getGarment, getSize } from '@/domain/garments';
 import { rotatedBounds, type Rect } from '@/domain/geometry';
 import type { ArtworkLayer, LayerTransform, ZoneDesign, ZoneId } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
 import { usePreference } from '@/lib/preferences';
-import { ensureFonts, renderLayerBitmap } from '@/lib/render/zone-renderer';
+import { ensureFonts, imageNeedsBitmap, imageSource, renderLayerBitmap } from '@/lib/render/zone-renderer';
 import { useActiveColorway, useActiveZoneSpec, useLive, useStudio } from '@/stores/studio-store';
 import { drawRuler, RULER_SIZE } from './rulers';
-import { sketchForZone } from './flat-sketch';
+import { drawSketch, sketchForZone } from './flat-sketch';
 
-type LayerObject = FabricImage & { layerId: string; bitmapKey?: string; bitmap?: HTMLCanvasElement };
+/**
+ * A layer's Fabric object. Its width and height are the layer box; the bitmap may carry extra
+ * pixels (`bleed`) on every side for outlines and shadows, drawn outside the box but never hit-tested.
+ */
+class LayerImage extends FabricImage {
+  layerId = '';
+  bitmapKey?: string;
+  bitmap?: HTMLCanvasElement;
+  bitmapBleed = 0;
+  bleed = 0;
+  _renderFill(ctx: CanvasRenderingContext2D) {
+    const el = this.getElement() as HTMLCanvasElement | HTMLImageElement | undefined;
+    if (!el || !this.bleed) return super._renderFill(ctx);
+    const b = this.bleed;
+    ctx.drawImage(el, -this.width / 2 - b, -this.height / 2 - b, this.width + 2 * b, this.height + 2 * b);
+  }
+}
+type LayerObject = LayerImage;
 type GroupObject = Group & { groupKey: string; signature?: string };
 
 const PAD = 44;
@@ -106,6 +124,11 @@ export function Editor2D() {
   const [ready, setReady] = useState(false);
   // Bumped when an image decodes or a web font loads, so objects are redrawn with real pixels.
   const [refreshTick, setRefreshTick] = useState(0);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const closeMenu = useCallback((restoreFocus: boolean) => {
+    setMenu(null);
+    if (restoreFocus) hostRef.current?.focus();
+  }, []);
 
   const doc = useStudio((s) => s.document);
   const zoneId = useStudio((s) => s.activeZoneId);
@@ -125,6 +148,33 @@ export function Editor2D() {
   const reportZoom = useCallback(() => {
     const c = fabricRef.current;
     if (c) setZoomPct(Math.round((c.getZoom() / ACTUAL_SIZE) * 100));
+  }, []);
+
+  // Split view (spec ED3-12): follow artwork being dragged on the 3D garment, live.
+  useEffect(() => {
+    let following = false;
+    return useLive.subscribe((live) => {
+      const canvas = fabricRef.current;
+      if (!canvas) return;
+      if (live.source === '3d' && live.zoneId === zoneRef.current) {
+        following = true;
+        const zone = latest.current.doc?.zones[zoneRef.current];
+        for (const [id, patch] of Object.entries(live.overrides)) {
+          const obj = objectsRef.current.get(id);
+          const layer = zone?.layers[id];
+          // Grouped layers sit inside a Fabric group; they catch up when the move commits.
+          if (!obj || !layer || obj.group) continue;
+          const t = { ...layer.transform, ...patch };
+          obj.set({ left: t.centerXmm, top: t.centerYmm, angle: t.rotationDeg, scaleX: t.widthMm / obj.width, scaleY: t.heightMm / obj.height });
+          obj.setCoords();
+        }
+        canvas.requestRenderAll();
+      } else if (following && live.source === null) {
+        // Committed or cancelled: re-place every object from the document.
+        following = false;
+        setRefreshTick((t) => t + 1);
+      }
+    });
   }, []);
 
   const zoomToRect = useCallback(
@@ -214,36 +264,9 @@ export function Editor2D() {
       const model = getGarment(d.garment.modelId);
       const sketch = sketchForZone(model, spec, getSize(model, d.garment.sizeCode).scale);
       const v = canvas.viewportTransform;
-      const zoom = v[0];
       ctx.save();
       ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
-      ctx.beginPath();
-      sketch.body.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-      ctx.closePath();
-      ctx.fillStyle = spec.part === 'torso' ? cw.parts.body : cw.parts.sleeves;
-      ctx.fill();
-      ctx.lineWidth = 1 / zoom;
-      ctx.strokeStyle = 'rgba(120,124,135,0.6)';
-      ctx.stroke();
-      ctx.setLineDash([4 / zoom, 3 / zoom]);
-      ctx.strokeStyle = cw.parts.stitching;
-      for (const seam of sketch.seams) {
-        ctx.beginPath();
-        seam.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-        ctx.stroke();
-      }
-      ctx.setLineDash([]);
-      if (sketch.collar) {
-        ctx.beginPath();
-        sketch.collar.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-        ctx.lineWidth = 16;
-        ctx.lineCap = 'round';
-        ctx.strokeStyle = cw.parts.collar;
-        ctx.stroke();
-        ctx.lineWidth = 1 / zoom;
-        ctx.strokeStyle = 'rgba(120,124,135,0.5)';
-        ctx.stroke();
-      }
+      drawSketch(ctx, sketch, cw, v[0] * (window.devicePixelRatio || 1));
       ctx.restore();
     });
 
@@ -395,98 +418,212 @@ export function Editor2D() {
       if (id) window.dispatchEvent(new CustomEvent('wovexa:edit-layer', { detail: { layerId: id } }));
     });
 
-    // ---- Pan and zoom ----
-    let panning: { x: number; y: number } | null = null;
-    let spaceDown = false;
-    const onKey = (e: KeyboardEvent) => {
-      const typing = (e.target as HTMLElement)?.closest('input, textarea, select, [contenteditable="true"]');
-      if (e.code === 'Space' && !typing) {
-        spaceDown = e.type === 'keydown';
-        canvas.defaultCursor = spaceDown ? 'grab' : 'default';
-        canvas.skipTargetFind = spaceDown;
-        canvas.selection = !spaceDown && !coarse;
-        if (spaceDown) e.preventDefault();
+    // ---- Context menu: right-click (spec DSK-03), long-press (MOB-05), Shift+F10 / Menu key ----
+    const openMenuAt = (x: number, y: number, target?: FabricObject) => {
+      const zn = latest.current.doc?.zones[zoneRef.current];
+      if (zn) {
+        const ids = target ? leaves(target).map((o) => o.layerId) : [];
+        const current = useStudio.getState().selectedLayerIds;
+        if (!ids.length) useStudio.getState().select([]);
+        else if (!ids.every((id) => current.includes(id))) useStudio.getState().select(expandToGroups(zn, ids));
       }
+      setMenu({ x, y });
+    };
+    canvas.on('contextmenu', (opt) => {
+      const ev = opt.e as MouseEvent;
+      openMenuAt(ev.clientX, ev.clientY, opt.target ?? undefined);
+    });
+    const onMenuKey = () => {
+      const r = host.getBoundingClientRect();
+      const { doc: d, selected: ids } = latest.current;
+      const zn = d?.zones[zoneRef.current];
+      const rects = zn ? ids.map((id) => zn.layers[id]).filter(Boolean).map((l) => rotatedBounds(l.transform)) : [];
+      if (!rects.length) return setMenu({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+      const b = unionBounds(rects);
+      const v = canvas.viewportTransform;
+      setMenu({ x: r.left + v[4] + (b.x + b.width / 2) * v[0], y: r.top + v[5] + (b.y + b.height / 2) * v[0] });
+    };
+
+    const upper = canvas.upperCanvasEl;
+    const clampZoom = (z: number) => Math.min(ACTUAL_SIZE * 8, Math.max(ACTUAL_SIZE * 0.05, z));
+
+    /** Abandon a drag in progress and put the object back where it started. */
+    const cancelTransform = () => {
+      const t = canvas._currentTransform;
+      if (!t) return;
+      const o = t.original;
+      t.target.set({ left: o.left, top: o.top, scaleX: o.scaleX, scaleY: o.scaleY, angle: o.angle, flipX: o.flipX, flipY: o.flipY, skewX: o.skewX, skewY: o.skewY });
+      t.target.setCoords();
+      canvas._currentTransform = null;
+      snapLines.current = {};
+      useLive.getState().clear();
+      canvas.requestRenderAll();
+    };
+
+    // ---- Pan: middle button, Space + drag, or one finger / stylus on empty canvas ----
+    let spaceDown = false;
+    let panning: { id: number; x: number; y: number } | null = null;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      // Space keeps activating buttons and typing spaces; it only pans from the page or the stage.
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('button, a, input, textarea, select, [contenteditable="true"], [role="menuitem"], [role="tab"], [role="dialog"]')) return;
+      spaceDown = e.type === 'keydown';
+      canvas.defaultCursor = spaceDown ? 'grab' : 'default';
+      canvas.skipTargetFind = spaceDown;
+      canvas.selection = !spaceDown && !coarse;
+      e.preventDefault();
     };
     window.addEventListener('keydown', onKey);
     window.addEventListener('keyup', onKey);
 
-    canvas.on('mouse:down', (opt: TPointerEventInfo) => {
-      const ev = opt.e as PointerEvent;
-      const touchEmpty = ev.pointerType === 'touch' && !opt.target;
-      if (spaceDown || ev.button === 1 || touchEmpty) panning = { x: ev.clientX, y: ev.clientY };
-    });
     canvas.on('mouse:move', (opt: TPointerEventInfo) => {
       pointerRef.current = canvas.getScenePoint(opt.e);
       renderRulersRef.current();
-      if (!panning || pinch.size > 1) return;
-      const ev = opt.e as PointerEvent;
-      canvas.relativePan(new Point(ev.clientX - panning.x, ev.clientY - panning.y));
-      panning = { x: ev.clientX, y: ev.clientY };
-      fitRef.current = false;
     });
     canvas.on('mouse:out', () => {
       pointerRef.current = null;
       renderRulersRef.current();
     });
-    canvas.on('mouse:up', () => {
-      panning = null;
-    });
+
+    // Wheel and trackpad: two-finger scroll pans, pinch (ctrl+wheel) zooms. Line and page
+    // deltas (Firefox mouse wheels) are converted to pixels; Shift+wheel pans sideways.
     canvas.on('mouse:wheel', (opt) => {
       const ev = opt.e as WheelEvent;
       ev.preventDefault();
       ev.stopPropagation();
+      const unit = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? canvas.getHeight() : 1;
+      let dx = ev.deltaX * unit;
+      let dy = ev.deltaY * unit;
       if (ev.ctrlKey || ev.metaKey) {
-        zoomBy(Math.exp(-ev.deltaY * 0.0022), canvas.getViewportPoint(ev));
-      } else {
-        canvas.relativePan(new Point(-ev.deltaX, -ev.deltaY));
-        fitRef.current = false;
+        zoomBy(Math.min(2, Math.max(0.5, Math.exp(-dy * 0.0022))), canvas.getViewportPoint(ev));
+        return;
       }
+      if (ev.shiftKey && dx === 0) {
+        dx = dy;
+        dy = 0;
+      }
+      canvas.relativePan(new Point(-dx, -dy));
+      fitRef.current = false;
+      renderRulersRef.current();
     });
 
-    // Two-finger pinch zoom and pan on touch screens (spec TAB-04).
+    // Safari reports trackpad pinch as gesture events instead of ctrl+wheel.
+    let gestureZoom = 1;
+    const onGestureStart = (e: Event) => {
+      e.preventDefault();
+      gestureZoom = canvas.getZoom();
+    };
+    const onGestureChange = (e: Event) => {
+      e.preventDefault();
+      if (pinch.size > 1) return; // touch pinches are handled by pointer events below
+      const g = e as Event & { scale: number; clientX: number; clientY: number };
+      const rect = upper.getBoundingClientRect();
+      canvas.zoomToPoint(new Point(g.clientX - rect.left, g.clientY - rect.top), clampZoom(gestureZoom * g.scale));
+      fitRef.current = false;
+      reportZoom();
+    };
+    const preventGesture = (e: Event) => e.preventDefault();
+    host.addEventListener('gesturestart', onGestureStart);
+    host.addEventListener('gesturechange', onGestureChange);
+    host.addEventListener('gestureend', preventGesture);
+
+    // Touch and pen: one finger on empty canvas pans, two fingers pinch-zoom (spec TAB-04),
+    // a held press opens the context menu, and a double tap edits text.
     const pinch = new Map<number, { x: number; y: number }>();
     let pinchStart: { dist: number; zoom: number; mid: { x: number; y: number } } | null = null;
-    const upper = canvas.upperCanvasEl;
+    let press: { id: number; x: number; y: number; at: number; event: PointerEvent; timer: ReturnType<typeof setTimeout> } | null = null;
+    let lastTap: { at: number; x: number; y: number } | null = null;
+
     const onPointerDown = (e: PointerEvent) => {
-      if (e.pointerType !== 'touch') return;
+      const empty = !canvas.findTarget(e).target;
+      if (e.button === 1 || (spaceDown && e.button === 0) || (e.pointerType !== 'mouse' && e.isPrimary && empty)) {
+        panning = { id: e.pointerId, x: e.clientX, y: e.clientY };
+        if (e.button === 1) e.preventDefault(); // no autoscroll cursor
+      }
+      if (e.pointerType === 'mouse') return;
       pinch.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pinch.size === 2) {
         const [a, b] = [...pinch.values()];
         pinchStart = { dist: Math.hypot(a.x - b.x, a.y - b.y), zoom: canvas.getZoom(), mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
         panning = null;
-        canvas.discardActiveObject();
+        cancelTransform();
+        if (press) clearTimeout(press.timer);
+        press = null;
+      } else if (e.isPrimary) {
+        const start = { id: e.pointerId, x: e.clientX, y: e.clientY, at: performance.now(), event: e };
+        press = {
+          ...start,
+          timer: setTimeout(() => {
+            if (!press) return;
+            cancelTransform();
+            panning = null;
+            const target = canvas.findTarget(start.event).target;
+            openMenuAt(start.x, start.y, target ?? undefined);
+            press = null;
+            lastTap = null;
+          }, 550),
+        };
       }
     };
     const onPointerMove = (e: PointerEvent) => {
-      if (!pinch.has(e.pointerId)) return;
-      pinch.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (press && e.pointerId === press.id && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) {
+        clearTimeout(press.timer);
+        press = null;
+      }
+      if (pinch.has(e.pointerId)) pinch.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pinch.size === 2 && pinchStart) {
         const [a, b] = [...pinch.values()];
         const dist = Math.hypot(a.x - b.x, a.y - b.y);
         const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
         const rect = upper.getBoundingClientRect();
         canvas.relativePan(new Point(mid.x - pinchStart.mid.x, mid.y - pinchStart.mid.y));
-        const zoom = Math.min(ACTUAL_SIZE * 8, Math.max(ACTUAL_SIZE * 0.05, (pinchStart.zoom * dist) / pinchStart.dist));
-        canvas.zoomToPoint(new Point(mid.x - rect.left, mid.y - rect.top), zoom);
+        canvas.zoomToPoint(new Point(mid.x - rect.left, mid.y - rect.top), clampZoom((pinchStart.zoom * dist) / pinchStart.dist));
         pinchStart.mid = mid;
         fitRef.current = false;
         reportZoom();
+        return;
+      }
+      if (panning && e.pointerId === panning.id) {
+        canvas.relativePan(new Point(e.clientX - panning.x, e.clientY - panning.y));
+        panning.x = e.clientX;
+        panning.y = e.clientY;
+        fitRef.current = false;
+        renderRulersRef.current();
       }
     };
     const onPointerUp = (e: PointerEvent) => {
+      if (panning?.id === e.pointerId) panning = null;
       pinch.delete(e.pointerId);
       if (pinch.size < 2) pinchStart = null;
+      if (press && e.pointerId === press.id) {
+        clearTimeout(press.timer);
+        const now = performance.now();
+        if (e.type === 'pointerup' && now - press.at < 300) {
+          if (lastTap && now - lastTap.at < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) {
+            const target = canvas.findTarget(e).target;
+            const id = target ? leaves(target)[0]?.layerId : undefined;
+            if (id) window.dispatchEvent(new CustomEvent('wovexa:edit-layer', { detail: { layerId: id } }));
+            lastTap = null;
+          } else {
+            lastTap = { at: now, x: e.clientX, y: e.clientY };
+          }
+        }
+        press = null;
+      }
     };
-    upper.addEventListener('pointerdown', onPointerDown);
-    upper.addEventListener('pointermove', onPointerMove);
-    upper.addEventListener('pointerup', onPointerUp);
-    upper.addEventListener('pointercancel', onPointerUp);
+    upper.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
 
     const onZoomToSelection = () => zoomToSelection();
     const onFit = () => fit();
+    const onZoomStep = (e: Event) => zoomBy((e as CustomEvent<number>).detail);
     window.addEventListener('wovexa:zoom-to-selection', onZoomToSelection);
     window.addEventListener('wovexa:fit', onFit);
+    window.addEventListener('wovexa:zoom-step', onZoomStep);
+    window.addEventListener('wovexa:open-context-menu', onMenuKey);
 
     const ro = new ResizeObserver(() => {
       canvas.setDimensions({ width: host.clientWidth, height: host.clientHeight });
@@ -495,6 +632,8 @@ export function Editor2D() {
     });
     ro.observe(host);
     setReady(true);
+    // Development-only handle for checking zoom and pan from the console.
+    if (process.env.NODE_ENV !== 'production') Object.assign(window, { __wovexa2d: { canvas } });
 
     const objects = objectsRef.current;
     const groups = groupsRef.current;
@@ -504,10 +643,16 @@ export function Editor2D() {
       window.removeEventListener('keyup', onKey);
       window.removeEventListener('wovexa:zoom-to-selection', onZoomToSelection);
       window.removeEventListener('wovexa:fit', onFit);
-      upper.removeEventListener('pointerdown', onPointerDown);
-      upper.removeEventListener('pointermove', onPointerMove);
-      upper.removeEventListener('pointerup', onPointerUp);
-      upper.removeEventListener('pointercancel', onPointerUp);
+      window.removeEventListener('wovexa:zoom-step', onZoomStep);
+      window.removeEventListener('wovexa:open-context-menu', onMenuKey);
+      host.removeEventListener('gesturestart', onGestureStart);
+      host.removeEventListener('gesturechange', onGestureChange);
+      host.removeEventListener('gestureend', preventGesture);
+      upper.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+      if (press) clearTimeout(press.timer);
       cancelAnimationFrame(liveFrame);
       objects.clear();
       groups.clear();
@@ -567,27 +712,38 @@ export function Editor2D() {
     // Pixels and absolute placement for a layer object that is not inside a group.
     const applyLayer = (obj: LayerObject, layer: ArtworkLayer) => {
       let element: HTMLCanvasElement | HTMLImageElement;
-      if (layer.content.kind === 'image') {
-        element = getLoadedImage(layer.content.assetId) ?? placeholder();
+      let bleed = 0;
+      if (layer.content.kind === 'image' && !imageNeedsBitmap(layer)) {
+        // Plain and adjusted images show the decoded (or adjusted) pixels directly, at full resolution.
+        element = (imageSource(layer.content) as HTMLCanvasElement | HTMLImageElement | undefined) ?? placeholder();
       } else {
         const ppm = Math.min(resolution(), 2048 / Math.max(layer.transform.widthMm, layer.transform.heightMm));
-        const key = JSON.stringify([layer.content, Math.round(layer.transform.widthMm * ppm), Math.round(layer.transform.heightMm * ppm)]);
+        const ready = layer.content.kind === 'image' ? !!getLoadedImage(layer.content.assetId) : true;
+        const key = JSON.stringify([layer.id, layer.content, layer.style.finish, layer.style.distress, ready, Math.round(layer.transform.widthMm * ppm), Math.round(layer.transform.heightMm * ppm)]);
         if (obj.bitmapKey !== key || !obj.bitmap) {
-          obj.bitmap = renderLayerBitmap(layer, ppm, document.createElement('canvas'));
+          const rendered = renderLayerBitmap(layer, ppm);
+          obj.bitmap = rendered.canvas;
+          obj.bitmapBleed = rendered.bleed;
           obj.bitmapKey = key;
         }
         element = obj.bitmap;
+        bleed = obj.bitmapBleed;
       }
-      if (obj.getElement() !== element) obj.setElement(element);
+      const boxW = Math.max(1, element.width - 2 * bleed);
+      const boxH = Math.max(1, element.height - 2 * bleed);
+      if (obj.getElement() !== element) obj.setElement(element, { width: boxW, height: boxH });
+      obj.bleed = bleed;
       const t = layer.transform;
       obj.set({
+        width: boxW,
+        height: boxH,
         left: t.centerXmm,
         top: t.centerYmm,
         angle: t.rotationDeg,
         flipX: t.flipX,
         flipY: t.flipY,
-        scaleX: t.widthMm / element.width,
-        scaleY: t.heightMm / element.height,
+        scaleX: t.widthMm / boxW,
+        scaleY: t.heightMm / boxH,
         opacity: layer.style.opacity,
         visible: layer.visible,
         selectable: !layer.locked,
@@ -600,7 +756,7 @@ export function Editor2D() {
     const ensureObject = (id: string) => {
       let obj = objects.get(id);
       if (!obj) {
-        obj = new FabricImage(placeholder(), { originX: 'center', originY: 'center', ...controlStyle }) as LayerObject;
+        obj = new LayerImage(placeholder(), { originX: 'center', originY: 'center', ...controlStyle });
         obj.layerId = id;
         objects.set(id, obj);
       }
@@ -736,9 +892,21 @@ export function Editor2D() {
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-canvas" data-testid="editor-2d">
-      <div ref={hostRef} className="absolute inset-0 touch-none">
-        <canvas ref={canvasElRef} aria-label={`${zoneSpec?.label ?? ''} print zone editor`} />
+      <div
+        ref={hostRef}
+        className="absolute inset-0 touch-none overscroll-contain outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus-ring)]"
+        tabIndex={0}
+        role="application"
+        aria-roledescription="design canvas"
+        aria-label={`${zoneSpec?.label ?? ''} print zone editor`}
+        aria-describedby="editor-help"
+      >
+        <canvas ref={canvasElRef} aria-hidden />
       </div>
+      <p id="editor-help" className="sr-only">
+        Choose layers in the Layers panel or press Ctrl+A. Arrow keys move the selection by 1 mm, with Shift by 10 mm. Shift+F10 opens actions. Plus and minus zoom, Shift+1 fits the print area.
+      </p>
+      {menu ? <EditorContextMenu x={menu.x} y={menu.y} onClose={closeMenu} /> : null}
       <canvas ref={rulerTopRef} className="pointer-events-none absolute left-0 top-0 h-5 w-full" aria-hidden />
       <canvas ref={rulerLeftRef} className="pointer-events-none absolute left-0 top-0 h-full w-5" aria-hidden />
       <div className="pointer-events-none absolute left-0 top-0 grid h-5 w-5 place-items-center border-b border-r border-line bg-panel text-[9px] font-semibold text-fg-3" aria-hidden>
