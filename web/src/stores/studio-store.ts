@@ -9,12 +9,13 @@ import type { Command } from '@/domain/commands';
 import { getGarment } from '@/domain/garments';
 import { applyCommand, emptyHistory, redo as redoHistory, undo as undoHistory, type History } from '@/domain/history';
 import type { DesignDocument, LayerTransform, ZoneId } from '@/domain/schema';
-import { loadDocument, saveDocument, type ProjectMeta } from '@/lib/local-db';
+import { getProject, loadDocument, saveDocument, type ProjectMeta } from '@/lib/local-db';
 import { renderThumbnail } from '@/lib/thumbnail';
 
 export type SaveState = 'saved' | 'unsaved' | 'saving' | 'error';
 export type ViewMode = '2d' | 'split' | '3d';
 export type MobileSheet = null | 'add' | 'layers' | 'inspect' | 'garment' | 'preflight' | 'export';
+export type StudioPanel = null | 'history' | 'save-template' | 'compare';
 
 interface StudioState {
   status: 'idle' | 'loading' | 'ready' | 'missing' | 'invalid';
@@ -26,6 +27,9 @@ interface StudioState {
   saveState: SaveState;
   saveError: string | null;
   lastSavedAt: number | null;
+  /** Set when the stored document was upgraded from an older format on open. */
+  upgradedFrom: number | null;
+  panel: StudioPanel;
 
   activeZoneId: ZoneId;
   selectedLayerIds: string[];
@@ -36,6 +40,8 @@ interface StudioState {
   layersOpen: boolean;
 
   load: (projectId: string) => Promise<void>;
+  refreshMeta: () => Promise<void>;
+  setPanel: (panel: StudioPanel) => void;
   dispatch: (command: Command) => boolean;
   undo: () => void;
   redo: () => void;
@@ -79,6 +85,8 @@ export const useStudio = create<StudioState>((set, get) => {
     saveState: 'saved',
     saveError: null,
     lastSavedAt: null,
+    upgradedFrom: null,
+    panel: null,
 
     activeZoneId: 'front',
     selectedLayerIds: [],
@@ -89,7 +97,7 @@ export const useStudio = create<StudioState>((set, get) => {
     layersOpen: false,
 
     async load(projectId) {
-      if (get().projectId === projectId && get().status === 'ready') return;
+      if (get().projectId === projectId && (get().status === 'ready' || get().status === 'loading')) return;
       set({ status: 'loading', projectId, document: null, history: emptyHistory(), selectedLayerIds: [], loadErrors: [] });
       try {
         const result = await loadDocument(projectId);
@@ -105,10 +113,23 @@ export const useStudio = create<StudioState>((set, get) => {
           saveState: 'saved',
           lastSavedAt: result.meta.updatedAt,
           activeZoneId: 'front',
+          upgradedFrom: result.upgradedFrom ?? null,
+          panel: null,
         });
       } catch (error) {
         set({ status: 'invalid', loadErrors: [error instanceof Error ? error.message : String(error)] });
       }
+    },
+
+    async refreshMeta() {
+      const id = get().projectId;
+      if (!id) return;
+      const meta = await getProject(id);
+      if (meta) set({ meta });
+    },
+
+    setPanel(panel) {
+      set({ panel });
     },
 
     dispatch(command) {
@@ -200,18 +221,35 @@ export function useActiveColorway() {
 interface LiveState {
   zoneId: ZoneId | null;
   overrides: Record<string, Partial<LayerTransform>>;
+  /** Shown instead of the active colourway while batch-rendering every colourway. */
+  colorwayOverride: string | null;
   setOverrides: (zoneId: ZoneId, overrides: Record<string, Partial<LayerTransform>>) => void;
+  setColorwayOverride: (id: string | null) => void;
   clear: () => void;
 }
 
 export const useLive = create<LiveState>((set) => ({
   zoneId: null,
   overrides: {},
+  colorwayOverride: null,
   setOverrides: (zoneId, overrides) => set({ zoneId, overrides }),
+  setColorwayOverride: (colorwayOverride) => set({ colorwayOverride }),
   clear: () => set({ zoneId: null, overrides: {} }),
 }));
 
+/** The colourway the 3D view should show: a batch-export override, else the active one. */
+export function useDisplayColorway() {
+  const override = useLive((s) => s.colorwayOverride);
+  return useStudio((s) => {
+    const d = s.document;
+    if (!d) return undefined;
+    return d.colorways.find((c) => c.id === (override ?? d.activeColorwayId)) ?? d.colorways[0];
+  });
+}
+
 if (typeof window !== 'undefined') {
+  // Development-only handle for inspecting studio state from the console.
+  if (process.env.NODE_ENV !== 'production') Object.assign(window, { __wovexaStudio: useStudio });
   // Flush pending edits when the tab is hidden or closed, so a reload never loses work.
   const flush = () => {
     if (useStudio.getState().saveState !== 'saved') void useStudio.getState().saveNow();

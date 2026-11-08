@@ -1,5 +1,6 @@
 import { COLORWAY_PRESETS, getGarment, TEE_CLASSIC } from './garments';
 import {
+  defaultProduction,
   SCHEMA_VERSION,
   ZONE_IDS,
   type ArtworkLayer,
@@ -38,8 +39,12 @@ function emptyZone(zoneId: ZoneId): ZoneDesign {
 
 export function createDocument(opts: { projectId: string; title: string; modelId?: string; colorwayIndex?: number }): DesignDocument {
   const model = getGarment(opts.modelId ?? TEE_CLASSIC.id);
-  const colorways = COLORWAY_PRESETS.slice(0, 3).map(createColorway);
-  const active = colorways[Math.min(opts.colorwayIndex ?? 0, colorways.length - 1)];
+  // The three core presets, plus the requested one when it is not among them.
+  const core: readonly (typeof COLORWAY_PRESETS)[number][] = COLORWAY_PRESETS.slice(0, 3);
+  const wanted = COLORWAY_PRESETS[opts.colorwayIndex ?? 0] ?? COLORWAY_PRESETS[0];
+  const list = core.includes(wanted) ? core : [wanted, ...core];
+  const colorways = list.map(createColorway);
+  const active = colorways[list.indexOf(wanted)];
   const zones = Object.fromEntries(ZONE_IDS.map((z) => [z, emptyZone(z)])) as DesignDocument['zones'];
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -56,6 +61,7 @@ export function createDocument(opts: { projectId: string; title: string; modelId
     activeColorwayId: active.id,
     colorways,
     zones,
+    production: defaultProduction(() => newId()),
   };
 }
 
@@ -73,6 +79,7 @@ export function createTextLayer(zone: { printableWidthMm: number; printableHeigh
     align: 'center',
     letterSpacingEm: 0,
     lineHeight: 1.1,
+    curveDeg: 0,
   };
   const widthMm = Math.min(zone.printableWidthMm * 0.7, 200);
   const heightMm = widthMm * 0.22;

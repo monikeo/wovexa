@@ -255,7 +255,18 @@ export function NumberField({
   );
 }
 
-export function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (hex: string) => void }) {
+export function ColorField({
+  label,
+  value,
+  onChange,
+  swatches,
+}: {
+  label: string;
+  value: string;
+  onChange: (hex: string) => void;
+  /** Brand palette shown as one-click swatches under the field. */
+  swatches?: { name: string; hex: string }[];
+}) {
   const id = useId();
   const [draft, setDraft] = useState(value);
   // Follow outside changes (undo, colourway switch) unless the user is mid-edit.
@@ -287,6 +298,22 @@ export function ColorField({ label, value, onChange }: { label: string; value: s
           onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
         />
       </div>
+      {swatches?.length ? (
+        <div className="col-start-2 flex flex-wrap gap-1" role="group" aria-label={`${label}: brand colours`}>
+          {swatches.map((s) => (
+            <button
+              key={s.hex + s.name}
+              type="button"
+              title={`${s.name} ${s.hex}`}
+              aria-label={`Use ${s.name}`}
+              aria-pressed={s.hex.toUpperCase() === value.toUpperCase()}
+              onClick={() => onChange(s.hex.toUpperCase())}
+              className="h-6 w-6 rounded-md border border-line aria-pressed:ring-2 aria-pressed:ring-[var(--focus-ring)] aria-pressed:ring-offset-1"
+              style={{ background: s.hex }}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

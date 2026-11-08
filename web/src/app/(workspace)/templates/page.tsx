@@ -1,20 +1,25 @@
 import type { Metadata } from 'next';
-import { Planned } from '@/components/workspace/Planned';
+import { BuiltInTemplates, UserTemplates } from '@/components/workspace/templates';
+import { PageHeader } from '@/components/workspace/WorkspaceShell';
 
 export const metadata: Metadata = { title: 'Templates' };
 
-export default function Page() {
+export default function TemplatesPage() {
   return (
-    <Planned
-      title="Templates"
-      summary="Save a garment and its layers as a starting point your team can reuse."
-      items={[
-        'Save any project as a template with locked and editable layers',
-        'Filter by garment, use case and licence',
-        'Templates stay private to your workspace unless you publish them',
-      ]}
-      release="the Professional release (P1)"
-      specRef="§18 BRD-03, BRD-04"
-    />
+    <>
+      <PageHeader title="Templates" description="Start a project from a ready-made layout. Every template opens as an independent copy you can change freely." />
+      <section aria-labelledby="mine" className="mb-12">
+        <h2 id="mine" className="mb-3 text-sm font-semibold">
+          Your templates
+        </h2>
+        <UserTemplates />
+      </section>
+      <section aria-labelledby="starters">
+        <h2 id="starters" className="mb-3 text-sm font-semibold">
+          Starter templates
+        </h2>
+        <BuiltInTemplates />
+      </section>
+    </>
   );
 }

@@ -5,20 +5,25 @@
  * the canonical renderer, and every finished gesture becomes one domain command.
  * World units are millimetres from the top-left of the active print zone.
  */
-import { ActiveSelection, Canvas as FabricCanvas, FabricImage, Point, type FabricObject, type TPointerEventInfo } from 'fabric';
-import { Maximize, Minus, Plus } from 'lucide-react';
+import { ActiveSelection, Canvas as FabricCanvas, FabricImage, Group, Point, type FabricObject, type TPointerEventInfo } from 'fabric';
+import { Focus, Maximize, Minus, Plus } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { unionBounds } from '@/domain/arrange';
 import { updateTransforms } from '@/domain/commands';
 import { getGarment, getSize } from '@/domain/garments';
-import type { ArtworkLayer, LayerTransform, ZoneId } from '@/domain/schema';
+import { rotatedBounds, type Rect } from '@/domain/geometry';
+import type { ArtworkLayer, LayerTransform, ZoneDesign, ZoneId } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
+import { usePreference } from '@/lib/preferences';
 import { ensureFonts, renderLayerBitmap } from '@/lib/render/zone-renderer';
 import { useActiveColorway, useActiveZoneSpec, useLive, useStudio } from '@/stores/studio-store';
+import { drawRuler, RULER_SIZE } from './rulers';
 import { sketchForZone } from './flat-sketch';
 
 type LayerObject = FabricImage & { layerId: string; bitmapKey?: string; bitmap?: HTMLCanvasElement };
+type GroupObject = Group & { groupKey: string; signature?: string };
 
-const PAD = 28;
+const PAD = 44;
 const ACTUAL_SIZE = 96 / 25.4; // CSS px per mm at 100%
 const SNAP_PX = 6;
 
@@ -36,7 +41,14 @@ function placeholder(): HTMLCanvasElement {
   return c;
 }
 
-/** Absolute physical transform of an object, including any active-selection group. */
+/** Layer objects inside a target, through groups and active selections. */
+function leaves(obj: FabricObject): LayerObject[] {
+  if ((obj as LayerObject).layerId) return [obj as LayerObject];
+  if (obj instanceof Group) return obj.getObjects().flatMap(leaves);
+  return [];
+}
+
+/** Absolute physical transform of an object, including any group or active selection. */
 function transformOf(obj: FabricObject): LayerTransform {
   const center = obj.getCenterPoint();
   const scaling = obj.getObjectScaling();
@@ -51,29 +63,62 @@ function transformOf(obj: FabricObject): LayerTransform {
   };
 }
 
+/** Document order split into display items: single layers, or contiguous group blocks. */
+function displayItems(zone: ZoneDesign) {
+  const items: { key: string; ids: string[] }[] = [];
+  const seen = new Map<string, number>();
+  for (const id of zone.orderedLayerIds) {
+    const layer = zone.layers[id];
+    if (!layer) continue;
+    const g = layer.groupId;
+    const last = items[items.length - 1];
+    if (g && last && last.key.startsWith(`g:${g}`)) {
+      last.ids.push(id);
+      continue;
+    }
+    if (g) {
+      const n = (seen.get(g) ?? 0) + 1;
+      seen.set(g, n);
+      items.push({ key: n === 1 ? `g:${g}` : `g:${g}:${n}`, ids: [id] });
+    } else {
+      items.push({ key: `l:${id}`, ids: [id] });
+    }
+  }
+  // A "group" of one (e.g. after deleting other members) behaves like a single layer.
+  return items.map((it) => (it.key.startsWith('g:') && it.ids.length === 1 ? { key: `l:${it.ids[0]}`, ids: it.ids } : it));
+}
+
 export function Editor2D() {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasElRef = useRef<HTMLCanvasElement>(null);
+  const rulerTopRef = useRef<HTMLCanvasElement>(null);
+  const rulerLeftRef = useRef<HTMLCanvasElement>(null);
   const fabricRef = useRef<FabricCanvas | null>(null);
   const objectsRef = useRef(new Map<string, LayerObject>());
+  const groupsRef = useRef(new Map<string, GroupObject>());
   const zoneRef = useRef<ZoneId>('front');
   const syncingSelection = useRef(false);
   const snapLines = useRef<{ x?: number; y?: number }>({});
+  const pointerRef = useRef<{ x: number; y: number } | null>(null);
   const fitRef = useRef(true);
+  const renderRulersRef = useRef<() => void>(() => {});
   const [zoomPct, setZoomPct] = useState(100);
   const [ready, setReady] = useState(false);
+  // Bumped when an image decodes or a web font loads, so objects are redrawn with real pixels.
+  const [refreshTick, setRefreshTick] = useState(0);
 
   const doc = useStudio((s) => s.document);
   const zoneId = useStudio((s) => s.activeZoneId);
   const selected = useStudio((s) => s.selectedLayerIds);
   const zoneSpec = useActiveZoneSpec();
   const colorway = useActiveColorway();
+  const units = usePreference('units');
   const zone = doc?.zones[zoneId];
 
   // Latest values for event handlers registered once; refreshed after every render.
-  const latest = useRef({ zoneSpec, colorway, doc, zoneId });
+  const latest = useRef({ zoneSpec, colorway, doc, zoneId, units, selected });
   useEffect(() => {
-    latest.current = { zoneSpec, colorway, doc, zoneId };
+    latest.current = { zoneSpec, colorway, doc, zoneId, units, selected };
     fabricRef.current?.requestRenderAll();
   });
 
@@ -82,17 +127,49 @@ export function Editor2D() {
     if (c) setZoomPct(Math.round((c.getZoom() / ACTUAL_SIZE) * 100));
   }, []);
 
+  const zoomToRect = useCallback(
+    (r: Rect, pad = PAD) => {
+      const c = fabricRef.current;
+      if (!c) return;
+      const w = c.getWidth();
+      const h = c.getHeight();
+      const zoom = Math.min(ACTUAL_SIZE * 8, Math.max(0.05, Math.min((w - pad * 2) / Math.max(r.width, 1), (h - pad * 2) / Math.max(r.height, 1))));
+      c.setViewportTransform([zoom, 0, 0, zoom, (w - r.width * zoom) / 2 - r.x * zoom + RULER_SIZE / 2, (h - r.height * zoom) / 2 - r.y * zoom + RULER_SIZE / 2]);
+      reportZoom();
+    },
+    [reportZoom],
+  );
+
   const fit = useCallback(() => {
-    const c = fabricRef.current;
     const spec = latest.current.zoneSpec;
-    if (!c || !spec) return;
-    const w = c.getWidth();
-    const h = c.getHeight();
-    const zoom = Math.max(0.05, Math.min((w - PAD * 2) / spec.printableWidthMm, (h - PAD * 2) / spec.printableHeightMm));
-    c.setViewportTransform([zoom, 0, 0, zoom, (w - spec.printableWidthMm * zoom) / 2, (h - spec.printableHeightMm * zoom) / 2]);
+    if (!spec) return;
+    zoomToRect({ x: 0, y: 0, width: spec.printableWidthMm, height: spec.printableHeightMm });
     fitRef.current = true;
-    reportZoom();
-  }, [reportZoom]);
+  }, [zoomToRect]);
+
+  const zoomToSelection = useCallback(() => {
+    const { doc: d, zoneId: z, selected: ids } = latest.current;
+    const zn = d?.zones[z];
+    if (!zn || !ids.length) return;
+    const rects = ids.map((id) => zn.layers[id]).filter(Boolean).map((l) => rotatedBounds(l.transform));
+    if (!rects.length) return;
+    zoomToRect(unionBounds(rects), 80);
+    fitRef.current = false;
+  }, [zoomToRect]);
+
+  /** Make the canvas selection match the given layer ids (whole groups only). */
+  const restoreSelection = useCallback((canvas: FabricCanvas, zn: ZoneDesign, ids: string[]) => {
+    canvas.discardActiveObject();
+    const targets: FabricObject[] = [];
+    for (const item of displayItems(zn)) {
+      if (!item.ids.every((id) => ids.includes(id))) continue;
+      const obj = item.key.startsWith('g:') ? groupsRef.current.get(item.key) : objectsRef.current.get(item.ids[0]);
+      if (obj && obj.selectable && canvas.getObjects().includes(obj)) targets.push(obj);
+    }
+    if (targets.length === 1) canvas.setActiveObject(targets[0]);
+    else if (targets.length > 1) canvas.setActiveObject(new ActiveSelection(targets, { canvas }));
+    canvas.requestRenderAll();
+  }, []);
 
   const zoomBy = useCallback(
     (factor: number, at?: Point) => {
@@ -170,15 +247,15 @@ export function Editor2D() {
       ctx.restore();
     });
 
-    // Print area, safe margin and snap guides on top.
+    // Print area, safe margin, snap guides and rulers on top.
     canvas.on('after:render', ({ ctx }) => {
       if (ctx !== canvas.getContext()) return;
       const spec = latest.current.zoneSpec;
       if (!spec) return;
       const v = canvas.viewportTransform;
-      const z = v[0];
-      const X = (mm: number) => Math.round(v[4] + mm * z) + 0.5;
-      const Y = (mm: number) => Math.round(v[5] + mm * z) + 0.5;
+      const zoom = v[0];
+      const X = (mm: number) => Math.round(v[4] + mm * zoom) + 0.5;
+      const Y = (mm: number) => Math.round(v[5] + mm * zoom) + 0.5;
       const W = spec.printableWidthMm;
       const H = spec.printableHeightMm;
       const inset = spec.safeInsetMm;
@@ -210,7 +287,30 @@ export function Editor2D() {
         ctx.stroke();
       }
       ctx.restore();
+      renderRulers();
     });
+
+    // Rulers: selection extent from the live objects while dragging, else from the document.
+    const renderRulers = () => {
+      const { units: u, doc: d, zoneId: z, selected: ids } = latest.current;
+      const v = canvas.viewportTransform;
+      const active = canvas.getActiveObjects().flatMap(leaves);
+      const zn = d?.zones[z];
+      const rects = active.length
+        ? active.map((o) => rotatedBounds(transformOf(o)))
+        : zn
+          ? ids.map((id) => zn.layers[id]).filter(Boolean).map((l) => rotatedBounds(l.transform))
+          : [];
+      const sel = rects.length ? unionBounds(rects) : null;
+      const colors = { bg: cssVar('--surface-panel', '#fff'), fg: cssVar('--text-muted', '#8c909b'), line: cssVar('--border', '#dcdee4'), accent };
+      const p = pointerRef.current;
+      if (rulerTopRef.current) drawRuler(rulerTopRef.current, 'x', { zoom: v[0], offset: v[4], units: u, selection: sel ? [sel.x, sel.x + sel.width] : null, pointer: p?.x ?? null, colors });
+      if (rulerLeftRef.current) drawRuler(rulerLeftRef.current, 'y', { zoom: v[0], offset: v[5], units: u, selection: sel ? [sel.y, sel.y + sel.height] : null, pointer: p?.y ?? null, colors });
+    };
+    let rulerFrame = 0;
+    renderRulersRef.current = () => {
+      if (!rulerFrame) rulerFrame = requestAnimationFrame(() => ((rulerFrame = 0), renderRulers()));
+    };
 
     // ---- Live previews while transforming ----
     let liveFrame = 0;
@@ -218,33 +318,49 @@ export function Editor2D() {
       if (liveFrame) return;
       liveFrame = requestAnimationFrame(() => {
         liveFrame = 0;
-        const objs = target instanceof ActiveSelection ? target.getObjects() : [target];
         const overrides: Record<string, Partial<LayerTransform>> = {};
-        for (const o of objs) {
-          const id = (o as LayerObject).layerId;
-          if (id) overrides[id] = transformOf(o);
-        }
+        for (const o of leaves(target)) overrides[o.layerId] = transformOf(o);
         useLive.getState().setOverrides(zoneRef.current, overrides);
       });
     };
 
+    // Smart guides: snap edges and centres to the print area and to other layers (spec ED2-08).
     canvas.on('object:moving', (e) => {
       const target = e.target;
-      const spec = latest.current.zoneSpec;
       snapLines.current = {};
-      if (spec && !(e.e as MouseEvent).altKey) {
+      const { zoneSpec: spec, doc: d } = latest.current;
+      const zn = d?.zones[zoneRef.current];
+      if (spec && zn && !(e.e as MouseEvent).altKey) {
+        const moving = leaves(target);
+        const movingIds = new Set(moving.map((o) => o.layerId));
+        const b = unionBounds(moving.map((o) => rotatedBounds(transformOf(o))));
+        const W = spec.printableWidthMm;
+        const H = spec.printableHeightMm;
+        const xs = [0, W / 2, W, spec.safeInsetMm, W - spec.safeInsetMm];
+        const ys = [0, H / 2, H, spec.safeInsetMm, H - spec.safeInsetMm];
+        for (const id of zn.orderedLayerIds) {
+          const l = zn.layers[id];
+          if (!l || !l.visible || movingIds.has(id)) continue;
+          const r = rotatedBounds(l.transform);
+          xs.push(r.x, r.x + r.width / 2, r.x + r.width);
+          ys.push(r.y, r.y + r.height / 2, r.y + r.height);
+        }
         const tol = SNAP_PX / canvas.getZoom();
-        const c = target.getCenterPoint();
-        let { x, y } = c;
-        if (Math.abs(x - spec.printableWidthMm / 2) < tol) {
-          x = spec.printableWidthMm / 2;
-          snapLines.current.x = x;
+        const best = (edges: number[], lines: number[]) => {
+          let pick: { delta: number; line: number } | null = null;
+          for (const edge of edges) for (const line of lines) {
+            const delta = line - edge;
+            if (Math.abs(delta) < tol && (!pick || Math.abs(delta) < Math.abs(pick.delta))) pick = { delta, line };
+          }
+          return pick;
+        };
+        const sx = best([b.x, b.x + b.width / 2, b.x + b.width], xs);
+        const sy = best([b.y, b.y + b.height / 2, b.y + b.height], ys);
+        if (sx || sy) {
+          target.set({ left: target.left + (sx?.delta ?? 0), top: target.top + (sy?.delta ?? 0) });
+          target.setCoords();
+          snapLines.current = { x: sx?.line, y: sy?.line };
         }
-        if (Math.abs(y - spec.printableHeightMm / 2) < tol) {
-          y = spec.printableHeightMm / 2;
-          snapLines.current.y = y;
-        }
-        if (x !== c.x || y !== c.y) target.setPositionByOrigin(new Point(x, y), 'center', 'center');
       }
       pushLive(target);
     });
@@ -255,13 +371,8 @@ export function Editor2D() {
       cancelAnimationFrame(liveFrame);
       liveFrame = 0;
       snapLines.current = {};
-      const target = e.target;
-      const objs = target instanceof ActiveSelection ? target.getObjects() : [target];
       const changes: Record<string, Partial<LayerTransform>> = {};
-      for (const o of objs) {
-        const id = (o as LayerObject).layerId;
-        if (id) changes[id] = transformOf(o);
-      }
+      for (const o of leaves(e.target)) changes[o.layerId] = transformOf(o);
       const action = e.action ?? '';
       const label = action.startsWith('scale') ? 'Resize' : action === 'rotate' ? 'Rotate' : 'Move';
       useStudio.getState().dispatch(updateTransforms(zoneRef.current, changes, label));
@@ -272,7 +383,7 @@ export function Editor2D() {
     // ---- Selection sync: canvas → store ----
     const onSelection = () => {
       if (syncingSelection.current) return;
-      const ids = canvas.getActiveObjects().map((o) => (o as LayerObject).layerId).filter(Boolean);
+      const ids = canvas.getActiveObjects().flatMap(leaves).map((o) => o.layerId);
       useStudio.getState().select(ids);
     };
     canvas.on('selection:created', onSelection);
@@ -280,7 +391,7 @@ export function Editor2D() {
     canvas.on('selection:cleared', onSelection);
 
     canvas.on('mouse:dblclick', (e) => {
-      const id = (e.target as LayerObject | undefined)?.layerId;
+      const id = e.target ? leaves(e.target)[0]?.layerId : undefined;
       if (id) window.dispatchEvent(new CustomEvent('wovexa:edit-layer', { detail: { layerId: id } }));
     });
 
@@ -303,16 +414,20 @@ export function Editor2D() {
     canvas.on('mouse:down', (opt: TPointerEventInfo) => {
       const ev = opt.e as PointerEvent;
       const touchEmpty = ev.pointerType === 'touch' && !opt.target;
-      if (spaceDown || ev.button === 1 || touchEmpty) {
-        panning = { x: ev.clientX, y: ev.clientY };
-      }
+      if (spaceDown || ev.button === 1 || touchEmpty) panning = { x: ev.clientX, y: ev.clientY };
     });
     canvas.on('mouse:move', (opt: TPointerEventInfo) => {
+      pointerRef.current = canvas.getScenePoint(opt.e);
+      renderRulersRef.current();
       if (!panning || pinch.size > 1) return;
       const ev = opt.e as PointerEvent;
       canvas.relativePan(new Point(ev.clientX - panning.x, ev.clientY - panning.y));
       panning = { x: ev.clientX, y: ev.clientY };
       fitRef.current = false;
+    });
+    canvas.on('mouse:out', () => {
+      pointerRef.current = null;
+      renderRulersRef.current();
     });
     canvas.on('mouse:up', () => {
       panning = null;
@@ -368,6 +483,11 @@ export function Editor2D() {
     upper.addEventListener('pointerup', onPointerUp);
     upper.addEventListener('pointercancel', onPointerUp);
 
+    const onZoomToSelection = () => zoomToSelection();
+    const onFit = () => fit();
+    window.addEventListener('wovexa:zoom-to-selection', onZoomToSelection);
+    window.addEventListener('wovexa:fit', onFit);
+
     const ro = new ResizeObserver(() => {
       canvas.setDimensions({ width: host.clientWidth, height: host.clientHeight });
       if (fitRef.current) fit();
@@ -377,30 +497,51 @@ export function Editor2D() {
     setReady(true);
 
     const objects = objectsRef.current;
+    const groups = groupsRef.current;
     return () => {
       ro.disconnect();
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('keyup', onKey);
+      window.removeEventListener('wovexa:zoom-to-selection', onZoomToSelection);
+      window.removeEventListener('wovexa:fit', onFit);
       upper.removeEventListener('pointerdown', onPointerDown);
       upper.removeEventListener('pointermove', onPointerMove);
       upper.removeEventListener('pointerup', onPointerUp);
       upper.removeEventListener('pointercancel', onPointerUp);
       cancelAnimationFrame(liveFrame);
       objects.clear();
+      groups.clear();
       fabricRef.current = null;
       void canvas.dispose();
     };
-  }, [fit, zoomBy, reportZoom]);
+  }, [fit, zoomBy, reportZoom, zoomToSelection]);
 
   // ---- Reconcile Fabric objects with the canonical document ----
   useEffect(() => {
     const canvas = fabricRef.current;
     if (!canvas || !zone || !ready) return;
     const objects = objectsRef.current;
+    const groups = groupsRef.current;
+
+    // Objects inside a temporary multi-selection use selection-relative coordinates, so the
+    // selection is released before placing objects and restored afterwards.
+    const quietly = (fn: () => void) => {
+      syncingSelection.current = true;
+      fn();
+      syncingSelection.current = false;
+    };
+    let reselect = false;
+    if (canvas.getActiveObject() instanceof ActiveSelection) {
+      quietly(() => canvas.discardActiveObject());
+      reselect = true;
+    }
 
     if (zoneRef.current !== zoneId) {
+      quietly(() => canvas.discardActiveObject());
+      for (const g of groups.values()) canvas.remove(g);
       for (const obj of objects.values()) canvas.remove(obj);
       objects.clear();
+      groups.clear();
       zoneRef.current = zoneId;
       fit();
     }
@@ -408,8 +549,22 @@ export function Editor2D() {
     let cancelled = false;
     const coarse = matchMedia('(pointer: coarse)').matches;
     const accent = cssVar('--accent', '#2b59ff');
+    const controlStyle = {
+      lockScalingFlip: true,
+      borderColor: accent,
+      cornerColor: '#ffffff',
+      cornerStrokeColor: accent,
+      cornerStyle: 'rect' as const,
+      transparentCorners: false,
+      cornerSize: coarse ? 20 : 10,
+      touchCornerSize: 28,
+      borderScaleFactor: 1.5,
+      padding: 0,
+      objectCaching: false,
+    };
     const resolution = () => Math.min(12, canvas.getZoom() * (window.devicePixelRatio || 1));
 
+    // Pixels and absolute placement for a layer object that is not inside a group.
     const applyLayer = (obj: LayerObject, layer: ArtworkLayer) => {
       let element: HTMLCanvasElement | HTMLImageElement;
       if (layer.content.kind === 'image') {
@@ -442,92 +597,152 @@ export function Editor2D() {
       obj.setCoords();
     };
 
-    const order = zone.orderedLayerIds;
+    const ensureObject = (id: string) => {
+      let obj = objects.get(id);
+      if (!obj) {
+        obj = new FabricImage(placeholder(), { originX: 'center', originY: 'center', ...controlStyle }) as LayerObject;
+        obj.layerId = id;
+        objects.set(id, obj);
+      }
+      return obj;
+    };
+
+    const detach = (obj: FabricObject) => {
+      const parent = obj.group;
+      if (parent && !(parent instanceof ActiveSelection)) parent.remove(obj);
+      if (canvas.getObjects().includes(obj)) canvas.remove(obj);
+    };
+
+    const items = displayItems(zone);
+    const liveKeys = new Set(items.map((i) => i.key));
+    const liveIds = new Set(zone.orderedLayerIds);
+
+    // Remove groups and layers that no longer exist.
+    for (const [key, group] of groups) {
+      if (!liveKeys.has(key)) {
+        if (canvas.getActiveObject() === group) quietly(() => canvas.discardActiveObject());
+        group.removeAll();
+        canvas.remove(group);
+        groups.delete(key);
+      }
+    }
     for (const [id, obj] of objects) {
-      if (!zone.layers[id]) {
-        canvas.remove(obj);
+      if (!liveIds.has(id)) {
+        detach(obj);
         objects.delete(id);
       }
     }
-    order.forEach((id, index) => {
-      const layer = zone.layers[id];
-      let obj = objects.get(id);
-      if (!obj) {
-        obj = new FabricImage(placeholder(), {
-          originX: 'center',
-          originY: 'center',
-          lockScalingFlip: true,
-          borderColor: accent,
-          cornerColor: '#ffffff',
-          cornerStrokeColor: accent,
-          cornerStyle: 'rect',
-          transparentCorners: false,
-          cornerSize: coarse ? 20 : 10,
-          touchCornerSize: 28,
-          borderScaleFactor: 1.5,
-          padding: 0,
-          objectCaching: false,
-        }) as LayerObject;
-        obj.layerId = id;
-        objects.set(id, obj);
-        canvas.add(obj);
+
+    const zoomBucket = Math.round(resolution() * 4);
+    const display: FabricObject[] = [];
+    for (const item of items) {
+      if (item.key.startsWith('l:')) {
+        const id = item.ids[0];
+        const obj = ensureObject(id);
+        if (obj.group && !(obj.group instanceof ActiveSelection)) detach(obj);
+        applyLayer(obj, zone.layers[id]);
+        display.push(obj);
+        continue;
       }
-      applyLayer(obj, layer);
+      const members = item.ids.map((id) => zone.layers[id]);
+      const signature = JSON.stringify([members, zoomBucket, members.map((m) => (m.content.kind === 'image' ? !!getLoadedImage(m.content.assetId) : 1))]);
+      let group = groups.get(item.key);
+      if (!group || group.signature !== signature) {
+        if (group) {
+          if (canvas.getActiveObject() === group) {
+            quietly(() => canvas.discardActiveObject());
+            reselect = true;
+          }
+          group.removeAll();
+          canvas.remove(group);
+        }
+        const objs = item.ids.map((id) => {
+          const obj = ensureObject(id);
+          detach(obj);
+          applyLayer(obj, zone.layers[id]);
+          return obj;
+        });
+        group = new Group(objs, { originX: 'center', originY: 'center', subTargetCheck: false, interactive: false, ...controlStyle }) as GroupObject;
+        group.groupKey = item.key;
+        group.signature = signature;
+        const locked = members.some((m) => m.locked);
+        group.set({ selectable: !locked, evented: !locked && members.some((m) => m.visible), hoverCursor: locked ? 'default' : 'move' });
+        groups.set(item.key, group);
+      }
+      display.push(group);
+    }
+
+    display.forEach((obj, index) => {
+      if (!canvas.getObjects().includes(obj)) canvas.add(obj);
       if (canvas.getObjects().indexOf(obj) !== index) canvas.moveObjectTo(obj, index);
+    });
+
+    if (reselect) quietly(() => restoreSelection(canvas, zone, latest.current.selected));
+
+    // Images decode asynchronously; redraw once they're ready.
+    for (const id of zone.orderedLayerIds) {
+      const layer = zone.layers[id];
       if (layer.content.kind === 'image' && !getLoadedImage(layer.content.assetId)) {
         loadAssetImage(layer.content.assetId).then(
-          () => {
-            const current = useStudio.getState().document?.zones[zoneRef.current].layers[id];
-            const o = objects.get(id);
-            if (!cancelled && current && o) {
-              applyLayer(o, current);
-              canvas.requestRenderAll();
-            }
-          },
+          () => !cancelled && setRefreshTick((t) => t + 1),
           () => {},
         );
       }
-    });
+    }
 
-    // Text bitmaps need their web fonts; re-render once they're ready.
-    ensureFonts([zone]).then(() => {
-      if (cancelled) return;
-      for (const id of zone.orderedLayerIds) {
-        const o = objects.get(id);
-        const l = zone.layers[id];
-        if (o && l && l.content.kind === 'text') {
-          o.bitmapKey = undefined;
-          applyLayer(o, l);
-        }
-      }
-      canvas.requestRenderAll();
+    // Text bitmaps need their web fonts; redraw with real metrics once a font arrives.
+    ensureFonts([zone]).then((loaded) => {
+      if (cancelled || !loaded) return;
+      for (const obj of objects.values()) obj.bitmapKey = undefined;
+      setRefreshTick((t) => t + 1);
     });
 
     canvas.requestRenderAll();
     return () => {
       cancelled = true;
     };
-  }, [zone, zoneId, ready, zoomPct, fit, colorway]);
+  }, [zone, zoneId, ready, zoomPct, fit, colorway, refreshTick, restoreSelection]);
 
   // ---- Selection sync: store → canvas ----
   useEffect(() => {
     const canvas = fabricRef.current;
-    if (!canvas || !ready) return;
-    const current = canvas.getActiveObjects().map((o) => (o as LayerObject).layerId);
+    if (!canvas || !ready || !zone) return;
+    const current = canvas.getActiveObjects().flatMap(leaves).map((o) => o.layerId);
     if (current.length === selected.length && current.every((id) => selected.includes(id))) return;
     syncingSelection.current = true;
-    canvas.discardActiveObject();
-    const objs = selected.map((id) => objectsRef.current.get(id)).filter((o): o is LayerObject => !!o && o.selectable);
-    if (objs.length === 1) canvas.setActiveObject(objs[0]);
-    else if (objs.length > 1) canvas.setActiveObject(new ActiveSelection(objs, { canvas }));
-    canvas.requestRenderAll();
+    restoreSelection(canvas, zone, selected);
     syncingSelection.current = false;
-  }, [selected, ready, zone]);
+  }, [selected, ready, zone, restoreSelection]);
+
+  // Rulers follow device pixel ratio and size.
+  useEffect(() => {
+    const top = rulerTopRef.current;
+    const left = rulerLeftRef.current;
+    const host = hostRef.current;
+    if (!top || !left || !host) return;
+    const size = () => {
+      const dpr = window.devicePixelRatio || 1;
+      top.width = Math.round(host.clientWidth * dpr);
+      top.height = Math.round(RULER_SIZE * dpr);
+      left.width = Math.round(RULER_SIZE * dpr);
+      left.height = Math.round(host.clientHeight * dpr);
+      fabricRef.current?.requestRenderAll();
+    };
+    size();
+    const ro = new ResizeObserver(size);
+    ro.observe(host);
+    return () => ro.disconnect();
+  }, []);
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-canvas" data-testid="editor-2d">
       <div ref={hostRef} className="absolute inset-0 touch-none">
         <canvas ref={canvasElRef} aria-label={`${zoneSpec?.label ?? ''} print zone editor`} />
+      </div>
+      <canvas ref={rulerTopRef} className="pointer-events-none absolute left-0 top-0 h-5 w-full" aria-hidden />
+      <canvas ref={rulerLeftRef} className="pointer-events-none absolute left-0 top-0 h-full w-5" aria-hidden />
+      <div className="pointer-events-none absolute left-0 top-0 grid h-5 w-5 place-items-center border-b border-r border-line bg-panel text-[9px] font-semibold text-fg-3" aria-hidden>
+        {units}
       </div>
       <div className="absolute bottom-3 right-3 flex items-center gap-0.5 rounded-xl border border-line bg-floating/95 p-1 shadow-sm backdrop-blur">
         <button className="icon-btn" onClick={() => zoomBy(1 / 1.25)} aria-label="Zoom out" title="Zoom out">
@@ -539,7 +754,10 @@ export function Editor2D() {
         <button className="icon-btn" onClick={() => zoomBy(1.25)} aria-label="Zoom in" title="Zoom in">
           <Plus size={16} />
         </button>
-        <button className="icon-btn" onClick={fit} aria-label="Fit print area to screen" title="Fit">
+        <button className="icon-btn" onClick={zoomToSelection} disabled={!selected.length} aria-label="Zoom to selection" title="Zoom to selection (Shift+2)">
+          <Focus size={15} />
+        </button>
+        <button className="icon-btn" onClick={fit} aria-label="Fit print area to screen" title="Fit (Shift+1)">
           <Maximize size={15} />
         </button>
       </div>

@@ -20,14 +20,16 @@ No account or backend is needed. Without Supabase settings the app runs in **loc
 | Area | Status |
 |---|---|
 | Marketing site | Home, plans |
-| Workspace | Dashboard, projects (search, sort, rename, duplicate, archive, delete), asset library, settings (units, theme, 3D quality, local data) |
-| Wovexa Studio (2D) | Four print zones on a flat garment sketch at true scale; text (11 open-licence fonts including Khmer and Chinese), images (PNG, JPEG, WebP, sanitized SVG), rectangles, ellipses, triangles; move, scale, rotate, snap to centre; numeric inspector in mm or inches; layers (reorder, lock, hide, rename); undo and redo; keyboard shortcuts; drag-and-drop and paste |
+| Workspace | Dashboard, projects (search, sort, rename, duplicate, archive, delete, approval status), asset library, templates (6 starters plus your own), brand kits, settings (units, theme, 3D quality, local data) |
+| Wovexa Studio (2D) | Four print zones on a flat garment sketch at true scale; rulers in mm or inches; smart guides that snap to the print area and other layers; text with curves (11 open-licence fonts including Khmer and Chinese), images (PNG, JPEG, WebP, sanitized SVG), rectangles, ellipses, triangles; groups; align and distribute; zoom to selection; numeric inspector; layers (reorder, lock, hide, rename); undo and redo with gestures merged into single steps; keyboard shortcuts; drag-and-drop and paste |
+| Brand kits | Approved logos, named palette and fonts; link a kit to a project to place logos and apply colours and fonts in one click |
 | Wovexa 3D | Live garment preview with colourways, sizes S–2XL, five camera presets, turntable, click a zone on the shirt to edit it, low-power and WebGL-loss fallbacks |
-| Wovexa Render | Mockup stills at 1600 × 2000 for five angles, on transparent, white or grey backgrounds |
-| Wovexa Production | Print checks (bounds, safe margin, resolution, small text, method compatibility) with exact fixes; true-size transparent print PNGs at 150 or 300 dpi; JSON manifest with SHA-256 checksums; printable tech pack |
-| Platform | Autosave to IndexedDB with visible save state; installable PWA with offline page cache; responsive layouts for desktop, tablet and phone |
+| Wovexa Render | Mockup stills at 1600 × 2000 for five angles, for one colourway or all of them, on transparent, white or grey backgrounds; side-by-side colourway comparison |
+| Wovexa Production | Print checks with exact fixes; version history with compare and restore; approval that is blocked while checks fail and frozen once given; tech pack with editable bill of materials, construction notes and QA checklist, plus a read-only copy for each approved version; true-size print PNGs; manifest with checksums, approval status and production data |
+| Wovexa AI | Background removal for solid backgrounds, run on this device, keeping the original (no AI provider involved) |
+| Platform | Document format v2 with automatic, backed-up upgrade from v1; autosave to IndexedDB; installable PWA; responsive layouts for desktop, tablet and phone |
 
-Not built yet (see the spec for each): accounts in the UI and cloud sync, templates, brand kits, team roles and review, export history, video, AI tools, and a calibrated garment model.
+Not built yet (see the spec for each): accounts in the UI and cloud sync, team roles and client review, export history, video, provider-based AI tools, and a calibrated garment model.
 
 ## Architecture
 
@@ -48,6 +50,8 @@ Key rules from the spec that the code follows:
 - **One source of truth.** Every edit is a command against the canonical JSON document. Fabric and Three only display it and report gestures back as commands.
 - **One renderer.** `lib/render/zone-renderer.ts` draws layers for the 2D editor's bitmaps, the 3D textures, thumbnails and print exports, so they always match.
 - **Physical units.** Layer transforms are millimetres from the top-left of the print area. The 3D textures are laid out by surface arc length, so placed artwork keeps its true size on the garment.
+- **Versioned format.** Every stored document carries `schemaVersion`. `domain/schema.ts` holds the migrations; opening an older project upgrades it and keeps the original as a version.
+- **Approval by content.** `domain/hash.ts` hashes design content (not the server revision), so a project shows as approved only while it matches the approved version exactly.
 
 ## The 3D garment
 

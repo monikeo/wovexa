@@ -4,11 +4,11 @@ import { useState } from 'react';
 import * as cmd from '@/domain/commands';
 import type { ArtworkLayer } from '@/domain/schema';
 import { useActiveZoneSpec, useStudio } from '@/stores/studio-store';
-import { addImages, addText } from './actions';
+import { addImages, addText, selectLayers } from './actions';
 
 const ICON = { image: ImageIcon, text: Type, shape: Shapes } as const;
 
-function LayerRow({ layer, index, count }: { layer: ArtworkLayer; index: number; count: number }) {
+function LayerRow({ layer, index, count, groupEdge }: { layer: ArtworkLayer; index: number; count: number; groupEdge: 'top' | 'middle' | 'bottom' | 'single' | null }) {
   const zoneId = useStudio((s) => s.activeZoneId);
   const selected = useStudio((s) => s.selectedLayerIds.includes(layer.id));
   const dispatch = useStudio((s) => s.dispatch);
@@ -16,17 +16,22 @@ function LayerRow({ layer, index, count }: { layer: ArtworkLayer; index: number;
   const Icon = ICON[layer.content.kind];
 
   const onSelect = (e: React.MouseEvent | React.KeyboardEvent) => {
-    const { selectedLayerIds, select } = useStudio.getState();
+    const { selectedLayerIds } = useStudio.getState();
     if (e.shiftKey || e.metaKey || e.ctrlKey) {
-      select(selectedLayerIds.includes(layer.id) ? selectedLayerIds.filter((id) => id !== layer.id) : [...selectedLayerIds, layer.id]);
+      selectLayers(selectedLayerIds.includes(layer.id) ? selectedLayerIds.filter((id) => id !== layer.id) : [...selectedLayerIds, layer.id]);
     } else {
-      select([layer.id]);
+      selectLayers([layer.id]);
     }
   };
 
+  const bracket =
+    groupEdge === null
+      ? ''
+      : `ml-2 border-l-2 border-[color-mix(in_srgb,var(--accent)_45%,transparent)] ${groupEdge === 'top' ? 'mt-1 rounded-tl-none' : ''} ${groupEdge === 'bottom' ? 'mb-1 rounded-bl-none' : ''}`;
+
   return (
     <li
-      className={`group flex min-h-11 items-center gap-1 rounded-lg pl-2 pr-1 ${selected ? 'bg-selected' : 'hover:bg-hover'} ${layer.visible ? '' : 'opacity-55'}`}
+      className={`group flex min-h-11 items-center gap-1 rounded-lg pl-2 pr-1 ${bracket} ${selected ? 'bg-selected' : 'hover:bg-hover'} ${layer.visible ? '' : 'opacity-55'}`}
     >
       <Icon size={15} className={selected ? 'text-accent' : 'text-fg-2'} aria-hidden />
       {renaming ? (
@@ -57,10 +62,10 @@ function LayerRow({ layer, index, count }: { layer: ArtworkLayer; index: number;
         </button>
       )}
       <div className="flex items-center opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
-        <button className="icon-btn h-8 w-8" disabled={index === count - 1} onClick={() => dispatch(cmd.reorderLayer(zoneId, layer.id, index + 1))} aria-label={`Move ${layer.name} up`} title="Bring forward">
+        <button className="icon-btn h-8 w-8" disabled={index === count - 1} onClick={() => dispatch(cmd.moveLayerBy(zoneId, layer.id, 1))} aria-label={`Move ${layer.name} up`} title="Bring forward (])">
           <ArrowUp size={14} />
         </button>
-        <button className="icon-btn h-8 w-8" disabled={index === 0} onClick={() => dispatch(cmd.reorderLayer(zoneId, layer.id, index - 1))} aria-label={`Move ${layer.name} down`} title="Send backward">
+        <button className="icon-btn h-8 w-8" disabled={index === 0} onClick={() => dispatch(cmd.moveLayerBy(zoneId, layer.id, -1))} aria-label={`Move ${layer.name} down`} title="Send backward ([)">
           <ArrowDown size={14} />
         </button>
       </div>
@@ -111,9 +116,13 @@ export function LayerPanel() {
         </div>
       ) : (
         <ul className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3" aria-label={`${spec.label} layers, top first`}>
-          {[...layers].reverse().map((layer) => (
-            <LayerRow key={layer.id} layer={layer} index={zone.orderedLayerIds.indexOf(layer.id)} count={layers.length} />
-          ))}
+          {[...layers].reverse().map((layer, i, list) => {
+            const g = layer.groupId;
+            const prev = list[i - 1]?.groupId;
+            const next = list[i + 1]?.groupId;
+            const edge = !g ? null : prev !== g && next !== g ? 'single' : prev !== g ? 'top' : next !== g ? 'bottom' : 'middle';
+            return <LayerRow key={layer.id} layer={layer} index={zone.orderedLayerIds.indexOf(layer.id)} count={layers.length} groupEdge={edge} />;
+          })}
         </ul>
       )}
     </div>

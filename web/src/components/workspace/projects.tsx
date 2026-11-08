@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { COLORWAY_PRESETS } from '@/domain/garments';
 import {
+  approvalState,
   archiveProject,
   createProject,
   deleteProject,
@@ -186,6 +187,11 @@ export function ProjectCard({ meta, onChanged }: { meta: ProjectMeta; onChanged:
           <p className="mt-0.5 text-xs text-fg-2">
             Edited {relativeTime(meta.updatedAt)}, {meta.layerCount} {meta.layerCount === 1 ? 'layer' : 'layers'}
           </p>
+          {meta.approvedHash ? (
+            <p className={`mt-1 text-xs font-semibold ${approvalState(meta) === 'approved' ? 'text-success' : 'text-warning'}`}>
+              {approvalState(meta) === 'approved' ? `Approved, v${meta.approvedVersionNumber}` : 'Changed since approval'}
+            </p>
+          ) : null}
         </div>
         <ProjectActions meta={meta} onChanged={onChanged} />
       </div>

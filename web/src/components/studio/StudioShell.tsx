@@ -6,15 +6,20 @@
  */
 import {
   AlertTriangle,
+  BadgeCheck,
   Circle,
   Download,
+  Ellipsis,
   FileText,
+  GitCompare,
   Image as ImageIcon,
   Layers,
+  LayoutTemplate,
   Loader2,
   MousePointer2,
   Plus,
   Redo2,
+  RotateCcw,
   Settings2,
   Shirt,
   Square,
@@ -30,15 +35,32 @@ import { getGarment } from '@/domain/garments';
 import { summarize } from '@/domain/preflight';
 import { ZONE_IDS } from '@/domain/schema';
 import { ACCEPTED_TYPES } from '@/lib/assets';
+import { approvalState } from '@/lib/local-db';
 import { WovexaSymbol } from '@/components/brand/Logo';
-import { Sheet, Toaster, useLayoutMode } from '@/components/ui/primitives';
-import { useStudio, type ViewMode } from '@/stores/studio-store';
-import { addImages, addShape, addText, deleteSelection, duplicateSelection, moveSelectionInStack, nudgeSelection } from './actions';
+import { Sheet, toast, Toaster, useLayoutMode } from '@/components/ui/primitives';
+import { useStudio, type StudioPanel, type ViewMode } from '@/stores/studio-store';
+import {
+  addImages,
+  addShape,
+  addText,
+  deleteSelection,
+  duplicateSelection,
+  groupSelection,
+  moveSelectionInStack,
+  nudgeSelection,
+  ungroupSelection,
+  zoomToSelection,
+} from './actions';
+import { BrandKitProvider } from './brand-context';
+import { BrandPanel } from './BrandPanel';
+import { ColorwayCompare } from './ColorwayCompare';
 import { ExportPanel } from './ExportDialog';
 import { GarmentPanel } from './GarmentPanel';
+import { HistoryPanel } from './HistoryPanel';
 import { Inspector } from './Inspector';
 import { LayerPanel } from './LayerPanel';
 import { PreflightPanel, usePreflight } from './PreflightPanel';
+import { SaveTemplatePanel } from './SaveTemplatePanel';
 
 const Editor2D = dynamic(() => import('./editor2d/Editor2D').then((m) => m.Editor2D), {
   ssr: false,
@@ -159,12 +181,73 @@ function PreflightBadge({ onClick }: { onClick: () => void }) {
   );
 }
 
+function ApprovalBadge() {
+  const meta = useStudio((s) => s.meta);
+  const setPanel = useStudio((s) => s.setPanel);
+  if (!meta?.approvedHash) return null;
+  const state = approvalState(meta);
+  return (
+    <button
+      className={`btn btn-ghost hidden min-h-8 px-2 text-xs sm:inline-flex ${state === 'approved' ? 'text-success' : 'text-warning'}`}
+      onClick={() => setPanel('history')}
+      title={state === 'approved' ? `Matches approved version ${meta.approvedVersionNumber}` : `Changed since version ${meta.approvedVersionNumber} was approved`}
+    >
+      <BadgeCheck size={14} /> {state === 'approved' ? `Approved v${meta.approvedVersionNumber}` : 'Changed since approval'}
+    </button>
+  );
+}
+
+function MoreMenu() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const setPanel = useStudio((s) => s.setPanel);
+  const projectId = useStudio((s) => s.projectId);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [open]);
+  const item = 'flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm hover:bg-hover';
+  const pick = (panel: StudioPanel) => () => {
+    setOpen(false);
+    setPanel(panel);
+  };
+  return (
+    <div className="relative" ref={ref}>
+      <button className="icon-btn" aria-label="More project actions" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <Ellipsis size={18} />
+      </button>
+      {open ? (
+        <div role="menu" className="absolute right-0 top-full z-40 mt-1 w-56 rounded-xl border border-line bg-floating p-1 shadow-xl">
+          <button role="menuitem" className={item} onClick={pick('history')}>
+            <RotateCcw size={15} /> Versions and approval
+          </button>
+          <button role="menuitem" className={item} onClick={pick('compare')}>
+            <GitCompare size={15} /> Compare colourways
+          </button>
+          <button role="menuitem" className={item} onClick={pick('save-template')}>
+            <LayoutTemplate size={15} /> Save as template
+          </button>
+          <Link role="menuitem" className={item} href={`/production/${projectId}`} onClick={() => setOpen(false)}>
+            <FileText size={15} /> Tech pack
+          </Link>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function Topbar({ mode, onOpenChecks }: { mode: 'desktop' | 'tablet' | 'mobile'; onOpenChecks: () => void }) {
   const undo = useStudio((s) => s.undo);
   const redo = useStudio((s) => s.redo);
   const canUndo = useStudio((s) => s.history.past.length > 0);
   const canRedo = useStudio((s) => s.history.future.length > 0);
-  const projectId = useStudio((s) => s.projectId);
   const setExportOpen = useStudio((s) => s.setExportOpen);
   const setMobileSheet = useStudio((s) => s.setMobileSheet);
   const lastLabel = useStudio((s) => s.history.past.at(-1)?.label);
@@ -190,19 +273,44 @@ function Topbar({ mode, onOpenChecks }: { mode: 'desktop' | 'tablet' | 'mobile';
         <>
           <ViewSwitch modes={['2d', 'split', '3d']} />
           {mode === 'desktop' ? <PreflightBadge onClick={onOpenChecks} /> : null}
-          <Link href={`/production/${projectId}`} className="btn btn-ghost hidden px-2.5 lg:inline-flex" title="Tech pack">
-            <FileText size={15} /> Tech pack
-          </Link>
+          <ApprovalBadge />
+          <MoreMenu />
           <button className="btn btn-primary" onClick={() => setExportOpen(true)}>
             <Download size={15} /> Export
           </button>
         </>
       ) : (
-        <button className="icon-btn" onClick={() => setMobileSheet('export')} aria-label="Export">
-          <Download size={18} />
-        </button>
+        <>
+          <button className="icon-btn" onClick={() => setMobileSheet('export')} aria-label="Export">
+            <Download size={18} />
+          </button>
+          <MoreMenu />
+        </>
       )}
     </header>
+  );
+}
+
+/** Layers and the brand kit share the left panel. */
+function LeftPanel() {
+  const [tab, setTab] = useState<'layers' | 'brand'>('layers');
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex gap-1 px-3 pt-3" role="tablist" aria-label="Left panel">
+        {(['layers', 'brand'] as const).map((t) => (
+          <button
+            key={t}
+            role="tab"
+            aria-selected={tab === t}
+            onClick={() => setTab(t)}
+            className="rounded-md px-2.5 py-1 text-[13px] font-semibold text-fg-2 aria-selected:bg-inverse aria-selected:text-fg-inverse"
+          >
+            {t === 'layers' ? 'Layers' : 'Brand'}
+          </button>
+        ))}
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">{tab === 'layers' ? <LayerPanel /> : <BrandPanel />}</div>
+    </div>
   );
 }
 
@@ -344,6 +452,14 @@ function useShortcuts() {
       } else if (mod && key === 'd') {
         e.preventDefault();
         duplicateSelection();
+      } else if (mod && key === 'g') {
+        e.preventDefault();
+        if (e.shiftKey) ungroupSelection();
+        else groupSelection();
+      } else if (e.shiftKey && !mod && e.code === 'Digit1') {
+        window.dispatchEvent(new CustomEvent('wovexa:fit'));
+      } else if (e.shiftKey && !mod && e.code === 'Digit2') {
+        zoomToSelection();
       } else if (mod && key === 's') {
         e.preventDefault();
         void s.saveNow();
@@ -454,11 +570,24 @@ export function StudioShell() {
   const layersOpen = useStudio((s) => s.layersOpen);
   const setLayersOpen = useStudio((s) => s.setLayersOpen);
   const [checksOpen, setChecksOpen] = useState(false);
+  const panel = useStudio((s) => s.panel);
+  const setPanel = useStudio((s) => s.setPanel);
+  const upgradedFrom = useStudio((s) => s.upgradedFrom);
   const closeSheet = useCallback(() => setSheet(null), [setSheet]);
   const closeExport = useCallback(() => setExportOpen(false), [setExportOpen]);
   const closeInspector = useCallback(() => setInspectorOpen(false), [setInspectorOpen]);
   const closeLayers = useCallback(() => setLayersOpen(false), [setLayersOpen]);
   const closeChecks = useCallback(() => setChecksOpen(false), []);
+  const closePanel = useCallback(() => setPanel(null), [setPanel]);
+  const panelSide = mode === 'mobile' ? 'bottom' : 'right';
+
+  // Tell people once when an older project was upgraded, and where the backup is.
+  useEffect(() => {
+    if (upgradedFrom) {
+      toast('This project was upgraded to the latest format. The original is kept in Versions.');
+      useStudio.setState({ upgradedFrom: null });
+    }
+  }, [upgradedFrom]);
 
   // Open the right panel when a text layer is double-clicked or added on smaller screens.
   useEffect(() => {
@@ -471,6 +600,7 @@ export function StudioShell() {
   }, [mode, setInspectorOpen, setSheet]);
 
   return (
+    <BrandKitProvider>
     <div className="flex h-dvh flex-col overflow-hidden bg-canvas">
       <Topbar mode={mode} onOpenChecks={() => setChecksOpen(true)} />
 
@@ -484,8 +614,8 @@ export function StudioShell() {
       <div className="flex min-h-0 flex-1">
         {mode !== 'mobile' ? <ToolRail tablet={mode === 'tablet'} onLayers={() => setLayersOpen(true)} onInspector={() => setInspectorOpen(true)} /> : null}
         {mode === 'desktop' ? (
-          <aside className="w-[var(--panel-width)] flex-none overflow-hidden border-r border-line bg-panel" aria-label="Layers">
-            <LayerPanel />
+          <aside className="w-[var(--panel-width)] flex-none overflow-hidden border-r border-line bg-panel" aria-label="Layers and brand">
+            <LeftPanel />
           </aside>
         ) : null}
         <Stage mode={mode} />
@@ -500,8 +630,8 @@ export function StudioShell() {
       {mode === 'mobile' ? <MobileRail /> : null}
 
       {/* Tablet drawers */}
-      <Sheet open={mode === 'tablet' && layersOpen} onClose={closeLayers} title="Layers" side="left">
-        <LayerPanel />
+      <Sheet open={mode === 'tablet' && layersOpen} onClose={closeLayers} title="Layers and brand" side="left">
+        <LeftPanel />
       </Sheet>
       <Sheet open={mode === 'tablet' && inspectorOpen} onClose={closeInspector} title="Properties" side="right">
         <Inspector />
@@ -511,8 +641,8 @@ export function StudioShell() {
       <Sheet open={mode === 'mobile' && sheet === 'add'} onClose={closeSheet} title="Add to design">
         <MobileAddSheet onDone={closeSheet} />
       </Sheet>
-      <Sheet open={mode === 'mobile' && sheet === 'layers'} onClose={closeSheet} title="Layers">
-        <LayerPanel />
+      <Sheet open={mode === 'mobile' && sheet === 'layers'} onClose={closeSheet} title="Layers and brand">
+        <LeftPanel />
       </Sheet>
       <Sheet open={mode === 'mobile' && sheet === 'inspect'} onClose={closeSheet} title="Edit">
         <Inspector />
@@ -535,7 +665,19 @@ export function StudioShell() {
         <PreflightPanel onNavigate={closeChecks} />
       </Sheet>
 
+      {/* Project panels, from the More menu */}
+      <Sheet open={panel === 'history'} onClose={closePanel} title="Versions and approval" side={panelSide}>
+        <HistoryPanel />
+      </Sheet>
+      <Sheet open={panel === 'compare'} onClose={closePanel} title="Compare colourways" side={panelSide}>
+        <ColorwayCompare />
+      </Sheet>
+      <Sheet open={panel === 'save-template'} onClose={closePanel} title="Save as template" side={panelSide}>
+        <SaveTemplatePanel onDone={closePanel} />
+      </Sheet>
+
       <Toaster />
     </div>
+    </BrandKitProvider>
   );
 }

@@ -11,7 +11,7 @@ import { getGarment, getSize } from '@/domain/garments';
 import type { ZoneId } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
 import { ensureFonts } from '@/lib/render/zone-renderer';
-import { useActiveColorway, useLive, useStudio } from '@/stores/studio-store';
+import { useDisplayColorway, useLive, useStudio } from '@/stores/studio-store';
 import { buildTee, createKnitNormalMap } from './tee-geometry';
 import { drawSleeve, drawTorso, type Quality } from './tee-textures';
 
@@ -65,7 +65,7 @@ function shade(hex: string, factor: number) {
 
 function Garment({ quality }: { quality: Quality }) {
   const doc = useStudio((s) => s.document)!;
-  const colorway = useActiveColorway()!;
+  const colorway = useDisplayColorway()!;
   const setActiveZone = useStudio((s) => s.setActiveZone);
   const invalidate = useThree((s) => s.invalidate);
   const model = getGarment(doc.garment.modelId);

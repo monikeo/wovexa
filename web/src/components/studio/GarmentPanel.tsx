@@ -1,5 +1,6 @@
 'use client';
-import { Check, Plus, Trash2 } from 'lucide-react';
+import { Check, GitCompare, Plus, Trash2 } from 'lucide-react';
+import { useBrandKit } from './brand-context';
 import * as cmd from '@/domain/commands';
 import { createColorway } from '@/domain/factory';
 import { COLORWAY_PRESETS, getGarment, PRINT_METHOD_LABELS } from '@/domain/garments';
@@ -15,6 +16,8 @@ export function GarmentPanel() {
   const zoneId = useStudio((s) => s.activeZoneId);
   const colorway = useActiveColorway();
   const spec = useActiveZoneSpec();
+  const setPanel = useStudio((s) => s.setPanel);
+  const kit = useBrandKit();
   if (!doc || !colorway) return null;
   const model = getGarment(doc.garment.modelId);
   const unused = COLORWAY_PRESETS.filter((p) => !doc.colorways.some((c) => c.name === p.name));
@@ -104,7 +107,7 @@ export function GarmentPanel() {
             />
           </label>
           {(Object.keys(PART_LABELS) as GarmentPart[]).map((part) => (
-            <ColorField key={part} label={PART_LABELS[part]} value={colorway.parts[part]} onChange={(hex) => dispatch(cmd.setColorwayPart(colorway.id, part, hex))} />
+            <ColorField key={part} label={PART_LABELS[part]} value={colorway.parts[part]} onChange={(hex) => dispatch(cmd.setColorwayPart(colorway.id, part, hex))} swatches={kit?.colors} />
           ))}
           <p className="text-xs text-fg-3">Screen colours are previews, not verified print or fabric matches.</p>
         </div>
@@ -126,9 +129,14 @@ export function GarmentPanel() {
         </select>
       </section>
 
-      <button className="btn btn-ghost w-full justify-start px-0 text-fg-2" onClick={() => dispatch(cmd.addColorway(createColorway({ name: `Custom ${doc.colorways.length + 1}`, parts: { ...colorway.parts } })))}>
-        <Plus size={15} /> New custom colourway
-      </button>
+      <div className="flex flex-wrap gap-2">
+        <button className="btn btn-outline flex-1 text-xs" onClick={() => dispatch(cmd.addColorway(createColorway({ name: `Custom ${doc.colorways.length + 1}`, parts: { ...colorway.parts } })))}>
+          <Plus size={14} /> Custom colourway
+        </button>
+        <button className="btn btn-outline flex-1 text-xs" onClick={() => setPanel('compare')} disabled={doc.colorways.length < 2}>
+          <GitCompare size={14} /> Compare all
+        </button>
+      </div>
     </div>
   );
 }
