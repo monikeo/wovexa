@@ -5,15 +5,17 @@
  * screen-print films, a client proof PDF, team names and numbers, product images through
  * Wovexa Render, and a history of what was exported from which revision.
  */
-import { Archive, Box, Check, Clapperboard, Download, FileText, History, Image as ImageIcon, Loader2, Printer, RotateCcw, Smartphone, Users, X } from 'lucide-react';
+import { Archive, Box, Check, Clapperboard, Download, FileText, History, Image as ImageIcon, Loader2, Printer, RotateCcw, Ruler, Smartphone, Users, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as cmd from '@/domain/commands';
 import { createTextLayer } from '@/domain/factory';
-import { getGarment, hasZone, partColor, PRINT_METHOD_LABELS, zoneSpecOrFirst } from '@/domain/garments';
+import { getGarment, getSize, hasZone, partColor, PRINT_METHOD_LABELS, sizeLabel, zoneSpecOrFirst } from '@/domain/garments';
 import { documentHash } from '@/domain/hash';
 import { runPreflight, summarize } from '@/domain/preflight';
 import type { DesignDocument, ZoneId } from '@/domain/schema';
 import { canvasToBlob, downloadBlob } from '@/lib/download';
+import { compareRollWidthsOffThread } from '@/lib/export/marker-compare';
+import { DEFAULT_MARKER, FILE_LENGTHS_M, ROLL_WIDTHS_CM, type MarkerSettings, type RollEstimate } from '@/lib/export/marker-layout';
 import { DEFAULT_PRINT_NAME, fileSafe, formatName, isoDate, NAME_TOKENS, revisionLabel, unknownTokens } from '@/lib/export/naming';
 import { buildClientProof, buildProductionPackage, designRevision, prepareDocument, zonesWithArtwork, type PackageOptions, type ProductRenderOptions, type ProductShot } from '@/lib/export/package';
 import { revisionText } from '@/lib/export/proof';
@@ -23,6 +25,7 @@ import { addExportRecord, approvalState, clearExports, listExports, type ExportK
 import { renderZoneArtwork } from '@/lib/render/zone-renderer';
 import { toast } from '@/components/ui/primitives';
 import { useLive, useStudio } from '@/stores/studio-store';
+import { RangeField } from './inspector-controls';
 import { viewerApi } from './viewer3d/stage';
 
 type Include = PackageOptions['include'];
@@ -31,14 +34,16 @@ interface Prefs {
   colorways: 'active' | 'all';
   include: Include;
   naming: string;
+  marker: MarkerSettings;
 }
 
 const PREFS_KEY = 'wovexa.export.v1';
 const DEFAULT_PREFS: Prefs = {
   dpi: 300,
   colorways: 'all',
-  include: { print: true, separations: true, flats: true, mockups: true, proof: true, techSheet: true, cutAndSew: false, model: false },
+  include: { print: true, separations: true, flats: true, mockups: true, proof: true, techSheet: true, cutAndSew: false, marker: false, model: false },
   naming: DEFAULT_PRINT_NAME,
+  marker: DEFAULT_MARKER,
 };
 
 function readPrefs(): Prefs {
@@ -48,7 +53,7 @@ function readPrefs(): Prefs {
     const p = JSON.parse(raw) as Partial<Prefs>;
     // The first template wrote "r{rev}"; {rev} now carries its own prefix.
     if (p.naming === '{project}_{zone}_{w}x{h}mm_{dpi}dpi_r{rev}') p.naming = DEFAULT_PRINT_NAME;
-    return { ...DEFAULT_PREFS, ...p, include: { ...DEFAULT_PREFS.include, ...p.include } };
+    return { ...DEFAULT_PREFS, ...p, include: { ...DEFAULT_PREFS.include, ...p.include }, marker: { ...DEFAULT_MARKER, ...p.marker } };
   } catch {
     return DEFAULT_PREFS;
   }
@@ -152,6 +157,101 @@ function addTeamLayers(doc: DesignDocument) {
   s.setActiveZone(zoneId);
 }
 
+/**
+ * Fabric marker settings: roll width, spacing, file length and format, and a comparison of every
+ * roll width for this order, worked out in a worker, so the least wasteful roll is one click away.
+ */
+function MarkerPanel({ doc, order, settings, onChange }: { doc: DesignDocument; order: Roster | null; settings: MarkerSettings; onChange: (patch: Partial<MarkerSettings>) => void }) {
+  const [compared, setCompared] = useState<{ key: string; estimates: RollEstimate[] } | null>(null);
+  const [comparing, setComparing] = useState(false);
+  // Estimates hold only while the order and spacing they were made for stay the same.
+  const key = JSON.stringify([doc.garment.modelId, doc.garment.sizeCode, order?.rows.map((r) => r.size ?? ''), settings.gapMm, settings.marginMm, settings.allowTurn, settings.lengthPerFileM]);
+  const estimates = compared?.key === key ? compared.estimates : null;
+  const fit = estimates?.filter((e) => !e.unplaced) ?? [];
+  const leastWaste = fit.length ? fit.reduce((b, e) => (e.utilisation > b.utilisation ? e : b)) : null;
+
+  const compare = async () => {
+    setComparing(true);
+    try {
+      const result = await compareRollWidthsOffThread({ modelId: doc.garment.modelId, sampleSize: doc.garment.sizeCode, roster: order, settings, widthsCm: [...ROLL_WIDTHS_CM] });
+      setCompared({ key, estimates: result });
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'The roll comparison failed.', 'error');
+    } finally {
+      setComparing(false);
+    }
+  };
+
+  return (
+    <div className="mb-1 ml-9 mr-1 space-y-3 rounded-xl border border-line p-3">
+      <div>
+        <span className="label">Roll width</span>
+        <div className="seg mt-1 w-full" role="group" aria-label="Fabric roll width">
+          {ROLL_WIDTHS_CM.map((w) => (
+            <button key={w} className="flex-1" aria-pressed={settings.rollWidthCm === w} onClick={() => onChange({ rollWidthCm: w })}>
+              {w} cm
+            </button>
+          ))}
+        </div>
+      </div>
+      <RangeField label="Gap" value={settings.gapMm} min={0} max={20} format={(v) => `${v} mm`} onChange={(gapMm) => onChange({ gapMm })} />
+      <RangeField label="Margin" value={settings.marginMm} min={0} max={50} format={(v) => `${v} mm`} onChange={(marginMm) => onChange({ marginMm })} />
+      <div>
+        <span className="label">Length per file</span>
+        <div className="seg mt-1 w-full" role="group" aria-label="Roll length per file">
+          {FILE_LENGTHS_M.map((m) => (
+            <button key={m} className="flex-1 whitespace-nowrap" aria-pressed={settings.lengthPerFileM === m} onClick={() => onChange({ lengthPerFileM: m })}>
+              {m} m
+            </button>
+          ))}
+        </div>
+      </div>
+      <div>
+        <span className="label">Format</span>
+        <div className="seg mt-1 w-full" role="group" aria-label="Marker file format">
+          <button className="flex-1" aria-pressed={settings.format === 'png'} onClick={() => onChange({ format: 'png' })}>
+            PNG
+          </button>
+          <button className="flex-1" aria-pressed={settings.format === 'pdf'} onClick={() => onChange({ format: 'pdf' })}>
+            PDF with cut paths
+          </button>
+        </div>
+      </div>
+      <label className="flex cursor-pointer items-start gap-2">
+        <input type="checkbox" className="mt-[3px] h-4 w-4 flex-none accent-[var(--accent)]" checked={settings.allowTurn} onChange={(e) => onChange({ allowTurn: e.target.checked })} />
+        <span className="min-w-0">
+          <span className="block text-[13px] leading-5">Turn pieces 180° to save fabric</span>
+          <span className="block text-xs leading-4 text-fg-2">Never 90°, so the grain stays straight. Turn off for napped or one-way fabric.</span>
+        </span>
+      </label>
+      <p className="text-[11px] leading-4 text-fg-3">
+        {settings.format === 'pdf' ? 'True-size PDF pages with CutContour cut paths for print-and-cut RIPs.' : 'True-size PNGs with the resolution written in.'} 10 mm bleed, a dashed cut line and a label in the bleed on every piece.
+      </p>
+      <button className="btn btn-outline min-h-8 w-full text-xs" disabled={comparing} onClick={() => void compare()}>
+        {comparing ? <Loader2 size={13} className="animate-spin" /> : <Ruler size={13} />} {comparing ? 'Nesting on every roll width' : 'Compare roll widths'}
+      </button>
+      {estimates ? (
+        <div role="group" aria-label="Fabric needed on each roll width" className="space-y-1">
+          {estimates.map((e) => (
+            <button
+              key={e.rollWidthCm}
+              aria-pressed={settings.rollWidthCm === e.rollWidthCm}
+              onClick={() => onChange({ rollWidthCm: e.rollWidthCm })}
+              className={`grid w-full grid-cols-[1fr_auto_auto] items-baseline gap-3 rounded-lg px-2 py-1.5 text-left text-xs ${settings.rollWidthCm === e.rollWidthCm ? 'bg-hover font-semibold' : 'hover:bg-hover'}`}
+            >
+              <span>
+                {e.rollWidthCm} cm{e === leastWaste ? <span className="ml-1.5 font-normal text-accent">least waste</span> : null}
+              </span>
+              <span className="num">{e.unplaced ? `${e.unplaced} too wide` : `${(e.lengthMm / 1000).toFixed(2)} m`}</span>
+              <span className="num w-10 text-right">{e.unplaced ? '–' : `${Math.round(e.utilisation * 100)}%`}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function ExportPanel() {
   const doc = useStudio((s) => s.document);
   const meta = useStudio((s) => s.meta);
@@ -194,6 +294,8 @@ export function ExportPanel() {
   const { errors } = summarize(runPreflight(doc));
   const busy = progress !== null;
   const team = roster.rows.length && placeholders.length ? roster : null;
+  // The marker takes the whole order: a roster of sizes alone is enough.
+  const order = roster.rows.length ? roster : null;
   const approval = approvalOf(meta);
   const rev = currentHash ? revisionLabel(doc.revision, currentHash, approval.status === 'approved' ? approval.versionNumber : null) : '';
   const example = formatName(prefs.naming, {
@@ -219,6 +321,7 @@ export function ExportPanel() {
       return next;
     });
   const setInclude = (key: keyof Include, value: boolean) => setPrefs({ include: { ...prefs.include, [key]: value } });
+  const setMarker = (patch: Partial<MarkerSettings>) => setPrefs({ marker: { ...prefs.marker, ...patch } });
 
   const record = async (kind: ExportKind, label: string, fileName: string, fileCount: number, bytes: number, settings: Record<string, unknown>) => {
     const current = useStudio.getState().document!;
@@ -257,12 +360,25 @@ export function ExportPanel() {
         onProgress: (l, fraction) => setProgress({ label: l, fraction }),
       });
       downloadBlob(result.blob, result.fileName);
-      await record(kind, label, result.fileName, result.files.length + 1, result.blob.size, { dpi: opts.dpi, colorways: opts.colorways, include: opts.include, people: opts.roster?.rows.length ?? 0 });
+      await record(kind, label, result.fileName, result.files.length + 1, result.blob.size, { dpi: opts.dpi, colorways: opts.colorways, include: opts.include, people: opts.roster?.rows.length ?? 0, ...(opts.include.marker ? { marker: opts.marker } : {}) });
       toast(`${label}: ${result.files.length + 1} files, ${formatBytes(result.blob.size)}.`, 'success');
+      if (result.marker) toast(`Fabric marker: ${(result.marker.lengthMm / 1000).toFixed(2)} m of ${result.marker.rollWidthMm / 10} cm fabric for ${result.marker.garments} ${result.marker.garments === 1 ? 'garment' : 'garments'}, ${Math.round(result.marker.utilisation * 100)}% used.`, 'success');
       for (const w of result.warnings.slice(0, 2)) toast(w);
     });
 
-  const fullPackage = () => exportPackage({ dpi: prefs.dpi, naming: prefs.naming, include: { ...prefs.include, separations: prefs.include.separations && screenZones.length > 0 }, colorways: prefs.colorways, roster: team }, 'package', 'Production package');
+  const fullPackage = () =>
+    exportPackage(
+      {
+        dpi: prefs.dpi,
+        naming: prefs.naming,
+        include: { ...prefs.include, separations: prefs.include.separations && screenZones.length > 0 },
+        colorways: prefs.colorways,
+        roster: team ?? (prefs.include.marker ? order : null),
+        marker: prefs.marker,
+      },
+      'package',
+      'Production package',
+    );
 
   const printFiles = () => {
     if (!zones.length) {
@@ -386,6 +502,13 @@ export function ExportPanel() {
             title="Cut-and-sew panels"
             hint={allOver ? 'Every pattern piece with its all-over print, 10 mm bleed, 120 dpi. Recommended for this design' : 'Every pattern piece with its print and 10 mm bleed, for all-over sublimation'}
           />
+          <Option
+            checked={!!prefs.include.marker}
+            onChange={(v) => setInclude('marker', v)}
+            title="Fabric marker"
+            hint={`${order ? `${order.rows.length} ${order.rows.length === 1 ? 'garment' : 'garments'} from the roster` : `One garment in ${sizeLabel(model, getSize(model, doc.garment.sizeCode))}; paste a roster for a team order`}, every piece nested on a ${prefs.marker.rollWidthCm} cm roll at true size, in roll lengths`}
+          />
+          {prefs.include.marker ? <MarkerPanel doc={doc} order={order} settings={prefs.marker} onChange={setMarker} /> : null}
           <Option checked={!!prefs.include.model} onChange={(v) => setInclude('model', v)} title="3D model" hint="GLB in metres, for web viewers, Blender and AR" />
         </div>
         <div className="mt-3 grid grid-cols-2 gap-3">
