@@ -4,7 +4,7 @@
  * fonts, inks, team sizes, production notes, bill of materials and QA checklist. Images are
  * linked by their path inside the package, so it opens straight from the unzipped folder.
  */
-import { partColor, PRINT_METHOD_LABELS, type GarmentModel, type GarmentSize } from '@/domain/garments';
+import { partColor, PRINT_METHOD_LABELS, sizeChart, sizeLabel, type GarmentModel, type GarmentSize } from '@/domain/garments';
 import type { DesignDocument, ZoneId } from '@/domain/schema';
 import type { Ink } from './separations';
 import { placementText, revisionText } from './proof';
@@ -113,6 +113,19 @@ export function buildTechSheet(input: TechSheetInput): string {
     ? `<h2>Team order</h2><p>${input.team.people} personalised garments. Roster and file list: <a href="${esc(input.team.file)}">${esc(input.team.file)}</a></p><table class="grid"><tr><th>Size</th>${input.team.sizes.map((s) => `<td>${esc(s.size)}</td>`).join('')}</tr><tr><th>Quantity</th>${input.team.sizes.map((s) => `<td>${s.count}</td>`).join('')}</tr></table>`
     : '';
 
+  // Points of measure for every size: the sample size is marked, ordered sizes show quantities.
+  const chart = sizeChart(model);
+  const cm = (mm: number | undefined) => (mm === undefined ? '–' : (mm / 10).toFixed(mm % 10 ? 1 : 0));
+  const ordered = new Map((input.team?.sizes ?? []).map((s) => [s.size, s.count]));
+  const measurements = `<h2>Measurements</h2>
+  <p class="small muted">Finished garment in centimetres, measured flat. ${chart.columns.map((c) => `${esc(c.label)}: ${esc(c.hint.toLowerCase())}`).join('. ')}. Tolerance ±1 cm on chest and length, ±0.5 cm on sleeve.${model.calibrated ? '' : ' Graded from a standard size chart; confirm against the factory block.'}</p>
+  <table class="grid"><tr><th>Size</th>${chart.columns.map((c) => `<th>${esc(c.label)}</th>`).join('')}${ordered.size ? '<th>Quantity</th>' : ''}</tr>${chart.rows
+    .map(
+      (r) =>
+        `<tr${r.code === size.code ? ' class="sel"' : ''}><td>${esc(r.label)}${r.code === size.code ? ' <span class="pill">Sample</span>' : ''}</td>${chart.columns.map((c) => `<td>${cm(r.values[c.key])}</td>`).join('')}${ordered.size ? `<td>${ordered.get(r.code) ?? ''}</td>` : ''}</tr>`,
+    )
+    .join('')}</table>`;
+
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -136,6 +149,7 @@ export function buildTechSheet(input: TechSheetInput): string {
   .kv th { text-align: left; font-weight: 500; color: var(--muted); width: 120px; padding: 3px 12px 3px 0; vertical-align: top; }
   .kv td { padding: 3px 0; }
   .grid th, .grid td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
+  .grid tr.sel td { background: #eef2ff; font-weight: 600; }
   .zone { display: grid; grid-template-columns: 260px 1fr; gap: 20px; padding: 16px 0; border-bottom: 1px solid var(--line); }
   .zone-img img { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: #f6f7f9; }
   .layers { margin: 10px 0 0; padding-left: 18px; font-size: 13px; }
@@ -154,7 +168,7 @@ export function buildTechSheet(input: TechSheetInput): string {
   <div class="muted">Tech sheet, ${esc(revisionText(input.revision).toLowerCase())} · ${esc(date)} · ${esc(input.approval)}</div>
   <div class="meta">
     <div><span class="muted">Garment</span><br>${esc(model.name)}${model.calibrated ? '' : ' <span class="muted">(preview pattern, confirm with the factory block)</span>'}</div>
-    <div><span class="muted">Size</span><br>${esc(model.category === 'uniform' ? `${size.code} cm tall` : size.code)}</div>
+    <div><span class="muted">Size</span><br>${esc(sizeLabel(model, size))}</div>
     <div><span class="muted">Fabric</span><br>${esc(fabricLabel)}</div>
     <div><span class="muted">Print files</span><br>${input.dpi} dpi, true size</div>
   </div>
@@ -167,6 +181,8 @@ export function buildTechSheet(input: TechSheetInput): string {
   ${colourways}
 
   ${team}
+
+  ${measurements}
 
   <h2>Fonts</h2>
   ${fonts ? `<table class="grid"><tr><th>Family</th><th>Weights</th><th>Source</th><th>Licence</th></tr>${fonts}</table>` : '<p class="muted">No text in this design.</p>'}

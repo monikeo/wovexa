@@ -8,7 +8,7 @@ import { useRef, useState } from 'react';
 import { useBrandKit } from './brand-context';
 import * as cmd from '@/domain/commands';
 import { createColorway } from '@/domain/factory';
-import { BELT_COLOURS, colorwayPresetsFor, GARMENT_LIST, getGarment, hasZone, partColor, PRINT_METHOD_LABELS, type GarmentModel } from '@/domain/garments';
+import { BELT_COLOURS, colorwayPresetsFor, GARMENT_LIST, getGarment, hasZone, partColor, PRINT_METHOD_LABELS, sizeChart, sizeLabel, type GarmentModel } from '@/domain/garments';
 import { FABRIC_EFFECTS, PATTERNS, ZONE_IDS, type Colorway, type FabricEffect, type PrintMethod, type Surface } from '@/domain/schema';
 import { AssetError, importImageFile, loadAssetImage } from '@/lib/assets';
 import { ColorField, toast } from '@/components/ui/primitives';
@@ -246,6 +246,51 @@ function FabricPrint({ colorway, model }: { colorway: Colorway; model: GarmentMo
   );
 }
 
+const cm = (mm: number | undefined) => (mm === undefined ? '–' : (mm / 10).toFixed(mm % 10 ? 1 : 0));
+
+/** The style's size chart in centimetres. Choosing a size here is the same as the size menu. */
+function SizeGuide({ model, selected, onPick }: { model: GarmentModel; selected: string; onPick: (code: string) => void }) {
+  const { columns, rows } = sizeChart(model);
+  return (
+    <details className="rounded-lg border border-line">
+      <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-fg-2">Size guide</summary>
+      <div className="max-h-72 overflow-auto border-t border-line">
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 bg-[var(--surface-panel)]">
+            <tr>
+              <th className="px-2 py-1.5 text-left font-semibold">Size</th>
+              {columns.map((c) => (
+                <th key={c.key} className="px-2 py-1.5 text-right font-semibold" title={c.hint}>
+                  {c.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.code} className={`border-t border-line ${r.code === selected ? 'bg-selected font-semibold' : ''}`}>
+                <td className="px-1 py-0.5">
+                  <button className="w-full rounded px-1 py-1 text-left hover:bg-hover" aria-pressed={r.code === selected} onClick={() => onPick(r.code)}>
+                    {r.label}
+                  </button>
+                </td>
+                {columns.map((c) => (
+                  <td key={c.key} className="num px-2 py-1 text-right">
+                    {cm(r.values[c.key])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="border-t border-line px-3 py-2 text-[11px] text-fg-3">
+        Finished garment in cm, measured flat. {columns.map((c) => `${c.label}: ${c.hint.toLowerCase()}`).join('. ')}. Choose a size to see it in 3D.
+      </p>
+    </details>
+  );
+}
+
 export function GarmentPanel() {
   const doc = useStudio((s) => s.document);
   const dispatch = useStudio((s) => s.dispatch);
@@ -274,7 +319,7 @@ export function GarmentPanel() {
             <select className="field" value={doc.garment.sizeCode} onChange={(e) => dispatch(cmd.setGarmentSize(e.target.value))}>
               {model.sizes.map((s) => (
                 <option key={s.code} value={s.code}>
-                  {model.category === 'uniform' ? `${s.code} cm tall` : `${s.code} · chest ${s.chestFlatMm / 10} cm`}
+                  {model.category === 'uniform' ? sizeLabel(model, s) : `${sizeLabel(model, s)} · chest ${s.chestFlatMm / 10} cm`}
                 </option>
               ))}
             </select>
@@ -290,6 +335,7 @@ export function GarmentPanel() {
             </select>
           </label>
         </div>
+        <SizeGuide model={model} selected={doc.garment.sizeCode} onPick={(code) => dispatch(cmd.setGarmentSize(code))} />
       </section>
 
       <section>

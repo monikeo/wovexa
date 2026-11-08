@@ -5,7 +5,7 @@ import { TEE_CLASSIC } from './garments';
 import { normalizeDeg, scaleRotateAbout } from './geometry';
 import { applyCommand, emptyHistory, undo } from './history';
 import { effectiveDpi } from './preflight';
-import { DEFAULT_SCENE, sceneOf } from './scene';
+import { DEFAULT_SCENE, SCENE_PRESETS, sceneOf, toneOf, TONES } from './scene';
 import { parseDesignDocument, type DesignDocument } from './schema';
 
 const front = TEE_CLASSIC.zones.front!;
@@ -130,6 +130,18 @@ describe('creative commands', () => {
     doc = run(doc, cmd.updateScene(sceneOf(doc), { exposure: 1.4, presetId: 'dark' })).doc;
     expect(doc.scene).toMatchObject({ exposure: 1.4, presetId: 'dark' });
     expect(doc.scene!.cameras).toHaveLength(1);
+  });
+
+  it('keeps older scenes in true colour and stores a chosen tone', () => {
+    expect(toneOf(DEFAULT_SCENE)).toBe('neutral');
+    let doc = createDocument({ projectId: 'p', title: 'Tone' });
+    doc = run(doc, cmd.updateScene(sceneOf(doc), { tone: 'agx' })).doc;
+    expect(toneOf(sceneOf(doc))).toBe('agx');
+    expect(parseDesignDocument(JSON.parse(JSON.stringify(doc))).ok).toBe(true);
+  });
+
+  it('gives every look a tone, so choosing one is predictable', () => {
+    for (const preset of SCENE_PRESETS) expect(TONES.some((t) => t.id === preset.defaults.tone)).toBe(true);
   });
 });
 

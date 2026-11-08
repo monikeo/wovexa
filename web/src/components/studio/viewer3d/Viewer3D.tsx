@@ -7,14 +7,14 @@
  */
 import { CameraControls, CameraControlsImpl, ContactShadows, Environment, Lightformer, PerformanceMonitor } from '@react-three/drei';
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
-import { Camera as CameraIcon, Clapperboard, Frame, Move, Rotate3d, RotateCw, SlidersHorizontal } from 'lucide-react';
+import { Camera as CameraIcon, Clapperboard, Frame, Move, Rotate3d, RotateCw, SlidersHorizontal, Sparkles } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { unionBounds } from '@/domain/arrange';
 import { coalescing, updateTransforms } from '@/domain/commands';
 import { getGarment, getSize, partColor, zoneSpecOrFirst, type PartId } from '@/domain/garments';
 import { clamp, hitTestLayer, normalizeDeg, rotatedBounds, scaleRotateAbout } from '@/domain/geometry';
-import { backdropCss, motionOf, presetOf, sceneOf, type MotionKind } from '@/domain/scene';
+import { backdropCss, drapeAmount, motionOf, presetOf, sceneOf, toneOf, type MotionKind, type ToneId } from '@/domain/scene';
 import type { LayerTransform, Scene, ZoneId } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
 import { canvasToBlob, downloadBlob, slugify } from '@/lib/download';
@@ -26,8 +26,10 @@ import { nudgeSelection, selectLayers } from '../actions';
 import { ScenePanel } from './ScenePanel';
 import { BASE_FOV, frameFit, shotKey, shotLabel, VIEW_PRESETS, viewerApi, ZONE_VIEW, type RenderBackground, type ShotSpec, type ViewPreset } from './stage';
 import { buildGarment, createFabricNormalMap, FABRIC_LOOK, type GarmentGeometry, type TrimColor } from './garment-geometry';
-import { drawPart, partKey, partSizeMm, setGpuMaxTexture, type PaintContext, type Quality } from './garment-textures';
-import { applyMotion, MOTION_CACHE_KEY, motionState, motionUniforms, patchMotion } from './motion';
+import { drawPart, drawPartSurface, partKey, partSizeMm, setGpuMaxTexture, type PaintContext, type Quality } from './garment-textures';
+import { bakeAmbientOcclusion, type AoTarget } from './ao-bake';
+import { applyMotion, MOTION_CACHE_KEY, motionDepthMaterial, motionState, motionUniforms, patchMotion, setLimbPivots } from './motion';
+import { disposeDecal, disposePhotoreal, fillCard, inkDecals, insetGeometry, liveTrace, pathTrace, photorealSupport, softStudioLights } from './photoreal';
 import { uvInZone, uvToZone, type GarmentPart } from './uv-mapping';
 
 export { VIEW_PRESETS, viewerApi, type ViewPreset } from './stage';
@@ -43,7 +45,58 @@ const stage: {
   controls: CameraControlsImpl | null;
   redraw: ((opts?: { quality?: Quality; guides?: boolean }) => boolean) | null;
   capturing: boolean;
-} = { controls: null, redraw: null, capturing: false };
+  /** The rasterised floor shadow, composited under path-traced renders. */
+  shadow: THREE.Object3D | null;
+  /** Garment changes that only a path tracer needs; returns the undo. */
+  preparePhotoreal: (() => () => void) | null;
+  /** Photoreal view is refining the viewport; real-time drawing and motion are paused. */
+  live: boolean;
+  /** Return the viewport to real time at once. */
+  stopLive: (() => void) | null;
+} = { controls: null, redraw: null, capturing: false, shadow: null, preparePhotoreal: null, live: false, stopLive: null };
+
+/** Lets the floor shadow be found for compositing (a callback ref, so it follows mounts). */
+const registerShadow = (group: THREE.Group | null) => {
+  stage.shadow = group;
+};
+
+/** The lining sits this far inside the shell when path traced: the fabric's thickness. */
+const LINING_INSET_MM = 0.8;
+
+/** The floor shadow alone, as the rasteriser draws it, copied into `out` (sized to the drawing buffer). */
+function shadowLayer(gl: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, out: HTMLCanvasElement) {
+  const size = gl.getDrawingBufferSize(new THREE.Vector2());
+  out.width = size.x;
+  out.height = size.y;
+  const shadow = stage.shadow;
+  const garment = motionState.group;
+  if (!shadow?.visible || !garment) return false;
+  // Call before the scene changes for path tracing: the rasteriser must not see softbox lights.
+  garment.visible = false;
+  try {
+    gl.setRenderTarget(null);
+    gl.render(scene, camera);
+  } finally {
+    garment.visible = true;
+  }
+  out.getContext('2d')!.drawImage(gl.domElement, 0, 0);
+  return true;
+}
+
+/** Put the scene in shape for path tracing: garment changes, softbox lights, no rasterised floor shadow. Returns the undo. */
+function stagePhotoreal(scene: THREE.Scene): () => void {
+  const undo: (() => void)[] = [stage.preparePhotoreal?.() ?? (() => {}), softStudioLights(scene)];
+  const shadow = stage.shadow;
+  if (shadow?.visible) {
+    shadow.visible = false;
+    undo.push(() => {
+      shadow.visible = true;
+    });
+  }
+  return () => {
+    for (const u of undo.reverse()) u();
+  };
+}
 
 export function detectQuality(): Quality {
   if (typeof window === 'undefined') return 'medium';
@@ -57,6 +110,12 @@ export function detectQuality(): Quality {
   if (memory <= 3 || cores <= 4) return 'low';
   if (coarse || window.innerWidth < 900) return 'medium';
   return 'high';
+}
+
+/** The garment's geometry for a model, size, detail level and drape. */
+function buildGarmentFor(modelId: string, sizeCode: string, quality: Quality, drape: number) {
+  const model = getGarment(modelId);
+  return buildGarment(model, getSize(model, sizeCode), quality === 'low' ? 'low' : 'high', drape);
 }
 
 function hasWebGL() {
@@ -81,8 +140,15 @@ function setLens(camera: THREE.PerspectiveCamera, fov: number) {
   camera.fov = fov;
   camera.updateProjectionMatrix();
 }
-function setExposure(gl: THREE.WebGLRenderer, exposure: number) {
-  gl.toneMappingExposure = exposure;
+/** Each tone curve shows mid-grey at a different brightness; these keep a look's exposure comparable across tones. */
+const TONE: Record<ToneId, { mapping: THREE.ToneMapping; exposure: number }> = {
+  neutral: { mapping: THREE.NeutralToneMapping, exposure: 1 },
+  agx: { mapping: THREE.AgXToneMapping, exposure: 1.3 },
+  aces: { mapping: THREE.ACESFilmicToneMapping, exposure: 0.8 },
+};
+function setTone(gl: THREE.WebGLRenderer, tone: ToneId, exposure: number) {
+  gl.toneMapping = TONE[tone].mapping;
+  gl.toneMappingExposure = exposure * TONE[tone].exposure;
 }
 
 function cssVar(name: string, fallback: string) {
@@ -143,6 +209,9 @@ const PART_COLOR: Record<PartId, 'body' | 'sleeves' | 'pants'> = { torso: 'body'
 
 const motionCacheKey = () => MOTION_CACHE_KEY;
 
+/** Bump strength for printed relief: a puff print's full height rises clearly off the knit. */
+const PRINT_RELIEF = 3;
+
 /** Fabric shading: physical sheen on capable devices, a plain standard material on low-power ones. Both carry motion. */
 function FabricMaterial({ lite, look, ...props }: { lite: boolean; look: (typeof FABRIC_LOOK)[keyof typeof FABRIC_LOOK] } & Record<string, unknown>) {
   const normalScale = useMemo(() => new THREE.Vector2(look.normal, look.normal), [look.normal]);
@@ -151,13 +220,33 @@ function FabricMaterial({ lite, look, ...props }: { lite: boolean; look: (typeof
 }
 
 /** Plays the scene's motion in the live view. Video frames set the same state from their own clock. */
-function MotionDriver({ kind, speed, groupRef, bottomMm, heightMm }: { kind: MotionKind; speed: number; groupRef: React.RefObject<THREE.Group | null>; bottomMm: number; heightMm: number }) {
+function MotionDriver({
+  kind,
+  speed,
+  groupRef,
+  bottomMm,
+  heightMm,
+  hpsMm,
+  limbPivots,
+}: {
+  kind: MotionKind;
+  speed: number;
+  groupRef: React.RefObject<THREE.Group | null>;
+  bottomMm: number;
+  heightMm: number;
+  /** High point of shoulder, in garment millimetres: where a hanger holds it. */
+  hpsMm: number;
+  limbPivots: GarmentGeometry['limbPivots'];
+}) {
   const invalidate = useThree((s) => s.invalidate);
   const [accent] = useState(() => cssVar('--accent', '#2b59ff'));
   useEffect(() => {
     setRevealSpan(bottomMm, heightMm, accent);
+    // The garment is centred on the stage, so the neck sits this far above the centre (metres).
+    motionState.neckY = (hpsMm - bottomMm - heightMm / 2) * 0.001;
+    setLimbPivots(limbPivots);
     invalidate();
-  }, [bottomMm, heightMm, accent, invalidate]);
+  }, [bottomMm, heightMm, hpsMm, limbPivots, accent, invalidate]);
   useEffect(() => {
     const group = groupRef.current;
     motionState.kind = kind;
@@ -171,7 +260,7 @@ function MotionDriver({ kind, speed, groupRef, bottomMm, heightMm }: { kind: Mot
     let raf = 0;
     const t0 = performance.now();
     const loop = () => {
-      if (!stage.capturing) {
+      if (!stage.capturing && !stage.live) {
         applyMotion(kind, speed, (performance.now() - t0) / 1000, group);
         invalidate();
       }
@@ -211,7 +300,53 @@ function useBackdropImage(assetId: string | undefined) {
   return loaded?.src ?? null;
 }
 
-function Garment({ geo, quality, mode, guides, onOwnZone }: { geo: GarmentGeometry; quality: Quality; mode: Mode; guides: boolean; onOwnZone: (zone: ZoneId) => void }) {
+/**
+ * A wooden hanger with a chrome hook, for the Hanger motion: the bar sits under the shoulders
+ * inside the garment and the hook rises out of the neck, as on a shop rail. Garment millimetres.
+ */
+function Hanger({ hpsMm, shoulderMm, neckMm, slope }: { hpsMm: number; shoulderMm: number; neckMm: number; slope: number }) {
+  const shapes = useMemo(() => {
+    const y0 = hpsMm - 30;
+    const reach = shoulderMm * 0.86;
+    const tipY = y0 - slope * Math.max(0, reach - neckMm) - 8;
+    const bar = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-reach, tipY, 0),
+      new THREE.Vector3(-neckMm * 1.2, y0 - 2, 0),
+      new THREE.Vector3(0, y0 + 6, 0),
+      new THREE.Vector3(neckMm * 1.2, y0 - 2, 0),
+      new THREE.Vector3(reach, tipY, 0),
+    ]);
+    const hook = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0, y0 + 6, 0),
+      new THREE.Vector3(0, hpsMm + 70, 0),
+      new THREE.Vector3(0, hpsMm + 116, -8),
+      new THREE.Vector3(0, hpsMm + 134, -38),
+      new THREE.Vector3(0, hpsMm + 118, -66),
+      new THREE.Vector3(0, hpsMm + 94, -68),
+    ]);
+    return { bar: new THREE.TubeGeometry(bar, 72, 8.5, 14, false), hook: new THREE.TubeGeometry(hook, 56, 2.6, 10, false) };
+  }, [hpsMm, shoulderMm, neckMm, slope]);
+  useEffect(
+    () => () => {
+      shapes.bar.dispose();
+      shapes.hook.dispose();
+    },
+    [shapes],
+  );
+  const noRaycast = () => null;
+  return (
+    <>
+      <mesh geometry={shapes.bar} castShadow receiveShadow raycast={noRaycast}>
+        <meshPhysicalMaterial color="#b4875a" roughness={0.45} clearcoat={0.5} clearcoatRoughness={0.28} />
+      </mesh>
+      <mesh geometry={shapes.hook} castShadow raycast={noRaycast}>
+        <meshStandardMaterial color="#dfe3e8" metalness={1} roughness={0.2} />
+      </mesh>
+    </>
+  );
+}
+
+function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: GarmentGeometry; quality: Quality; mode: Mode; guides: boolean; hanger: boolean; onOwnZone: (zone: ZoneId) => void }) {
   const doc = useStudio((s) => s.document)!;
   const colorway = useDisplayColorway()!;
   const activeZone = useStudio((s) => s.activeZoneId);
@@ -220,14 +355,19 @@ function Garment({ geo, quality, mode, guides, onOwnZone }: { geo: GarmentGeomet
   const camera = useThree((s) => s.camera);
   const invalidate = useThree((s) => s.invalidate);
   const model = getGarment(doc.garment.modelId);
+  const size = getSize(model, doc.garment.sizeCode);
   const fabricPreset = model.fabricPresets.find((f) => f.id === doc.garment.fabricPresetId) ?? model.fabricPresets[0];
+  const look = FABRIC_LOOK[fabricPreset.surface];
   const meshes = useRef(new Map<PartId, THREE.Mesh>());
+  const liningMeshes = useRef(new Map<PartId, THREE.Mesh>());
   const lastKeys = useRef(new Map<PartId, string>());
   const generation = useRef(0);
   const dragRef = useRef<Drag | null>(null);
   const [accent] = useState(() => cssVar('--accent', '#2b59ff'));
 
-  // One canvas and texture per textured part, made once per geometry.
+  // One canvas and texture per textured part, made once per geometry; plus, on capable devices,
+  // a print-surface map per part (ink height, roughness, metalness) for real relief and gloss.
+  const useSurface = quality !== 'low';
   const textures = useMemo(() => {
     const out = new Map<PartId, { canvas: HTMLCanvasElement; texture: THREE.CanvasTexture }>();
     for (const p of geo.parts) {
@@ -239,14 +379,27 @@ function Garment({ geo, quality, mode, guides, onOwnZone }: { geo: GarmentGeomet
     }
     return out;
   }, [geo, gl]);
+  const surfaces = useMemo(() => {
+    const out = new Map<PartId, { canvas: HTMLCanvasElement; texture: THREE.CanvasTexture }>();
+    if (!useSurface) return out;
+    for (const p of geo.parts) {
+      const canvas = document.createElement('canvas');
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.NoColorSpace;
+      texture.anisotropy = Math.min(8, gl.capabilities.getMaxAnisotropy());
+      out.set(p.id, { canvas, texture });
+    }
+    return out;
+  }, [geo, gl, useSurface]);
   useEffect(() => {
     const keys = lastKeys.current;
     keys.clear();
     return () => {
       for (const t of textures.values()) t.texture.dispose();
+      for (const t of surfaces.values()) t.texture.dispose();
       keys.clear();
     };
-  }, [textures]);
+  }, [textures, surfaces]);
 
   // Fabric relief at true scale: about one weave repeat per few millimetres.
   const normals = useMemo(() => {
@@ -277,6 +430,50 @@ function Garment({ geo, quality, mode, guides, onOwnZone }: { geo: GarmentGeomet
     [normals],
   );
 
+  // The lining (inside face) shares the shell's shape but has its own shading: dark deep inside,
+  // lighter toward the neck, hem and cuffs. It starts dark and is replaced by the bake below.
+  const linings = useMemo(() => {
+    const out = new Map<PartId, THREE.BufferGeometry>();
+    for (const p of geo.parts) {
+      const g = new THREE.BufferGeometry();
+      for (const name of ['position', 'normal', 'uv', 'aFree', 'aLimb']) {
+        const a = p.geometry.getAttribute(name);
+        if (a) g.setAttribute(name, a);
+      }
+      g.setIndex(p.geometry.getIndex());
+      g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(p.geometry.getAttribute('position').count * 3).fill(0.45), 3));
+      out.set(p.id, g);
+    }
+    return out;
+  }, [geo]);
+  useEffect(() => () => linings.forEach((g) => g.dispose()), [linings]);
+
+  // Ambient occlusion from the garment's real shape (collar, underarms, folds, the inside),
+  // baked on the GPU once per shape, a frame after it appears so the first view isn't held up.
+  useEffect(() => {
+    let cancelled = false;
+    const frame = requestAnimationFrame(() => {
+      if (cancelled) return;
+      const targets: AoTarget[] = [];
+      for (const p of geo.parts) {
+        targets.push({ geometry: p.geometry, out: p.geometry, floor: 0.38 });
+        const lining = linings.get(p.id);
+        if (lining) targets.push({ geometry: p.geometry, out: lining, inside: true, floor: 0.12 });
+      }
+      const occluders = [...geo.parts.map((p) => p.geometry), ...geo.trims.map((t) => t.geometry)];
+      try {
+        if (bakeAmbientOcclusion(gl, occluders, targets, quality === 'low' ? 'low' : 'high')) invalidate();
+      } catch (error) {
+        // The procedural shading stays; the garment still looks right, just less deep.
+        console.warn('Ambient occlusion bake skipped:', error);
+      }
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
+  }, [geo, linings, gl, quality, invalidate]);
+
   useEffect(() => setGpuMaxTexture(gl.capabilities.maxTextureSize), [gl]);
   useEffect(() => {
     // Development-only handle for inspecting textures and captures from the console.
@@ -300,19 +497,14 @@ function Garment({ geo, quality, mode, guides, onOwnZone }: { geo: GarmentGeomet
         quality: opts.quality ?? quality,
         live: { zoneId: live.zoneId, overrides: live.overrides },
         guides: opts.guides === false ? undefined : { zones: guides, selection: showSelection && selected.length ? { zoneId: activeZone, ids: selected } : null, accent },
+        // With a surface map, relief, gloss and foil are real lighting, not painted in.
+        simulateFinish: !surfaces.size,
       };
       let ok = true;
       let changed = false;
-      for (const p of geo.parts) {
-        const entry = textures.get(p.id);
-        if (!entry) continue;
-        const key = partKey(p.id, ctx, generation.current);
-        if (lastKeys.current.get(p.id) === key) continue;
-        const complete = drawPart(entry.canvas, p.id, ctx);
-        ok = ok && complete;
-        lastKeys.current.set(p.id, complete ? key : '');
-        // three.js allocates fixed-size GPU storage on first upload; when the canvas is
-        // resized (quality, garment size or a render) the old storage must be released first.
+      // three.js allocates fixed-size GPU storage on first upload; when the canvas is
+      // resized (quality, garment size or a render) the old storage must be released first.
+      const upload = (entry: { canvas: HTMLCanvasElement; texture: THREE.CanvasTexture }) => {
         const sizeKey = `${entry.canvas.width}x${entry.canvas.height}`;
         if (entry.texture.userData.uploadedSize !== sizeKey) {
           entry.texture.dispose();
@@ -320,11 +512,24 @@ function Garment({ geo, quality, mode, guides, onOwnZone }: { geo: GarmentGeomet
         }
         entry.texture.needsUpdate = true;
         changed = true;
+      };
+      for (const p of geo.parts) {
+        const entry = textures.get(p.id);
+        if (!entry) continue;
+        const key = partKey(p.id, ctx, generation.current);
+        if (lastKeys.current.get(p.id) === key) continue;
+        const complete = drawPart(entry.canvas, p.id, ctx);
+        const surface = surfaces.get(p.id);
+        const surfaceDone = surface ? drawPartSurface(surface.canvas, p.id, ctx, look.roughness) : true;
+        ok = ok && complete && surfaceDone;
+        lastKeys.current.set(p.id, complete && surfaceDone ? key : '');
+        upload(entry);
+        if (surface) upload(surface);
       }
       if (changed) invalidate();
       return ok;
     },
-    [doc, colorway, model, geo, quality, textures, invalidate, guides, showSelection, selected, activeZone, accent],
+    [doc, colorway, model, geo, quality, textures, surfaces, look.roughness, invalidate, guides, showSelection, selected, activeZone, accent],
   );
 
   useEffect(() => {
@@ -334,6 +539,59 @@ function Garment({ geo, quality, mode, guides, onOwnZone }: { geo: GarmentGeomet
     };
   }, [draw]);
 
+  // Path tracing sees real geometry and real light, so while it runs: the lining sits just inside
+  // the shell (fabric thickness) instead of on it, true occlusion replaces the baked shading, and
+  // each print becomes a raised ink layer with real relief over the knit. Undone afterwards.
+  useEffect(() => {
+    const prepare = () => {
+      const undo: (() => void)[] = [];
+      for (const p of geo.parts) {
+        const mesh = meshes.current.get(p.id);
+        if (!mesh || Array.isArray(mesh.material)) continue;
+        const material = mesh.material as THREE.MeshStandardMaterial;
+        material.vertexColors = false;
+        undo.push(() => {
+          material.vertexColors = true;
+        });
+        const lining = liningMeshes.current.get(p.id);
+        if (lining && !Array.isArray(lining.material)) {
+          const shell = lining.geometry;
+          const inset = insetGeometry(shell, LINING_INSET_MM);
+          const liningMaterial = lining.material as THREE.MeshStandardMaterial;
+          const tint = liningMaterial.color.clone();
+          lining.geometry = inset;
+          // Path tracing finds the inside's shadow itself; the baked shade would double it.
+          liningMaterial.vertexColors = false;
+          liningMaterial.color.copy(shade(partColor(colorway, PART_COLOR[p.id]), 0.92));
+          undo.push(() => {
+            lining.geometry = shell;
+            liningMaterial.vertexColors = true;
+            liningMaterial.color.copy(tint);
+            inset.dispose();
+          });
+        }
+        const color = textures.get(p.id);
+        const surface = surfaces.get(p.id);
+        if (!color || !surface || !mesh.parent) continue;
+        const { w, h } = partSizeMm(geo, p.id);
+        for (const decal of inkDecals(p.geometry, color.canvas, surface.canvas, w, h)) {
+          mesh.parent.add(decal);
+          undo.push(() => {
+            decal.removeFromParent();
+            disposeDecal(decal);
+          });
+        }
+      }
+      return () => {
+        for (const u of undo.reverse()) u();
+      };
+    };
+    stage.preparePhotoreal = prepare;
+    return () => {
+      if (stage.preparePhotoreal === prepare) stage.preparePhotoreal = null;
+    };
+  }, [geo, textures, surfaces, colorway]);
+
   // Redraw when the document, colourway, selection or a live drag changes; coalesced per frame.
   useEffect(() => {
     let frame = 0;
@@ -341,6 +599,8 @@ function Garment({ geo, quality, mode, guides, onOwnZone }: { geo: GarmentGeomet
     const run = () => {
       frame = 0;
       if (disposed || stage.capturing) return;
+      // A change while Photoreal view is refining: back to real time, then repaint.
+      if (stage.live) stage.stopLive?.();
       if (!draw()) loadMissing();
     };
     const schedule = () => {
@@ -544,8 +804,12 @@ function Garment({ geo, quality, mode, guides, onOwnZone }: { geo: GarmentGeomet
   };
 
   const lite = quality === 'low';
-  const look = FABRIC_LOOK[fabricPreset.surface];
   const handlers = { onClick, onPointerDown, onPointerMove: onHover, onPointerOut: onOut };
+  /** The print surface drives roughness, metalness and relief; values in the map are absolute. */
+  const surfaceProps = (part: PartId) => {
+    const surface = surfaces.get(part)?.texture;
+    return surface ? { roughnessMap: surface, metalnessMap: surface, bumpMap: surface, bumpScale: PRINT_RELIEF, roughness: 1, metalness: 1 } : {};
+  };
   const noRaycast = () => null;
   const trimColor = (c: TrimColor) => (c === 'button' ? colorway.parts.stitching : c === 'body' || c === 'sleeves' || c === 'collar' ? colorway.parts[c] : partColor(colorway, c));
 
@@ -562,12 +826,22 @@ function Garment({ geo, quality, mode, guides, onOwnZone }: { geo: GarmentGeomet
               }}
               geometry={p.geometry}
               userData={{ part: p.id }}
+              castShadow
+              receiveShadow
+              customDepthMaterial={motionDepthMaterial}
               {...handlers}
             >
-              <FabricMaterial lite={lite} look={look} map={textures.get(p.id)?.texture} normalMap={normals.parts.get(p.id)} sheenColor={shade(base, 1.15)} vertexColors />
+              <FabricMaterial lite={lite} look={look} map={textures.get(p.id)?.texture} normalMap={normals.parts.get(p.id)} sheenColor={shade(base, 1.15)} vertexColors {...surfaceProps(p.id)} />
             </mesh>
-            <mesh geometry={p.geometry} raycast={noRaycast}>
-              <meshStandardMaterial color={shade(base, 0.55)} side={THREE.BackSide} roughness={1} onBeforeCompile={patchMotion} customProgramCacheKey={motionCacheKey} />
+            <mesh
+              ref={(m) => {
+                if (m) liningMeshes.current.set(p.id, m);
+                else liningMeshes.current.delete(p.id);
+              }}
+              geometry={linings.get(p.id) ?? p.geometry}
+              raycast={noRaycast}
+            >
+              <meshStandardMaterial color={base} vertexColors side={THREE.BackSide} roughness={1} onBeforeCompile={patchMotion} customProgramCacheKey={motionCacheKey} />
             </mesh>
           </group>
         );
@@ -576,7 +850,7 @@ function Garment({ geo, quality, mode, guides, onOwnZone }: { geo: GarmentGeomet
         const color = trimColor(t.color);
         const trimLook = FABRIC_LOOK[t.surface];
         return (
-          <mesh key={t.key} geometry={t.geometry} raycast={noRaycast}>
+          <mesh key={t.key} geometry={t.geometry} raycast={noRaycast} castShadow receiveShadow customDepthMaterial={motionDepthMaterial}>
             <FabricMaterial
               lite={lite}
               look={trimLook}
@@ -585,10 +859,19 @@ function Garment({ geo, quality, mode, guides, onOwnZone }: { geo: GarmentGeomet
               normalMap={t.surface === 'plastic' ? undefined : t.surface === 'rib' ? normals.trimRib : normals.trimFabric}
               sheenColor={shade(color, 1.1)}
               side={t.doubleSided ? THREE.DoubleSide : THREE.FrontSide}
+              {...(t.mapPart ? surfaceProps(t.mapPart) : {})}
             />
           </mesh>
         );
       })}
+      {hanger ? (
+        <Hanger
+          hpsMm={geo.layout.torsoHeightMm}
+          shoulderMm={model.shoulderHalfWidthMm * (size.chestFlatMm / (2 * model.chestHalfWidthMm))}
+          neckMm={model.neckRadiusMm * size.scale}
+          slope={model.shoulderSlope}
+        />
+      ) : null}
     </group>
   );
 }
@@ -602,10 +885,11 @@ function SceneLights({ scene, floorY, shadowKey }: { scene: Scene; floorY: numbe
   const rig = preset.rig;
   const gl = useThree((s) => s.gl);
   const invalidate = useThree((s) => s.invalidate);
+  const tone = toneOf(scene);
   useEffect(() => {
-    setExposure(gl, scene.exposure);
+    setTone(gl, tone, scene.exposure);
     invalidate();
-  }, [gl, scene.exposure, invalidate]);
+  }, [gl, tone, scene.exposure, invalidate]);
   const rot = (scene.envRotationDeg * Math.PI) / 180;
   const envRotation = useMemo(() => new THREE.Euler(0, rot, 0), [rot]);
   const [kx, ky, kz] = rig.key.position;
@@ -614,7 +898,24 @@ function SceneLights({ scene, floorY, shadowKey }: { scene: Scene; floorY: numbe
       <ambientLight intensity={rig.ambient} />
       {/* Every side the camera can show gets light, like a product shoot; the rig turns with the environment. */}
       <group rotation-y={rot}>
-        <directionalLight position={[kx, ky, kz]} intensity={rig.key.intensity} color={rig.key.color} />
+        {/* The key light casts soft shadows: sleeves onto the body, folds onto folds. */}
+        <directionalLight
+          position={[kx, ky, kz]}
+          intensity={rig.key.intensity}
+          color={rig.key.color}
+          castShadow
+          shadow-mapSize={[1536, 1536]}
+          shadow-radius={8}
+          shadow-intensity={0.72}
+          shadow-bias={-0.0003}
+          shadow-normalBias={0.003}
+          shadow-camera-left={-1.05}
+          shadow-camera-right={1.05}
+          shadow-camera-top={1.05}
+          shadow-camera-bottom={-1.05}
+          shadow-camera-near={0.5}
+          shadow-camera-far={8}
+        />
         <directionalLight position={[-kx * 0.8, ky, -kz]} intensity={rig.key.intensity * 0.85} color={rig.key.color} />
         <directionalLight position={[-kx, ky * 0.7, kz * 0.9]} intensity={rig.fill.intensity * 0.45} color={rig.fill.color} />
         <directionalLight position={[2.4, 1.2, 0]} intensity={rig.rim.intensity} color={rig.rim.color} />
@@ -627,7 +928,11 @@ function SceneLights({ scene, floorY, shadowKey }: { scene: Scene; floorY: numbe
         <Lightformer form="rect" intensity={1.1} position={[3.5, 0.8, 0]} rotation-y={-Math.PI / 2} scale={[4, 3, 1]} />
       </Environment>
       {/* The garment's shape never moves, so its floor shadow is rendered once per garment, not every frame. */}
-      {scene.shadows ? <ContactShadows key={shadowKey} frames={1} position={[0, floorY, 0]} opacity={preset.id === 'dark' ? 0.55 : 0.32} scale={1.8} blur={2.4} far={1.2} resolution={512} /> : null}
+      {scene.shadows ? (
+        <group ref={registerShadow}>
+          <ContactShadows key={shadowKey} frames={1} position={[0, floorY, 0]} opacity={preset.id === 'dark' || preset.id === 'neon' ? 0.55 : 0.32} scale={1.8} blur={2.4} far={1.2} resolution={512} />
+        </group>
+      ) : null}
     </>
   );
 }
@@ -670,6 +975,7 @@ function CameraRig({
   const scene = useThree((s) => s.scene);
   const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera;
   const invalidate = useThree((s) => s.invalidate);
+  const setFrameloop = useThree((s) => s.setFrameloop);
   const width = useThree((s) => s.size.width);
   const height = useThree((s) => s.size.height);
   // A longer lens moves the camera back so the garment keeps its framing.
@@ -763,15 +1069,25 @@ function CameraRig({
     const maxSide = Math.min(ctx.getParameter(ctx.MAX_RENDERBUFFER_SIZE) as number, viewport[0], viewport[1], memory <= 4 ? 4096 : 6144);
     viewerApi.maxOutputSize = () => maxSide;
 
-    const composite = (W: number, H: number, background: RenderBackground) => {
+    /** Backdrop, then each layer (by default the canvas as just rendered). */
+    const composite = (W: number, H: number, background: RenderBackground, layers: (HTMLCanvasElement | null)[] = [gl.domElement]) => {
       const out = document.createElement('canvas');
       out.width = W;
       out.height = H;
       const o = out.getContext('2d')!;
       if (background === 'scene') paintBackdrop(o, backdropRef.current, W, H);
       else if (background !== 'transparent') paintBackdrop(o, { kind: 'solid', color: background.color }, W, H);
-      o.drawImage(gl.domElement, 0, 0, W, H);
+      for (const layer of layers) if (layer) o.drawImage(layer, 0, 0, W, H);
       return out;
+    };
+
+    /** Where depth of field focuses: the garment surface at the centre of the frame. */
+    const focusDistance = () => {
+      const ray = new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2(0, 0), camera);
+      const group = motionState.group;
+      const hit = group ? ray.intersectObject(group, true)[0] : undefined;
+      return hit ? hit.distance : camera.position.distanceTo(controls.current?.getTarget(new THREE.Vector3()) ?? new THREE.Vector3());
     };
 
     const fit = (w: number, h: number) => {
@@ -782,6 +1098,8 @@ function CameraRig({
     async function withOutput<T>(W: number, H: number, run: () => Promise<T>): Promise<T> {
       const c = controls.current;
       if (!c) throw new Error('The 3D view is not ready yet.');
+      if (stage.capturing) throw new Error('A render is already running. Wait for it to finish.');
+      stage.stopLive?.();
       stage.capturing = true;
       const savedPos = c.getPosition(new THREE.Vector3());
       const savedTarget = c.getTarget(new THREE.Vector3());
@@ -827,16 +1145,62 @@ function CameraRig({
       c.update(0);
     };
 
-    viewerApi.capture = async ({ shots, width: w, height: h, background = 'scene', frameCurrent = false }) => {
+    viewerApi.capture = async ({ shots, width: w, height: h, background = 'scene', frameCurrent = false, photoreal }) => {
       const { W, H } = fit(w, h);
       const liveFov = camera.fov;
       const framedStage = frameCurrent ? gl.getSize(new THREE.Vector2()) : null;
+      if (photoreal) {
+        const unsupported = photorealSupport(gl);
+        if (unsupported) throw new Error(unsupported);
+      }
       return withOutput(W, H, async () => {
         const out = [];
-        for (const shot of shots) {
-          await place(shot, W / H, liveFov, framedStage);
-          gl.render(scene, camera);
-          out.push({ key: shotKey(shot), label: shotLabel(shot), canvas: composite(W, H, background) });
+        if (!photoreal) {
+          for (const shot of shots) {
+            await place(shot, W / H, liveFov, framedStage);
+            gl.render(scene, camera);
+            out.push({ key: shotKey(shot), label: shotLabel(shot), canvas: composite(W, H, background) });
+          }
+          return out;
+        }
+        // Photoreal: nothing else draws to the canvas while it renders, the view can't be moved
+        // mid-render, and the stage shows the render resolving at the output's proportions.
+        const c = controls.current!;
+        const el = gl.domElement;
+        setFrameloop('never');
+        c.enabled = false;
+        el.style.objectFit = 'contain';
+        let restore: (() => void) | null = null;
+        try {
+          // Floor shadows come from the rasteriser, before the scene changes for path tracing.
+          const shadows: (HTMLCanvasElement | null)[] = [];
+          for (const shot of shots) {
+            await place(shot, W / H, liveFov, framedStage);
+            const layer = document.createElement('canvas');
+            shadows.push(shadowLayer(gl, scene, camera, layer) ? layer : null);
+          }
+          restore = stagePhotoreal(scene);
+          for (const [i, shot] of shots.entries()) {
+            await place(shot, W / H, liveFov, framedStage);
+            const removeCard = fillCard(scene, camera);
+            try {
+              const traced = await pathTrace(gl, scene, camera, W, H, {
+                samples: photoreal.samples,
+                denoise: photoreal.denoise,
+                focus: photoreal.fStop ? { fStop: photoreal.fStop, distance: focusDistance() } : undefined,
+                signal: photoreal.signal,
+                onProgress: (f) => photoreal.onProgress?.((i + f) / shots.length),
+              });
+              out.push({ key: shotKey(shot), label: shotLabel(shot), canvas: composite(W, H, background, [shadows[i], traced]) });
+            } finally {
+              removeCard();
+            }
+          }
+        } finally {
+          restore?.();
+          el.style.objectFit = '';
+          c.enabled = true;
+          setFrameloop('demand');
         }
         return out;
       });
@@ -883,6 +1247,7 @@ function CameraRig({
     viewerApi.exportModel = async (format) => {
       const group = motionState.group;
       if (!group) throw new Error('The 3D view is not ready yet.');
+      stage.stopLive?.();
       stage.capturing = true;
       applyMotion('still', 1, 0, group);
       try {
@@ -904,7 +1269,10 @@ function CameraRig({
       viewerApi.maxOutputSize = undefined;
       viewerApi.exportModel = undefined;
     };
-  }, [gl, scene, camera, invalidate, poseOf]);
+  }, [gl, scene, camera, invalidate, poseOf, setFrameloop]);
+
+  // The path tracer belongs to this renderer; free it with the renderer.
+  useEffect(() => () => disposePhotoreal(), [gl]);
 
   const fitFactor = fitDistance(fitH, fitW, width / Math.max(1, height)) * lens;
   return (
@@ -913,12 +1281,160 @@ function CameraRig({
       makeDefault
       minDistance={0.7 * lens}
       maxDistance={3.4 * fitFactor}
-      minPolarAngle={Math.PI * 0.22}
-      maxPolarAngle={Math.PI * 0.7}
+      // A full sphere: look down into the neck or up through the hem, all the way round.
+      minPolarAngle={0.02}
+      maxPolarAngle={Math.PI - 0.02}
       truckSpeed={0}
       smoothTime={0.28}
     />
   );
+}
+
+export type LiveStatus = { kind: 'preparing' } | { kind: 'tracing'; samples: number; target: number } | { kind: 'done'; samples: number } | { kind: 'error'; message: string };
+
+/** How long the view must be left still before it starts refining. */
+const LIVE_IDLE_MS = 900;
+/** Where the live view stops refining, to rest the GPU and battery. */
+const LIVE_SAMPLES = 320;
+/** Pixels the live view path traces, whatever the screen density: clean within seconds. */
+const LIVE_PIXELS = 1_400_000;
+
+/**
+ * Photoreal view, the viewport's second mode: editing stays real time, and when the view is left
+ * still it refines in place into a path-traced image (light that bounces, soft softbox shadows,
+ * raised ink). Any interaction or edit returns to real time at once.
+ */
+function PhotorealView({ enabled, overlay, onStatus }: { enabled: boolean; overlay: React.RefObject<HTMLCanvasElement | null>; onStatus: (status: LiveStatus | null) => void }) {
+  const gl = useThree((s) => s.gl);
+  const scene = useThree((s) => s.scene);
+  const camera = useThree((s) => s.camera);
+  const invalidate = useThree((s) => s.invalidate);
+  const setFrameloop = useThree((s) => s.setFrameloop);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const unsupported = photorealSupport(gl);
+    if (unsupported) {
+      onStatus({ kind: 'error', message: unsupported });
+      return () => onStatus(null);
+    }
+    let timer = 0;
+    let run: { abort: AbortController; restore: () => void } | null = null;
+
+    const stop = () => {
+      window.clearTimeout(timer);
+      if (!run) return;
+      const r = run;
+      run = null;
+      r.abort.abort();
+      r.restore();
+      onStatus(null);
+    };
+    const arm = () => {
+      stop();
+      timer = window.setTimeout(start, LIVE_IDLE_MS);
+    };
+    function start() {
+      if (run || document.hidden) return;
+      // A render is running: look again shortly.
+      if (stage.capturing) return arm();
+      const abort = new AbortController();
+      const undo: (() => void)[] = [];
+      const restore = () => {
+        for (const u of undo.splice(0).reverse()) u();
+      };
+      try {
+        stage.live = true;
+        setFrameloop('never');
+        undo.push(() => {
+          stage.live = false;
+          setFrameloop('demand');
+          invalidate();
+        });
+        // The garment at rest, its textures without on-garment guides.
+        applyMotion('still', 1, 0, motionState.group);
+        stage.redraw?.({ guides: false });
+        undo.push(() => {
+          stage.redraw?.();
+        });
+        // A pixel budget the GPU refines in seconds, whatever the screen density.
+        const ratio = gl.getPixelRatio();
+        const css = gl.getSize(new THREE.Vector2());
+        gl.setPixelRatio(clamp(Math.sqrt(LIVE_PIXELS / Math.max(1, css.x * css.y)), 0.6, ratio));
+        gl.setSize(css.x, css.y, false);
+        undo.push(() => {
+          gl.setPixelRatio(ratio);
+          gl.setSize(css.x, css.y, false);
+        });
+        // The floor shadow, drawn once by the rasteriser, sits under the traced garment.
+        const layer = overlay.current;
+        if (layer && shadowLayer(gl, scene, camera, layer)) {
+          layer.style.visibility = 'visible';
+          undo.push(() => {
+            layer.style.visibility = 'hidden';
+          });
+        }
+        undo.push(stagePhotoreal(scene));
+        undo.push(fillCard(scene, camera));
+      } catch (error) {
+        restore();
+        onStatus({ kind: 'error', message: error instanceof Error ? error.message : 'Photoreal view could not start.' });
+        return;
+      }
+      run = { abort, restore };
+      onStatus({ kind: 'preparing' });
+      liveTrace(gl, scene, camera, {
+        target: LIVE_SAMPLES,
+        signal: abort.signal,
+        onSamples: (n) => {
+          if (!abort.signal.aborted && n >= 1) onStatus({ kind: 'tracing', samples: Math.floor(n), target: LIVE_SAMPLES });
+        },
+      }).then(
+        () => {
+          if (!abort.signal.aborted) onStatus({ kind: 'done', samples: LIVE_SAMPLES });
+        },
+        (error: unknown) => {
+          if (abort.signal.aborted) return;
+          stop();
+          onStatus({ kind: 'error', message: error instanceof Error ? error.message : 'Photoreal view stopped.' });
+        },
+      );
+    }
+
+    // Anything that changes what the view shows returns it to real time and starts the wait again.
+    const host = gl.domElement.closest<HTMLElement>('[data-viewer3d]') ?? gl.domElement;
+    const controls = stage.controls;
+    host.addEventListener('pointerdown', arm, true);
+    host.addEventListener('wheel', arm, { capture: true, passive: true });
+    host.addEventListener('keydown', arm, true);
+    document.addEventListener('visibilitychange', arm);
+    controls?.addEventListener('update', arm);
+    controls?.addEventListener('controlstart', arm);
+    const resize = new ResizeObserver(arm);
+    resize.observe(host);
+    const unStudio = useStudio.subscribe((s, p) => {
+      if (s.document !== p.document || s.selectedLayerIds !== p.selectedLayerIds || s.activeZoneId !== p.activeZoneId) arm();
+    });
+    const unLive = useLive.subscribe((s, p) => {
+      if (s.overrides !== p.overrides || s.colorwayOverride !== p.colorwayOverride) arm();
+    });
+    stage.stopLive = stop;
+    arm();
+    return () => {
+      stop();
+      if (stage.stopLive === stop) stage.stopLive = null;
+      host.removeEventListener('pointerdown', arm, true);
+      host.removeEventListener('wheel', arm, { capture: true });
+      host.removeEventListener('keydown', arm, true);
+      document.removeEventListener('visibilitychange', arm);
+      controls?.removeEventListener('update', arm);
+      controls?.removeEventListener('controlstart', arm);
+      resize.disconnect();
+      unStudio();
+      unLive();
+    };
+  }, [enabled, gl, scene, camera, invalidate, setFrameloop, overlay, onStatus]);
+  return null;
 }
 
 /** While the render studio is open, show the output frame over the live view: exactly what "Current view" captures. */
@@ -962,14 +1478,16 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
   const [lost, setLost] = useState(false);
   const [generation, setGeneration] = useState(0);
   const stageRef = useRef<HTMLDivElement>(null);
+  const [photoreal, setPhotoreal] = useState(() => readFlag('wovexa.photoreal3d', false));
+  const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
+  const shadowOverlay = useRef<HTMLCanvasElement>(null);
 
   // The garment's geometry, rebuilt only when the garment or size changes (or the detail level).
   const modelId = doc?.garment.modelId ?? 'tee-classic';
   const sizeCode = doc?.garment.sizeCode ?? 'M';
-  const geo = useMemo(() => {
-    const model = getGarment(modelId);
-    return buildGarment(model, getSize(model, sizeCode), quality === 'low' ? 'low' : 'high');
-  }, [modelId, sizeCode, quality]);
+  // Read straight from the document (not the derived scene), so the memo depends on a plain string.
+  const drapeId = doc?.scene?.drape ?? 'natural';
+  const geo = useMemo(() => buildGarmentFor(modelId, sizeCode, quality, drapeAmount(drapeId)), [modelId, sizeCode, quality, drapeId]);
   useEffect(
     () => () => {
       for (const p of geo.parts) p.geometry.dispose();
@@ -983,7 +1501,7 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
   const fitH = geo.layout.heightMm / TEE_FIT.heightMm;
   const fitW = geo.layout.widthMm / TEE_FIT.widthMm;
   const floorY = -(geo.layout.heightMm / 2) * 0.001 - 0.015;
-  const shadowKey = `${modelId}:${sizeCode}:${quality}`;
+  const shadowKey = `${modelId}:${sizeCode}:${quality}:${drapeId}`;
 
   // Adaptive resolution (spec MOB-11): drop the pixel ratio if frames slow down, restore it when they recover.
   const maxDpr = quality === 'high' ? 2 : quality === 'medium' ? 1.5 : 1;
@@ -1011,6 +1529,12 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
     setGuides((g) => {
       writeFlag('wovexa.guides3d', !g);
       return !g;
+    });
+  };
+  const togglePhotoreal = () => {
+    setPhotoreal((on) => {
+      writeFlag('wovexa.photoreal3d', !on);
+      return !on;
     });
   };
 
@@ -1129,10 +1653,13 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
         className={`absolute inset-0 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus-ring)] ${mode === 'orbit' ? 'cursor-grab active:cursor-grabbing' : ''}`}
         style={{ touchAction: 'none' }}
       >
+        {/* Photoreal view: the floor shadow under the path-traced garment. */}
+        <canvas ref={shadowOverlay} aria-hidden className="pointer-events-none absolute inset-0 h-full w-full" style={{ visibility: 'hidden' }} />
         <Canvas
           key={generation}
           frameloop="demand"
           dpr={dpr}
+          shadows={quality === 'low' ? false : 'percentage'}
           camera={{ fov: scene.fovDeg, position: VIEW_PRESETS.front.position, near: 0.05, far: 20 }}
           gl={{ antialias: true, alpha: true, toneMapping: THREE.NeutralToneMapping }}
           onCreated={({ gl }) => {
@@ -1145,17 +1672,26 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
           <PerformanceMonitor flipflops={3} onDecline={() => setDpr(1)} onIncline={() => setDpr(maxDpr)} onFallback={() => setDpr(1)} />
           <SceneLights scene={scene} floorY={floorY} shadowKey={shadowKey} />
           <group ref={motionGroup}>
-            <Garment geo={geo} quality={quality} mode={mode} guides={guides} onOwnZone={setOwnZone} />
+            <Garment geo={geo} quality={quality} mode={mode} guides={guides} hanger={motion.kind === 'hanger'} onOwnZone={setOwnZone} />
           </group>
-          <MotionDriver kind={mode === 'place' ? 'still' : motion.kind} speed={motion.speed} groupRef={motionGroup} bottomMm={geo.layout.bottomMm} heightMm={geo.layout.heightMm} />
+          <MotionDriver
+            kind={mode === 'place' ? 'still' : motion.kind}
+            speed={motion.speed}
+            groupRef={motionGroup}
+            bottomMm={geo.layout.bottomMm}
+            heightMm={geo.layout.heightMm}
+            hpsMm={geo.layout.torsoHeightMm}
+            limbPivots={geo.limbPivots}
+          />
           <CameraRig request={request} turntable={turntable} mode={mode} hasSelection={hasSelection} fov={scene.fovDeg} backdrop={scene.backdrop} fitH={fitH} fitW={fitW} />
+          <PhotorealView enabled={photoreal && !turntable} overlay={shadowOverlay} onStatus={setLiveStatus} />
         </Canvas>
         <RenderFrame />
       </div>
       <p id="viewer3d-help" className="sr-only">
         Orbit mode: drag to rotate, scroll or pinch to zoom, click artwork to select it. Place mode: drag artwork to move it on the garment, scroll or pinch to resize, Shift plus scroll or
-        twist to rotate, right-drag to rotate the view. Keys: arrows rotate the view or nudge artwork in Place mode, plus and minus zoom or resize, comma and period rotate artwork, 1 to 5
-        jump to views, Home resets the view, O and P switch modes.
+        twist to rotate, right-drag to rotate the view. Keys: arrows rotate the view or nudge artwork in Place mode, plus and minus zoom or resize, comma and period rotate artwork, 1 to 7
+        jump to views (6 from the top, 7 from underneath), Home resets the view, O and P switch modes. The view turns all the way round, over the top and underneath.
       </p>
 
       <div className={`pointer-events-none absolute inset-x-0 ${compact ? 'top-2' : 'bottom-3'} flex justify-center px-2`}>
@@ -1221,6 +1757,15 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
           <button className="icon-btn h-8 w-8 flex-none" aria-pressed={turntable} onClick={() => setTurntable((t) => !t)} aria-label="Turntable" title="Turntable">
             <RotateCw size={16} />
           </button>
+          <button
+            className="icon-btn h-8 w-8 flex-none"
+            aria-pressed={photoreal}
+            onClick={togglePhotoreal}
+            aria-label="Photoreal view"
+            title="Photoreal view: leave the view still and it refines into a path-traced image with real light and soft shadows. Any change returns to real time."
+          >
+            <Sparkles size={16} />
+          </button>
           <button className="icon-btn h-8 w-8 flex-none" aria-pressed={sceneOpen} aria-expanded={sceneOpen} onClick={() => setSceneOpen((o) => !o)} aria-label="Scene and camera" title="Lighting, backdrop, lens and saved views">
             <SlidersHorizontal size={16} />
           </button>
@@ -1237,9 +1782,39 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
         <p className={`pointer-events-none absolute left-3 ${compact ? 'bottom-3 max-w-[85%]' : 'top-3 max-w-[60%]'} rounded-md bg-floating/85 px-2 py-1 text-[11px] text-fg-2 backdrop-blur`}>
           {hasSelection ? 'Drag to move. Scroll or pinch to resize, Shift or twist to rotate.' : 'Press artwork on the garment to select and move it.'}
         </p>
-      ) : (
+      ) : photoreal && liveStatus ? null : (
         <p className="pointer-events-none absolute left-3 top-3 hidden rounded-md bg-floating/80 px-2 py-1 text-[11px] text-fg-2 backdrop-blur sm:block">Simulated preview: fabric and ink are approximate</p>
       )}
+
+      {photoreal && liveStatus ? (
+        <div
+          className={`pointer-events-none absolute right-3 ${compact ? 'bottom-3' : 'top-3'} w-48 rounded-md bg-floating/90 px-2.5 py-1.5 text-[11px] text-fg-2 shadow-sm backdrop-blur`}
+          role={liveStatus.kind === 'error' ? 'alert' : 'status'}
+        >
+          {liveStatus.kind === 'error' ? (
+            <span className="text-warning">{liveStatus.message}</span>
+          ) : liveStatus.kind === 'preparing' ? (
+            'Preparing photoreal view…'
+          ) : liveStatus.kind === 'tracing' ? (
+            <>
+              <span className="flex justify-between">
+                <span>Photoreal</span>
+                <span className="num">
+                  {liveStatus.samples} / {liveStatus.target}
+                </span>
+              </span>
+              <span className="mt-1 block h-1 overflow-hidden rounded-full bg-hover">
+                <span className="block h-full bg-[var(--accent)]" style={{ width: `${Math.round((liveStatus.samples / liveStatus.target) * 100)}%` }} />
+              </span>
+            </>
+          ) : (
+            <span className="flex justify-between">
+              <span>Photoreal</span>
+              <span className="num">{liveStatus.samples} samples</span>
+            </span>
+          )}
+        </div>
+      ) : null}
 
       {sceneOpen ? <ScenePanel compact={compact} onClose={() => { setSceneOpen(false); stageRef.current?.focus(); }} /> : null}
     </div>

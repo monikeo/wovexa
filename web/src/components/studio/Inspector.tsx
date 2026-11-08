@@ -682,6 +682,7 @@ const FINISHES: { id: LayerStyle['finish']; label: string; note: string }[] = [
   { id: 'embroidery', label: 'Embroidery', note: 'Stitched look, simulated in 3D. Needs digitizing for production.' },
   { id: 'metallic', label: 'Metallic foil', note: 'Foil sheen, simulated in 3D. Print files stay flat.' },
   { id: 'distressed', label: 'Distressed', note: 'Worn texture. It removes ink, so it prints.' },
+  { id: 'cracked', label: 'Cracked plastisol', note: 'Fine cracks like a vintage print after many washes. The cracks remove ink, so they print.' },
 ];
 
 /** Finish preview (spec ED3-08, TYP-06) and seeded distress (spec TYP-08). */

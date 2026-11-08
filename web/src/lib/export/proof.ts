@@ -4,7 +4,7 @@
  * print placement with its size, method and position. Drawn on canvas, then written as PDF.
  */
 import type { GarmentModel, GarmentSize, ZoneSpec } from '@/domain/garments';
-import { partColor, PRINT_METHOD_LABELS } from '@/domain/garments';
+import { partColor, PRINT_METHOD_LABELS, sizeLabel } from '@/domain/garments';
 import type { Colorway, DesignDocument, ZoneId } from '@/domain/schema';
 import { A4_LANDSCAPE, buildPdf, type PdfPage } from './pdf';
 
@@ -77,7 +77,7 @@ function header(ctx: CanvasRenderingContext2D, input: ProofInput, title: string,
   text(ctx, 'WOVEXA', 36, 44, 11, { weight: 800, color: INK });
   text(ctx, title, 36, 74, 22, { weight: 700, max: W * 0.55 });
   text(ctx, doc.title, 36, 94, 11, { color: MUTED, max: W * 0.55 });
-  const meta = [revisionText(input.revision), model.name, model.category === 'uniform' ? `${size.code} cm tall` : `Size ${size.code}`, fabricLabel];
+  const meta = [revisionText(input.revision), model.name, `Size ${sizeLabel(model, size)}`, fabricLabel];
   text(ctx, meta.join('   ·   '), 36, 112, 9, { color: MUTED, max: W - 72 });
   // Approval status, top right.
   ctx.font = `700 9px ${uiFont()}`;
