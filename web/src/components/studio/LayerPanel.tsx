@@ -2,11 +2,96 @@
 import { ArrowDown, ArrowUp, Eye, EyeOff, Image as ImageIcon, Lock, Shapes, Type, Unlock } from 'lucide-react';
 import { useState } from 'react';
 import * as cmd from '@/domain/commands';
-import type { ArtworkLayer } from '@/domain/schema';
+import { projectedLayers } from '@/domain/projected';
+import type { ArtworkLayer, ProjectedLayer } from '@/domain/schema';
 import { useActiveZoneSpec, useStudio } from '@/stores/studio-store';
 import { addImages, addText, selectLayers } from './actions';
+import { moveProjectionBy, selectProjection } from './projection-actions';
 
 const ICON = { image: ImageIcon, text: Type, shape: Shapes } as const;
+
+/** A projected (cross-seam) layer: select, rename, restack, lock and hide, like a zone layer. */
+function ProjectedRow({ layer, index, count }: { layer: ProjectedLayer; index: number; count: number }) {
+  const selected = useStudio((s) => s.selectedProjectionId === layer.id);
+  const dispatch = useStudio((s) => s.dispatch);
+  const [renaming, setRenaming] = useState(false);
+  const Icon = ICON[layer.content.kind];
+  return (
+    <li className={`group flex min-h-11 items-center gap-1 rounded-lg pl-2 pr-1 ${selected ? 'bg-selected' : 'hover:bg-hover'} ${layer.visible ? '' : 'opacity-55'}`}>
+      <Icon size={15} className={selected ? 'text-accent' : 'text-fg-2'} aria-hidden />
+      {renaming ? (
+        <input
+          className="field ml-1 h-8 flex-1"
+          defaultValue={layer.name}
+          autoFocus
+          aria-label="Layer name"
+          onBlur={(e) => {
+            const name = e.target.value.trim();
+            if (name && name !== layer.name) dispatch(cmd.updateProjectedLayer(layer.id, { name }, 'Rename layer'));
+            setRenaming(false);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            if (e.key === 'Escape') setRenaming(false);
+          }}
+        />
+      ) : (
+        <button
+          className="ml-1 min-w-0 flex-1 truncate py-2 text-left text-[13px]"
+          onClick={() => selectProjection(layer.id)}
+          onDoubleClick={() => setRenaming(true)}
+          aria-pressed={selected}
+          title="On the 3D garment, across seams. Double-click to rename"
+        >
+          {layer.name}
+        </button>
+      )}
+      <div className="hover-reveal flex items-center">
+        <button className="icon-btn h-8 w-8" disabled={index === count - 1} onClick={() => moveProjectionBy(layer.id, 1)} aria-label={`Move ${layer.name} up`} title="Bring forward">
+          <ArrowUp size={14} />
+        </button>
+        <button className="icon-btn h-8 w-8" disabled={index === 0} onClick={() => moveProjectionBy(layer.id, -1)} aria-label={`Move ${layer.name} down`} title="Send backward">
+          <ArrowDown size={14} />
+        </button>
+      </div>
+      <button
+        className="icon-btn h-8 w-8"
+        onClick={() => dispatch(cmd.updateProjectedLayer(layer.id, { locked: !layer.locked }, layer.locked ? 'Unlock layer' : 'Lock layer'))}
+        aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
+        aria-pressed={layer.locked}
+      >
+        {layer.locked ? <Lock size={14} /> : <Unlock size={14} className="text-fg-3" />}
+      </button>
+      <button
+        className="icon-btn h-8 w-8"
+        onClick={() => dispatch(cmd.updateProjectedLayer(layer.id, { visible: !layer.visible }, layer.visible ? 'Hide layer' : 'Show layer'))}
+        aria-label={layer.visible ? `Hide ${layer.name}` : `Show ${layer.name}`}
+      >
+        {layer.visible ? <Eye size={14} /> : <EyeOff size={14} />}
+      </button>
+    </li>
+  );
+}
+
+/** Artwork on the 3D garment that runs across seams: one list for the whole garment, top first. */
+function ProjectedLayers() {
+  const projections = useStudio((s) => s.document?.projections);
+  if (!projections?.orderedLayerIds.length) return null;
+  const layers = projectedLayers({ projections });
+  return (
+    <section className="border-t border-line pt-2" aria-label="Layers across seams">
+      <div className="flex items-center justify-between px-4 pb-1">
+        <h3 className="panel-title">Across seams</h3>
+        <span className="text-xs text-fg-2">3D · sublimation</span>
+      </div>
+      <ul className="space-y-0.5 px-2 pb-3" aria-label="Layers across seams, top first">
+        {[...layers].reverse().map((layer) => (
+          <ProjectedRow key={layer.id} layer={layer} index={projections.orderedLayerIds.indexOf(layer.id)} count={layers.length} />
+        ))}
+      </ul>
+    </section>
+  );
+}
 
 function LayerRow({ layer, index, count, groupEdge }: { layer: ArtworkLayer; index: number; count: number; groupEdge: 'top' | 'middle' | 'bottom' | 'single' | null }) {
   const zoneId = useStudio((s) => s.activeZoneId);
@@ -101,7 +186,7 @@ export function LayerPanel() {
         <span className="text-xs text-fg-2">{spec.label}</span>
       </div>
       {layers.length === 0 ? (
-        <div className="mx-3 rounded-xl border border-dashed border-line p-4 text-sm">
+        <div className="mx-3 mb-3 rounded-xl border border-dashed border-line p-4 text-sm">
           <p className="font-medium">Nothing on the {spec.label.toLowerCase()} yet</p>
           <p className="mt-1 text-fg-2">Add text or an image. It lands inside the {spec.printableWidthMm} × {spec.printableHeightMm} mm print area.</p>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -125,6 +210,7 @@ export function LayerPanel() {
           })}
         </ul>
       )}
+      <ProjectedLayers />
     </div>
   );
 }

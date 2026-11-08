@@ -11,11 +11,12 @@ import { Camera as CameraIcon, Clapperboard, Frame, Move, Rotate3d, RotateCw, Sl
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { unionBounds } from '@/domain/arrange';
-import { coalescing, updateTransforms } from '@/domain/commands';
+import { coalescing, updateProjectedLayer, updateTransforms } from '@/domain/commands';
 import { getGarment, getSize, partColor, zoneSpecOrFirst, type PartId } from '@/domain/garments';
 import { clamp, hitTestLayer, normalizeDeg, rotatedBounds, scaleRotateAbout } from '@/domain/geometry';
+import { projectionsAsZone } from '@/domain/projected';
 import { backdropCss, drapeAmount, motionOf, presetOf, sceneOf, toneOf, type MotionKind, type ToneId } from '@/domain/scene';
-import type { DesignDocument, LayerTransform, Scene, ZoneId } from '@/domain/schema';
+import { emptyProjections, type DesignDocument, type LayerTransform, type ProjectedLayer, type ProjectedTransform, type ProjectorSpec, type Scene, type ZoneId } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
 import { getAsset } from '@/lib/local-db';
 import { canvasToBlob, downloadBlob, slugify } from '@/lib/download';
@@ -24,6 +25,7 @@ import { ensureFonts } from '@/lib/render/zone-renderer';
 import { toast } from '@/components/ui/primitives';
 import { useDisplayColorway, useLive, useStudio } from '@/stores/studio-store';
 import { nudgeSelection, selectLayers } from '../actions';
+import { nudgeProjection, transformProjection } from '../projection-actions';
 import { ScenePanel } from './ScenePanel';
 import { BASE_FOV, frameFit, shotKey, shotLabel, VIEW_PRESETS, viewerApi, ZONE_VIEW, type RenderBackground, type ShotSpec, type ViewPreset } from './stage';
 import { buildGarment, createFabricNormalMap, FABRIC_LOOK, type GarmentGeometry, type TrimColor } from './garment-geometry';
@@ -32,6 +34,9 @@ import { bakeAmbientOcclusion, type AoTarget } from './ao-bake';
 import { cachedShape, exportGarmentTemplate, ShapeError, shapedGarment, type ParsedShape } from './garment-glb';
 import { applyMotion, MOTION_CACHE_KEY, motionDepthMaterial, motionState, motionUniforms, patchMotion, setLimbPivots } from './motion';
 import { disposeDecal, disposePhotoreal, fillCard, inkDecals, insetGeometry, liveTrace, pathTrace, photorealSupport, softStudioLights } from './photoreal';
+import { effectiveLayer, projectLayer } from './projected-paint';
+import { dragProjector, insideDecal, planeOffset, pointOnTriangle, surfaceAtUv, tangentUp, type Projector, type SurfacePoint } from './projection';
+import { paintMesh, restShape } from './rest-shape';
 import { uvInZone, uvToZone, type GarmentPart } from './uv-mapping';
 
 export { VIEW_PRESETS, viewerApi, type ViewPreset } from './stage';
@@ -190,6 +195,25 @@ function transformSelection(scale: number, rotateDeg: number, label: string) {
   useStudio.getState().dispatch(coalescing(updateTransforms(sel.zoneId, next, label), `3d:${label}:${sel.ids.join()}`));
   return true;
 }
+
+/** The selected projected (cross-seam) layer, when it is unlocked. */
+function movableProjection(): ProjectedLayer | null {
+  const s = useStudio.getState();
+  const layer = s.selectedProjectionId ? s.document?.projections.layers[s.selectedProjectionId] : undefined;
+  return layer && !layer.locked ? layer : null;
+}
+
+/** Resize or turn whatever is selected for Place mode: a projected layer, else the zone selection. */
+function transformSelected(scale: number, rotateDeg: number, label: string) {
+  const projection = movableProjection();
+  return projection ? transformProjection(projection.id, scale, rotateDeg, label) : transformSelection(scale, rotateDeg, label);
+}
+
+const toSpec = (p: { point: readonly number[]; normal: readonly number[]; up: readonly number[] }): ProjectorSpec => ({
+  point: [p.point[0], p.point[1], p.point[2]],
+  normal: [p.normal[0], p.normal[1], p.normal[2]],
+  up: [p.up[0], p.up[1], p.up[2]],
+});
 
 // ---------------------------------------------------------------------------
 // Garment
@@ -353,6 +377,7 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
   const colorway = useDisplayColorway()!;
   const activeZone = useStudio((s) => s.activeZoneId);
   const selected = useStudio((s) => s.selectedLayerIds);
+  const selectedProjection = useStudio((s) => s.selectedProjectionId);
   const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
   const invalidate = useThree((s) => s.invalidate);
@@ -364,8 +389,15 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
   const liningMeshes = useRef(new Map<PartId, THREE.Mesh>());
   const lastKeys = useRef(new Map<PartId, string>());
   const generation = useRef(0);
-  const dragRef = useRef<Drag | null>(null);
+  const dragRef = useRef<{ cancel: () => void } | null>(null);
   const [accent] = useState(() => cssVar('--accent', '#2b59ff'));
+
+  // Artwork across seams lands on the garment pressed flat (built only once there is some), then
+  // folds with the cloth: each displayed triangle has its pressed twin at the same index.
+  const hasProjections = doc.projections.orderedLayerIds.length > 0;
+  const detail = quality === 'low' ? 'low' : 'high';
+  const rest = useMemo(() => (hasProjections ? restShape(model, size, detail) : undefined), [hasProjections, model, size, detail]);
+  const restMeshes = useMemo(() => (rest ? rest.parts.map((r) => paintMesh(r, geo.parts.find((p) => p.id === r.id)?.geometry)) : []), [rest, geo]);
 
   // One canvas and texture per textured part, made once per geometry; plus, on capable devices,
   // a print-surface map per part (ink height, roughness, metalness) for real relief and gloss.
@@ -480,7 +512,7 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
   useEffect(() => {
     const exportTemplate = () => {
       const zones = Object.fromEntries(Object.entries(doc.zones).map(([id, z]) => [id, { ...z, layers: {}, orderedLayerIds: [] }])) as unknown as DesignDocument['zones'];
-      const blank: DesignDocument = { ...doc, zones };
+      const blank: DesignDocument = { ...doc, zones, projections: emptyProjections() };
       const neutral = {
         ...colorway,
         surfaces: undefined,
@@ -520,10 +552,14 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
         doc,
         model,
         geo,
+        rest,
         colorway,
         quality: opts.quality ?? quality,
-        live: { zoneId: live.zoneId, overrides: live.overrides },
-        guides: opts.guides === false ? undefined : { zones: guides, selection: showSelection && selected.length ? { zoneId: activeZone, ids: selected } : null, accent },
+        live: { zoneId: live.zoneId, overrides: live.overrides, projection: live.projection },
+        guides:
+          opts.guides === false
+            ? undefined
+            : { zones: guides, selection: showSelection && selected.length ? { zoneId: activeZone, ids: selected } : null, projection: showSelection ? selectedProjection : null, accent },
         // With a surface map, relief, gloss and foil are real lighting, not painted in.
         simulateFinish: !surfaces.size,
       };
@@ -556,7 +592,7 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
       if (changed) invalidate();
       return ok;
     },
-    [doc, colorway, model, geo, quality, textures, surfaces, look.roughness, invalidate, guides, showSelection, selected, activeZone, accent],
+    [doc, colorway, model, geo, rest, quality, textures, surfaces, look.roughness, invalidate, guides, showSelection, selected, selectedProjection, activeZone, accent],
   );
 
   useEffect(() => {
@@ -635,14 +671,14 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
     };
     const loadMissing = () => {
       const ids = new Set<string>();
-      for (const zone of Object.values(doc.zones)) {
+      for (const zone of [...Object.values(doc.zones), projectionsAsZone(doc)]) {
         for (const layer of Object.values(zone.layers)) if (layer.content.kind === 'image') ids.add(layer.content.assetId);
       }
       for (const surface of Object.values(colorway.surfaces ?? {})) if (surface?.kind === 'image') ids.add(surface.assetId);
       for (const id of ids) if (!getLoadedImage(id)) loadAssetImage(id).then(schedule, () => {});
     };
     schedule();
-    ensureFonts(Object.values(doc.zones)).then((loaded) => {
+    ensureFonts([...Object.values(doc.zones), projectionsAsZone(doc)]).then((loaded) => {
       if (!loaded) return;
       generation.current += 1;
       schedule();
@@ -677,11 +713,107 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
   /** Each garment mesh carries its part in userData, so one set of handlers serves them all. */
   const partOf = (e: ThreeEvent<PointerEvent | MouseEvent>) => e.object.userData.part as GarmentPart;
 
+  /** The pressed-flat cloth under a hit on the displayed (draped) garment: same triangle, same place in it. */
+  const surfaceUnder = (hit: { object: THREE.Object3D; faceIndex?: number | null; barycoord?: THREE.Vector3 | null; uv?: THREE.Vector2 }): SurfacePoint | null => {
+    if (!rest) return null;
+    const i = rest.parts.findIndex((p) => p.id === hit.object.userData.part);
+    if (i < 0) return null;
+    // A custom shape has its own mesh: find the same spot of fabric through the shared texture layout.
+    if (restMeshes[i] === rest.parts[i].mesh) {
+      const s = hit.uv ? surfaceAtUv(restMeshes[i], hit.uv.x, hit.uv.y) : null;
+      return s ? { ...s, mesh: i } : null;
+    }
+    if (hit.faceIndex == null || !hit.barycoord) return null;
+    return pointOnTriangle(restMeshes, i, hit.faceIndex, [hit.barycoord.x, hit.barycoord.y, hit.barycoord.z]);
+  };
+
+  /** The topmost visible projected layer covering a point of cloth that faces its projector. */
+  const projectionAt = (at: SurfacePoint): ProjectedLayer | null => {
+    const d = useStudio.getState().document;
+    if (!d || !rest) return null;
+    const scene = { doc: d, rest, geo, live: useLive.getState().projection };
+    const order = d.projections.orderedLayerIds;
+    for (let k = order.length - 1; k >= 0; k--) {
+      const layer = d.projections.layers[order[k]];
+      if (!layer?.visible) continue;
+      const { frame } = projectLayer(effectiveLayer(layer, scene.live), scene);
+      const facing = at.normal[0] * frame.normal[0] + at.normal[1] * frame.normal[1] + at.normal[2] * frame.normal[2];
+      if (facing > 0 && insideDecal(frame, at.point)) return layer;
+    }
+    return null;
+  };
+
   const onClick = (e: ThreeEvent<MouseEvent>) => {
     if (mode !== 'orbit' || e.delta > 4 || !e.uv) return; // ignore clicks that ended an orbit drag
     e.stopPropagation();
+    const surface = surfaceUnder(e);
+    const projected = surface ? projectionAt(surface) : null;
+    if (projected) return useStudio.getState().selectProjection(projected.id);
     const hit = pickAt(partOf(e), e.uv);
     if (hit) selectHit(hit, false);
+  };
+
+  /**
+   * Move projected artwork across the garment: the grabbed point follows the pointer over any
+   * part, seams included. With `place`, the artwork first jumps to the pressed point, upright as
+   * seen from the camera. Commits one undoable command on release; Escape cancels.
+   */
+  const startProjectionDrag = (pointerId: number, layer: ProjectedLayer, at: SurfacePoint, place: boolean) => {
+    dragRef.current?.cancel();
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    const parts = [...meshes.current.values()];
+    let current: Projector = layer.projector;
+    let last: ProjectorSpec | null = null;
+    let grab: [number, number] = [0, 0];
+    if (place) {
+      const screenUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+      last = toSpec({ point: at.point, normal: at.normal, up: tangentUp(at.normal, [screenUp.x, screenUp.y, screenUp.z]) });
+      current = last;
+      useLive.getState().setProjection({ id: layer.id, projector: last });
+    } else {
+      grab = planeOffset(layer.projector, at.point);
+    }
+    setCursor(gl.domElement, 'grabbing');
+    const handle = { cancel: () => finish(false) };
+    dragRef.current = handle;
+
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId || dragRef.current !== handle) return;
+      const rect = gl.domElement.getBoundingClientRect();
+      ndc.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
+      raycaster.setFromCamera(ndc, camera);
+      const hit = raycaster.intersectObjects(parts, false)[0];
+      const s = hit ? surfaceUnder(hit) : null;
+      if (!s) return; // off the garment: hold the last position
+      if (!last && Math.hypot(s.point[0] - at.point[0], s.point[1] - at.point[1], s.point[2] - at.point[2]) < 1.5) return;
+      current = dragProjector(restMeshes, current, grab, s);
+      last = toSpec(current);
+      useLive.getState().setProjection({ id: layer.id, projector: last });
+    };
+    const finish = (commit: boolean) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancelled);
+      window.removeEventListener('keydown', key, true);
+      if (dragRef.current !== handle) return;
+      dragRef.current = null;
+      if (commit && last) useStudio.getState().dispatch(updateProjectedLayer(layer.id, { projector: last }, place ? 'Place on garment' : 'Move on garment'));
+      useLive.getState().clear();
+      setCursor(gl.domElement, '');
+    };
+    const up = (ev: PointerEvent) => ev.pointerId === pointerId && finish(true);
+    const cancelled = (ev: PointerEvent) => ev.pointerId === pointerId && finish(false);
+    const key = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      finish(false);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancelled);
+    window.addEventListener('keydown', key, true);
   };
 
   /** Direct surface editing (spec ED3-05): press on artwork in Place mode and drag it across the garment. */
@@ -690,7 +822,18 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.stopPropagation();
     const part = partOf(e);
+    // Artwork across seams first: it lies over any zone print it covers.
+    const surface = surfaceUnder(e);
+    const projected = surface ? projectionAt(surface) : null;
+    if (projected && surface) {
+      useStudio.getState().selectProjection(projected.id);
+      if (!projected.locked) startProjectionDrag(e.pointerId, projected, surface, false);
+      return;
+    }
     const hit = pickAt(part, e.uv);
+    // Bare cloth while projected artwork is selected: place it here (and keep dragging).
+    const placing = movableProjection();
+    if (placing && surface && !hit?.layerId) return startProjectionDrag(e.pointerId, placing, surface, true);
     if (!hit) return;
     selectHit(hit, true);
     const mesh = meshes.current.get(part);
@@ -767,6 +910,7 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
     const el = gl.domElement;
     const touches = new Map<number, { x: number; y: number }>();
     let pinch: { d0: number; a0: number; zoneId: ZoneId; origin: Record<string, LayerTransform>; last: Record<string, Partial<LayerTransform>> | null } | null = null;
+    let pinchProjection: { d0: number; a0: number; id: string; origin: ProjectedTransform; last: Partial<ProjectedTransform> | null } | null = null;
     const metrics = () => {
       const [p, q] = [...touches.values()];
       return { d: Math.hypot(q.x - p.x, q.y - p.y), a: Math.atan2(q.y - p.y, q.x - p.x) };
@@ -775,34 +919,48 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
       if (e.pointerType !== 'touch') return;
       touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (touches.size !== 2 || modeRef.current !== 'place') return;
-      const sel = movableSelection();
-      if (!sel) return;
+      const projection = movableProjection();
+      const sel = projection ? null : movableSelection();
+      if (!projection && !sel) return;
       dragRef.current?.cancel(); // a one-finger drag becomes a pinch
       const m = metrics();
-      pinch = { d0: Math.max(10, m.d), a0: m.a, zoneId: sel.zoneId, origin: sel.origin, last: null };
+      if (projection) pinchProjection = { d0: Math.max(10, m.d), a0: m.a, id: projection.id, origin: projection.transform, last: null };
+      else if (sel) pinch = { d0: Math.max(10, m.d), a0: m.a, zoneId: sel.zoneId, origin: sel.origin, last: null };
     };
     const move = (e: PointerEvent) => {
       if (!touches.has(e.pointerId)) return;
       touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (!pinch || touches.size < 2) return;
+      const active = pinchProjection ?? pinch;
+      if (!active || touches.size < 2) return;
       const m = metrics();
-      pinch.last = scaleRotateAbout(pinch.origin, m.d / pinch.d0, normalizeDeg(((m.a - pinch.a0) * 180) / Math.PI));
-      useLive.getState().setOverrides(pinch.zoneId, pinch.last, '3d');
+      const scale = m.d / active.d0;
+      const turn = normalizeDeg(((m.a - active.a0) * 180) / Math.PI);
+      if (pinchProjection) {
+        const t = pinchProjection.origin;
+        const k = clamp(scale, 2 / Math.min(t.widthMm, t.heightMm), 3000 / Math.max(t.widthMm, t.heightMm));
+        pinchProjection.last = { widthMm: t.widthMm * k, heightMm: t.heightMm * k, rotationDeg: normalizeDeg(t.rotationDeg + turn) };
+        useLive.getState().setProjection({ id: pinchProjection.id, transform: pinchProjection.last });
+      } else if (pinch) {
+        pinch.last = scaleRotateAbout(pinch.origin, scale, turn);
+        useLive.getState().setOverrides(pinch.zoneId, pinch.last, '3d');
+      }
     };
     const up = (e: PointerEvent) => {
-      if (!touches.delete(e.pointerId) || !pinch || touches.size >= 2) return;
-      if (pinch.last) useStudio.getState().dispatch(updateTransforms(pinch.zoneId, pinch.last, 'Resize on garment'));
-      useLive.getState().clear();
+      if (!touches.delete(e.pointerId) || touches.size >= 2) return;
+      if (pinchProjection?.last) useStudio.getState().dispatch(updateProjectedLayer(pinchProjection.id, { transform: pinchProjection.last }, 'Resize on garment'));
+      else if (pinch?.last) useStudio.getState().dispatch(updateTransforms(pinch.zoneId, pinch.last, 'Resize on garment'));
+      if (pinch || pinchProjection) useLive.getState().clear();
       pinch = null;
+      pinchProjection = null;
     };
     const wheel = (e: WheelEvent) => {
-      if (modeRef.current !== 'place' || !movableSelection()) return;
+      if (modeRef.current !== 'place' || (!movableProjection() && !movableSelection())) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       const raw = e.deltaY || e.deltaX;
       const delta = e.deltaMode === 1 ? raw * 16 : e.deltaMode === 2 ? raw * 400 : raw;
-      if (e.shiftKey) transformSelection(1, clamp(delta * 0.15, -15, 15), 'Rotate on garment');
-      else transformSelection(Math.exp(-clamp(delta, -200, 200) * 0.0008), 0, 'Resize on garment');
+      if (e.shiftKey) transformSelected(1, clamp(delta * 0.15, -15, 15), 'Rotate on garment');
+      else transformSelected(Math.exp(-clamp(delta, -200, 200) * 0.0008), 0, 'Resize on garment');
     };
     el.addEventListener('pointerdown', down);
     window.addEventListener('pointermove', move);
@@ -818,13 +976,17 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
     };
   }, [gl]);
 
-  // Hover feedback: in Place mode the cursor says whether there is artwork to grab.
+  // Hover feedback: in Place mode the cursor says whether there is artwork to grab, or a spot to
+  // place the selected projected artwork.
   const onHover = (e: ThreeEvent<PointerEvent>) => {
     if (dragRef.current || !e.uv) return;
     if (mode !== 'place') return;
+    const surface = surfaceUnder(e);
+    const projected = surface ? projectionAt(surface) : null;
+    if (projected) return setCursor(gl.domElement, projected.locked ? '' : 'grab');
     const hit = pickAt(partOf(e), e.uv);
     const layer = hit?.layerId ? useStudio.getState().document!.zones[hit.zoneId].layers[hit.layerId] : null;
-    setCursor(gl.domElement, layer && !layer.locked ? 'grab' : '');
+    setCursor(gl.domElement, layer ? (layer.locked ? '' : 'grab') : movableProjection() ? 'crosshair' : '');
   };
   const onOut = () => {
     if (!dragRef.current) setCursor(gl.domElement, '');
@@ -1440,10 +1602,10 @@ function PhotorealView({ enabled, overlay, onStatus }: { enabled: boolean; overl
     const resize = new ResizeObserver(arm);
     resize.observe(host);
     const unStudio = useStudio.subscribe((s, p) => {
-      if (s.document !== p.document || s.selectedLayerIds !== p.selectedLayerIds || s.activeZoneId !== p.activeZoneId) arm();
+      if (s.document !== p.document || s.selectedLayerIds !== p.selectedLayerIds || s.selectedProjectionId !== p.selectedProjectionId || s.activeZoneId !== p.activeZoneId) arm();
     });
     const unLive = useLive.subscribe((s, p) => {
-      if (s.overrides !== p.overrides || s.colorwayOverride !== p.colorwayOverride) arm();
+      if (s.overrides !== p.overrides || s.projection !== p.projection || s.colorwayOverride !== p.colorwayOverride) arm();
     });
     stage.stopLive = stop;
     arm();
@@ -1492,7 +1654,8 @@ function RenderFrame() {
 /** Client-only (loaded with ssr: false), so device checks can run during the first render. */
 export function Viewer3D({ compact = false }: { compact?: boolean }) {
   const activeZone = useStudio((s) => s.activeZoneId);
-  const hasSelection = useStudio((s) => s.selectedLayerIds.length > 0);
+  const hasSelection = useStudio((s) => s.selectedLayerIds.length > 0 || !!s.selectedProjectionId);
+  const projectionSelected = useStudio((s) => !!s.selectedProjectionId);
   const doc = useStudio((s) => s.document);
   const scene = sceneOf(doc);
   const [supported] = useState(hasWebGL);
@@ -1624,21 +1787,25 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
     if (e.target !== e.currentTarget || e.ctrlKey || e.metaKey || e.altKey) return;
     const c = stage.controls;
     if (!c) return;
-    const placing = mode === 'place' && !!movableSelection();
+    const projection = mode === 'place' ? movableProjection() : null;
+    const placing = mode === 'place' && (!!projection || !!movableSelection());
     const step = e.shiftKey ? 10 : 1;
     const preset = (Object.keys(VIEW_PRESETS) as ViewPreset[]).find((v) => VIEW_PRESETS[v].key === e.key);
     let handled = true;
     if (e.key.startsWith('Arrow')) {
-      if (placing) nudgeSelection(e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0, e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0);
+      const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+      const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+      if (projection) nudgeProjection(projection.id, dx, dy);
+      else if (placing) nudgeSelection(dx, dy);
       else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') void c.rotate((e.key === 'ArrowLeft' ? 1 : -1) * (Math.PI / 12), 0, true);
       // Up raises the camera to look down on the garment (a smaller polar angle).
       else void c.rotate(0, (e.key === 'ArrowUp' ? -1 : 1) * (Math.PI / 18), true);
     } else if (e.key === '+' || e.key === '=') {
-      if (!placing || !transformSelection(1.05, 0, 'Resize on garment')) void c.dolly(0.25, true);
+      if (!placing || !transformSelected(1.05, 0, 'Resize on garment')) void c.dolly(0.25, true);
     } else if (e.key === '-' || e.key === '_') {
-      if (!placing || !transformSelection(1 / 1.05, 0, 'Resize on garment')) void c.dolly(-0.25, true);
+      if (!placing || !transformSelected(1 / 1.05, 0, 'Resize on garment')) void c.dolly(-0.25, true);
     } else if (placing && (e.key === ',' || e.key === '.')) {
-      transformSelection(1, e.key === ',' ? -5 : 5, 'Rotate on garment');
+      transformSelected(1, e.key === ',' ? -5 : 5, 'Rotate on garment');
     } else if (e.key === 'Home' || e.key === '0') {
       fly(request.shot.kind === 'current' ? { kind: 'preset', view: ZONE_VIEW[activeZone] } : request.shot);
     } else if (preset) {
@@ -1670,7 +1837,7 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
       const scale = (e as Event & { scale: number }).scale;
       const k = scale / base;
       base = scale;
-      if (mode === 'place' && transformSelection(k, 0, 'Resize on garment')) return;
+      if (mode === 'place' && transformSelected(k, 0, 'Resize on garment')) return;
       const c = stage.controls;
       if (c) void c.dollyTo(c.distance / k, false);
     };
@@ -1681,6 +1848,13 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
       el.removeEventListener('gesturechange', change);
     };
   }, [mode]);
+
+  // Artwork just wrapped across seams (or picked from the layer list) is moved in Place mode.
+  useEffect(() => {
+    const place = () => setMode('place');
+    window.addEventListener('wovexa:place-on-garment', place);
+    return () => window.removeEventListener('wovexa:place-on-garment', place);
+  }, []);
 
   if (!supported || lost) {
     return (
@@ -1846,7 +2020,11 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
 
       {mode === 'place' ? (
         <p className={`pointer-events-none absolute left-3 ${compact ? 'bottom-3 max-w-[85%]' : 'top-3 max-w-[60%]'} rounded-md bg-floating/85 px-2 py-1 text-[11px] text-fg-2 backdrop-blur`}>
-          {hasSelection ? 'Drag to move. Scroll or pinch to resize, Shift or twist to rotate.' : 'Press artwork on the garment to select and move it.'}
+          {projectionSelected
+            ? 'Drag it over seams, or click the garment to place it there. Scroll or pinch to resize, Shift or twist to rotate.'
+            : hasSelection
+              ? 'Drag to move. Scroll or pinch to resize, Shift or twist to rotate.'
+              : 'Press artwork on the garment to select and move it.'}
         </p>
       ) : photoreal && liveStatus ? null : (
         <p className="pointer-events-none absolute left-3 top-3 hidden rounded-md bg-floating/80 px-2 py-1 text-[11px] text-fg-2 backdrop-blur sm:block">Simulated preview: fabric and ink are approximate</p>

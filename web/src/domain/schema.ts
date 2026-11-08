@@ -14,10 +14,13 @@
  *      render exactly as before.
  *   3  Leg print zones (uniform pants), pants and belt colours, all-over fabric prints per
  *      garment part, graphic (path) shapes and image masks. Upgrading adds empty leg zones.
+ *   4  Projected layers: artwork placed straight onto the 3D garment that runs across seams
+ *      (over the shoulder, round the side seams), printed by sublimation or cut-and-sew.
+ *      Upgrading adds an empty list.
  */
 import { z } from 'zod';
 
-export const SCHEMA_VERSION = 3 as const;
+export const SCHEMA_VERSION = 4 as const;
 
 export const ZONE_IDS = ['front', 'back', 'left_sleeve', 'right_sleeve', 'left_leg', 'right_leg'] as const;
 export const zoneIdSchema = z.enum(ZONE_IDS);
@@ -218,6 +221,50 @@ export const zoneDesignSchema = z.object({
 });
 export type ZoneDesign = z.infer<typeof zoneDesignSchema>;
 
+const coordinate = finite.min(-5000).max(5000);
+const vec3 = z.tuple([coordinate, coordinate, coordinate]);
+const direction = vec3.refine((v) => Math.hypot(v[0], v[1], v[2]) > 1e-6, 'Expected a direction');
+
+/**
+ * Where projected artwork sits on the 3D garment, in garment millimetres with the cloth at rest
+ * (+y up, +z toward the front, the wearer's left at +x, torso hem at y = 0): a point on the
+ * surface, the surface's outward normal there (the artwork is projected along it), and the
+ * direction its top edge points.
+ */
+export const projectorSchema = z.object({
+  point: vec3,
+  normal: direction,
+  up: direction,
+});
+export type ProjectorSpec = z.infer<typeof projectorSchema>;
+
+/** Size, rotation and mirroring of projected artwork, in millimetres on the cloth at its centre. */
+export const projectedTransformSchema = transformSchema.omit({ centerXmm: true, centerYmm: true });
+export type ProjectedTransform = z.infer<typeof projectedTransformSchema>;
+
+/**
+ * Artwork projected onto the garment across its seams (format 4). Zone print files can't carry
+ * it: it is printed on the fabric before sewing, by sublimation or as cut-and-sew panels.
+ */
+export const projectedLayerSchema = z.object({
+  id,
+  name: z.string().min(1).max(120),
+  visible: z.boolean(),
+  locked: z.boolean(),
+  projector: projectorSchema,
+  transform: projectedTransformSchema,
+  style: layerStyleSchema,
+  content: layerContentSchema,
+});
+export type ProjectedLayer = z.infer<typeof projectedLayerSchema>;
+
+/** Projected layers in stacking order, bottom first. */
+export const projectionsSchema = z.object({
+  orderedLayerIds: z.array(id).max(50),
+  layers: z.record(id, projectedLayerSchema),
+});
+export type Projections = z.infer<typeof projectionsSchema>;
+
 export const colorwaySchema = z.object({
   id,
   name: z.string().min(1).max(60),
@@ -308,8 +355,15 @@ export const designDocumentSchema = z.object({
   brandKitId: id.optional(),
   production: productionSchema,
   scene: sceneSchema.optional(),
+  /** Artwork placed on the 3D garment across seams (format 4). */
+  projections: projectionsSchema,
 });
 export type DesignDocument = z.infer<typeof designDocumentSchema>;
+
+/** An empty set of projected layers, as new documents and upgraded ones start. */
+export function emptyProjections(): Projections {
+  return { orderedLayerIds: [], layers: {} };
+}
 
 /** Cross-field invariants Zod can't express structurally. Returns problems, empty when valid. */
 export function checkDocumentInvariants(doc: DesignDocument): string[] {
@@ -328,6 +382,16 @@ export function checkDocumentInvariants(doc: DesignDocument): string[] {
     for (const layerId of Object.keys(zone.layers)) {
       if (!listed.has(layerId)) problems.push(`zone ${zoneId} has unordered layer ${layerId}`);
     }
+  }
+  const projected = doc.projections;
+  const listed = new Set(projected.orderedLayerIds);
+  if (listed.size !== projected.orderedLayerIds.length) problems.push('projections list a layer twice');
+  for (const layerId of projected.orderedLayerIds) {
+    if (!projected.layers[layerId]) problems.push(`projections order missing layer ${layerId}`);
+  }
+  for (const [layerId, layer] of Object.entries(projected.layers)) {
+    if (!listed.has(layerId)) problems.push(`projections have unordered layer ${layerId}`);
+    if (layer.id !== layerId) problems.push(`projected layer ${layerId} has mismatched id ${layer.id}`);
   }
   return problems;
 }
@@ -406,7 +470,15 @@ export function migrateV2toV3(v2: Json): Json {
   return doc;
 }
 
-const MIGRATIONS: Record<number, (doc: Json) => Json> = { 1: migrateV1toV2, 2: migrateV2toV3 };
+/** Format 4 adds projected (cross-seam) layers, none yet. Nothing else changes. */
+export function migrateV3toV4(v3: Json): Json {
+  const doc = structuredClone(v3);
+  doc.projections ??= emptyProjections();
+  doc.schemaVersion = 4;
+  return doc;
+}
+
+const MIGRATIONS: Record<number, (doc: Json) => Json> = { 1: migrateV1toV2, 2: migrateV2toV3, 3: migrateV3toV4 };
 
 /** Upgrade a stored document of any known version to the current one, then validate it. */
 export function migrateDesignDocument(input: unknown): ParseResult {

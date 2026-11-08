@@ -8,7 +8,7 @@ import { create } from 'zustand';
 import type { Command } from '@/domain/commands';
 import { getGarment, hasZone, zoneSpecOrFirst } from '@/domain/garments';
 import { applyCommand, emptyHistory, redo as redoHistory, undo as undoHistory, type History } from '@/domain/history';
-import type { DesignDocument, LayerTransform, ZoneId } from '@/domain/schema';
+import type { DesignDocument, LayerTransform, ProjectedTransform, ProjectorSpec, ZoneId } from '@/domain/schema';
 import { getProject, loadDocument, saveDocument, type ProjectMeta } from '@/lib/local-db';
 import { renderThumbnail } from '@/lib/thumbnail';
 
@@ -33,6 +33,8 @@ interface StudioState {
 
   activeZoneId: ZoneId;
   selectedLayerIds: string[];
+  /** A projected (cross-seam) layer being edited. Selecting zone layers clears it, and the other way round. */
+  selectedProjectionId: string | null;
   viewMode: ViewMode;
   mobileSheet: MobileSheet;
   exportOpen: boolean;
@@ -48,6 +50,7 @@ interface StudioState {
   saveNow: () => Promise<void>;
   setActiveZone: (zoneId: ZoneId) => void;
   select: (ids: string[]) => void;
+  selectProjection: (id: string | null) => void;
   setViewMode: (mode: ViewMode) => void;
   setMobileSheet: (sheet: MobileSheet) => void;
   setExportOpen: (open: boolean) => void;
@@ -74,7 +77,9 @@ export const useStudio = create<StudioState>((set, get) => {
     const activeZoneId = hasZone(model, get().activeZoneId) ? get().activeZoneId : model.zoneOrder[0];
     const zone = document.zones[activeZoneId];
     const selected = activeZoneId === get().activeZoneId ? get().selectedLayerIds.filter((id) => zone.layers[id]) : [];
-    set({ document, history, saveState: 'unsaved', selectedLayerIds: selected, activeZoneId });
+    const projection = get().selectedProjectionId;
+    const selectedProjectionId = projection && document.projections.layers[projection] ? projection : null;
+    set({ document, history, saveState: 'unsaved', selectedLayerIds: selected, selectedProjectionId, activeZoneId });
     scheduleSave();
   }
 
@@ -93,6 +98,7 @@ export const useStudio = create<StudioState>((set, get) => {
 
     activeZoneId: 'front',
     selectedLayerIds: [],
+    selectedProjectionId: null,
     viewMode: 'split',
     mobileSheet: null,
     exportOpen: false,
@@ -101,7 +107,7 @@ export const useStudio = create<StudioState>((set, get) => {
 
     async load(projectId) {
       if (get().projectId === projectId && (get().status === 'ready' || get().status === 'loading')) return;
-      set({ status: 'loading', projectId, document: null, history: emptyHistory(), selectedLayerIds: [], loadErrors: [] });
+      set({ status: 'loading', projectId, document: null, history: emptyHistory(), selectedLayerIds: [], selectedProjectionId: null, loadErrors: [] });
       try {
         const result = await loadDocument(projectId);
         if (get().projectId !== projectId) return;
@@ -186,11 +192,15 @@ export const useStudio = create<StudioState>((set, get) => {
     setActiveZone(zoneId) {
       const doc = get().document;
       if (doc && !hasZone(getGarment(doc.garment.modelId), zoneId)) return;
-      set({ activeZoneId: zoneId, selectedLayerIds: [] });
+      set({ activeZoneId: zoneId, selectedLayerIds: [], selectedProjectionId: null });
     },
     select(ids) {
       const same = ids.length === get().selectedLayerIds.length && ids.every((id, i) => id === get().selectedLayerIds[i]);
-      if (!same) set({ selectedLayerIds: ids });
+      if (!same || get().selectedProjectionId) set({ selectedLayerIds: ids, selectedProjectionId: null });
+    },
+    selectProjection(id) {
+      if (id === get().selectedProjectionId && (!id || !get().selectedLayerIds.length)) return;
+      set({ selectedProjectionId: id, selectedLayerIds: id ? [] : get().selectedLayerIds });
     },
     setViewMode(viewMode) {
       set({ viewMode });
@@ -223,9 +233,17 @@ export function useActiveColorway() {
 
 // ---- Live drag previews (not saved, not in history) ----
 
+/** A projected layer while it is dragged, resized or turned on the garment, before the command commits. */
+export interface LiveProjection {
+  id: string;
+  projector?: ProjectorSpec;
+  transform?: Partial<ProjectedTransform>;
+}
+
 interface LiveState {
   zoneId: ZoneId | null;
   overrides: Record<string, Partial<LayerTransform>>;
+  projection: LiveProjection | null;
   /** Which view is dragging, so the other one can follow without echoing it back. */
   source: '2d' | '3d' | null;
   /** Shown instead of the active colourway while batch-rendering every colourway. */
@@ -233,6 +251,7 @@ interface LiveState {
   /** Output aspect (width / height) the render studio is set to; the 3D view frames it. */
   renderAspect: number | null;
   setOverrides: (zoneId: ZoneId, overrides: Record<string, Partial<LayerTransform>>, source?: '2d' | '3d') => void;
+  setProjection: (projection: LiveProjection | null) => void;
   setColorwayOverride: (id: string | null) => void;
   setRenderAspect: (aspect: number | null) => void;
   clear: () => void;
@@ -241,13 +260,15 @@ interface LiveState {
 export const useLive = create<LiveState>((set) => ({
   zoneId: null,
   overrides: {},
+  projection: null,
   source: null,
   colorwayOverride: null,
   renderAspect: null,
   setOverrides: (zoneId, overrides, source = '2d') => set({ zoneId, overrides, source }),
+  setProjection: (projection) => set({ projection, source: projection ? '3d' : null }),
   setColorwayOverride: (colorwayOverride) => set({ colorwayOverride }),
   setRenderAspect: (renderAspect) => set({ renderAspect }),
-  clear: () => set({ zoneId: null, overrides: {}, source: null }),
+  clear: () => set({ zoneId: null, overrides: {}, projection: null, source: null }),
 }));
 
 /** The colourway the 3D view should show: a batch-export override, else the active one. */

@@ -59,6 +59,7 @@ import {
   ungroupSelection,
   zoomToSelection,
 } from './actions';
+import { deleteProjection, duplicateProjection, moveProjectionBy, nudgeProjection } from './projection-actions';
 import { BrandKitProvider } from './brand-context';
 import { BrandPanel } from './BrandPanel';
 import { ColorwayCompare } from './ColorwayCompare';
@@ -560,7 +561,8 @@ function useShortcuts() {
         s.redo();
       } else if (mod && key === 'd') {
         e.preventDefault();
-        duplicateSelection();
+        if (s.selectedProjectionId) duplicateProjection(s.selectedProjectionId);
+        else duplicateSelection();
       } else if (mod && key === 'g') {
         e.preventDefault();
         if (e.shiftKey) ungroupSelection();
@@ -573,24 +575,30 @@ function useShortcuts() {
         e.preventDefault();
         void s.saveNow();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (s.selectedLayerIds.length) {
+        if (s.selectedProjectionId) {
+          e.preventDefault();
+          deleteProjection(s.selectedProjectionId);
+        } else if (s.selectedLayerIds.length) {
           e.preventDefault();
           deleteSelection();
         }
       } else if (e.key === 'Escape') {
         s.select([]);
-      } else if (e.key.startsWith('Arrow') && s.selectedLayerIds.length) {
+      } else if (e.key.startsWith('Arrow') && (s.selectedLayerIds.length || s.selectedProjectionId)) {
         e.preventDefault();
         const step = e.shiftKey ? 10 : 1;
         const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
         const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
-        nudgeSelection(dx, dy);
+        if (s.selectedProjectionId) nudgeProjection(s.selectedProjectionId, dx, dy);
+        else nudgeSelection(dx, dy);
       } else if (!mod && key === 't') {
         addText();
       } else if (!mod && e.key === ']') {
-        moveSelectionInStack(1);
+        if (s.selectedProjectionId) moveProjectionBy(s.selectedProjectionId, 1);
+        else moveSelectionInStack(1);
       } else if (!mod && e.key === '[') {
-        moveSelectionInStack(-1);
+        if (s.selectedProjectionId) moveProjectionBy(s.selectedProjectionId, -1);
+        else moveSelectionInStack(-1);
       }
     };
     const onPaste = (e: ClipboardEvent) => {
@@ -640,7 +648,7 @@ function MobileAddSheet({ onDone }: { onDone: () => void }) {
 
 function MobileRail() {
   const setSheet = useStudio((s) => s.setMobileSheet);
-  const hasSelection = useStudio((s) => s.selectedLayerIds.length > 0);
+  const hasSelection = useStudio((s) => s.selectedLayerIds.length > 0 || !!s.selectedProjectionId);
   const { errors } = summarize(usePreflight());
   const item = 'flex min-h-14 flex-1 flex-col items-center justify-center gap-1 text-[11px] font-medium text-fg-2';
   return (

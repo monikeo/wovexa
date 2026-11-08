@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import { getGarment } from '@/domain/garments';
 import { runPreflight, summarize, type PreflightIssue, type Severity } from '@/domain/preflight';
 import { useStudio } from '@/stores/studio-store';
+import { selectProjection } from './projection-actions';
 
 export function usePreflight() {
   const doc = useStudio((s) => s.document);
@@ -19,8 +20,8 @@ export const SEVERITY: Record<Severity, { label: string; Icon: typeof Info; clas
 export function IssueItem({ issue, onSelect }: { issue: PreflightIssue; onSelect?: () => void }) {
   const doc = useStudio((s) => s.document);
   const { label, Icon, className } = SEVERITY[issue.severity];
-  const layerName = issue.layerId ? doc?.zones[issue.zoneId].layers[issue.layerId]?.name : undefined;
-  const zoneLabel = (doc ? getGarment(doc.garment.modelId).zones[issue.zoneId]?.label : undefined) ?? issue.zoneId.replace('_', ' ');
+  const layerName = issue.projectionId ? doc?.projections.layers[issue.projectionId]?.name : issue.layerId ? doc?.zones[issue.zoneId].layers[issue.layerId]?.name : undefined;
+  const zoneLabel = issue.projectionId ? 'Across seams' : ((doc ? getGarment(doc.garment.modelId).zones[issue.zoneId]?.label : undefined) ?? issue.zoneId.replace('_', ' '));
   const body = (
     <>
       <Icon size={16} className={`mt-0.5 flex-none ${className}`} aria-hidden />
@@ -53,6 +54,11 @@ export function PreflightPanel({ onNavigate }: { onNavigate?: () => void }) {
   const { errors, warnings } = summarize(issues);
   const go = (issue: PreflightIssue) => () => {
     const s = useStudio.getState();
+    if (issue.projectionId) {
+      selectProjection(issue.projectionId);
+      onNavigate?.();
+      return;
+    }
     if (s.activeZoneId !== issue.zoneId) s.setActiveZone(issue.zoneId);
     if (issue.layerId) s.select([issue.layerId]);
     onNavigate?.();

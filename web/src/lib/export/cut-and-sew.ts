@@ -2,9 +2,12 @@
  * Cut-and-sew panels for all-over printing (sublimation): every pattern piece of the garment
  * with its fabric print and artwork at true size, 10 mm of bleed and a cut line. The pieces are
  * cut from the 3D garment's own fabric layout, so the printed fabric matches the 3D preview.
+ * Artwork projected across seams is split at each seam: every panel carries its own share.
  */
-import { buildGarment } from '@/components/studio/viewer3d/garment-geometry';
+import { buildGarment, type GarmentIsland } from '@/components/studio/viewer3d/garment-geometry';
 import { drawPart, partSizeMm } from '@/components/studio/viewer3d/garment-textures';
+import { drawPatches, projectionBleed, sceneRest, type ProjectionScene } from '@/components/studio/viewer3d/projected-paint';
+import { insideOutline, meshPieces } from '@/components/studio/viewer3d/projection';
 import { getGarment, getSize, partColor, type PartId } from '@/domain/garments';
 import type { Colorway, DesignDocument } from '@/domain/schema';
 
@@ -27,6 +30,33 @@ export function renderCutAndSew(doc: DesignDocument, colorway: Colorway, caption
   const geo = buildGarment(model, size, 'high', 0);
   const textures = new Map<PartId, HTMLCanvasElement>();
   const pieces: CutPiece[] = [];
+  // Projected artwork lands on this same pressed-flat garment, so the panels match the 3D view.
+  const scene: ProjectionScene = { doc, rest: sceneRest(geo), geo, live: null };
+  const piecesOf = new Map<PartId, Int32Array>();
+  /** The triangles of one pattern piece: the connected part of its mesh that lies inside its outline. */
+  const pieceFilter = (island: GarmentIsland) => {
+    const mesh = scene.rest.parts.find((p) => p.id === island.part)?.mesh;
+    if (!mesh) return null;
+    let ids = piecesOf.get(island.part);
+    if (!ids) {
+      ids = meshPieces(mesh);
+      piecesOf.set(island.part, ids);
+    }
+    const seen = new Set<number>();
+    for (let t = 0; t < ids.length; t++) {
+      if (seen.has(ids[t])) continue;
+      seen.add(ids[t]);
+      const [a, b, c] = [mesh.index[t * 3], mesh.index[t * 3 + 1], mesh.index[t * 3 + 2]];
+      const u = (mesh.uv[a * 2] + mesh.uv[b * 2] + mesh.uv[c * 2]) / 3;
+      const v = (mesh.uv[a * 2 + 1] + mesh.uv[b * 2 + 1] + mesh.uv[c * 2 + 1]) / 3;
+      if (insideOutline(u, v, island.uv)) {
+        const piece = ids[t];
+        const all = ids;
+        return (triangle: number) => all[triangle] === piece;
+      }
+    }
+    return null;
+  };
   try {
     for (const island of geo.islands) {
       let tex = textures.get(island.part);
@@ -63,6 +93,26 @@ export function renderCutAndSew(doc: DesignDocument, colorway: Colorway, caption
       f.fillStyle = partColor(colorway, island.part === 'torso' ? 'body' : island.part.startsWith('leg') ? 'pants' : 'sleeves');
       f.fillRect(0, 0, W, H);
       for (const shift of [-tex.width, 0, tex.width]) f.drawImage(tex, shift - x0, -y0);
+      // Artwork across seams carries on past this piece's own edges into its bleed, outside the
+      // cut line only, so a slightly wide cut still lands on print, not on bare fabric.
+      if (scene.doc.projections.orderedLayerIds.length) {
+        const keep = pieceFilter(island);
+        const bleedArt = keep ? projectionBleed(scene, island.part, ppm, { width: tex.width, height: tex.height }, keep, Math.ceil(bleed)) : null;
+        if (bleedArt?.length) {
+          const band = document.createElement('canvas');
+          band.width = W;
+          band.height = H;
+          const b = band.getContext('2d')!;
+          for (const l of bleedArt) drawPatches(b, l.patches, x0, y0, l.opacity, l.blend);
+          b.globalCompositeOperation = 'destination-out';
+          b.beginPath();
+          pts.forEach(([x, y], i) => (i ? b.lineTo(x - x0, y - y0) : b.moveTo(x - x0, y - y0)));
+          b.closePath();
+          b.fill();
+          f.drawImage(band, 0, 0);
+          band.width = band.height = 0;
+        }
+      }
       // The piece plus bleed as a mask, then the fabric through it in one step.
       trace();
       ctx.fillStyle = '#000';

@@ -1,6 +1,7 @@
 import { colorwayPresetsFor, getGarment, TEE_CLASSIC, type ColorwayPreset } from './garments';
 import {
   defaultProduction,
+  emptyProjections,
   SCHEMA_VERSION,
   ZONE_IDS,
   type ArtworkLayer,
@@ -70,6 +71,7 @@ export function createDocument(opts: { projectId: string; title: string; modelId
     colorways,
     zones,
     production: defaultProduction(() => newId()),
+    projections: emptyProjections(),
   };
 }
 

@@ -103,7 +103,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | ED3-11 | P1 | Position aids | Done | Print-area outlines and selection box on the garment; never in renders. |
 | ED3-12 | P1 | 2D/3D split view | Partial | Split view; the 2D editor follows 3D drags live. No draggable divider. |
 | ED3-13 | P1 | Animation presets | Partial | Motion presets: turntable, walk (an invisible walker: body bob and turn, sleeves and uniform legs swing from shoulder and hip), wind in gusts (pinned at the shoulders), hanger sway from the neck on a wooden hanger, float, and a knit reveal, with speed; all play in video, frame-exact. Procedural, not baked cloth simulation; no retail fold state. |
-| ED3-14 | P2 | Cross-seam artwork | Not started |  |
+| ED3-14 | P2 | Cross-seam artwork | Done | Text, images and shapes projected straight onto the 3D garment, like a texture painter's decal: wrap any zone layer across seams, then drag it over the shoulder or round a side seam in Place mode (or click the garment to place it), resize and turn it like other layers, all undoable. Back faces and cloth hidden behind nearer cloth are skipped; the print fades where the cloth turns edge-on. Painted on the pressed garment so it folds with the drape, and split at each seam in the cut-and-sew panels with real bleed. Preflight says it needs sublimation or cut-and-sew. |
 | ED3-15 | P2 | Side-by-side comparison (new) | Partial | Colourway comparison and batch renders use one camera. No live side-by-side 3D. |
 | ED3-16 | P0 | Capability fallback | Done | No-WebGL and context-loss fallbacks keep 2D editing and print export working. |
 

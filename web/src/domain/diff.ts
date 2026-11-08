@@ -4,6 +4,7 @@
  */
 import { getGarment, PRINT_METHOD_LABELS } from './garments';
 import { roundMm } from './geometry';
+import { projectedAsArtwork } from './projected';
 import { ZONE_IDS, type ArtworkLayer, type DesignDocument } from './schema';
 
 export interface Change {
@@ -101,6 +102,24 @@ export function diffDocuments(before: DesignDocument, after: DesignDocument): Ch
     const commonBefore = za.orderedLayerIds.filter((id) => zb.layers[id]);
     if (common.join() !== commonBefore.join()) changes.push({ area, kind: 'changed', text: 'Layer order changed' });
   }
+
+  // Artwork across seams: added, removed, moved on the garment, or edited like any layer.
+  const seams = 'Across seams';
+  const pjA = before.projections?.layers ?? {};
+  const pjB = after.projections?.layers ?? {};
+  for (const id of after.projections?.orderedLayerIds ?? []) {
+    const a = pjA[id];
+    const b = pjB[id];
+    if (!b) continue;
+    if (!a) {
+      changes.push({ area: seams, kind: 'added', text: `Added ${b.name}` });
+      continue;
+    }
+    const what = describeLayerChange(projectedAsArtwork(a), projectedAsArtwork(b));
+    if (JSON.stringify(a.projector) !== JSON.stringify(b.projector)) what.unshift('moved on the garment');
+    if (what.length) changes.push({ area: seams, kind: 'changed', text: `${b.name}: ${what.join('; ')}` });
+  }
+  for (const id of before.projections?.orderedLayerIds ?? []) if (!pjB[id] && pjA[id]) changes.push({ area: seams, kind: 'removed', text: `Removed ${pjA[id].name}` });
 
   const pa = before.production;
   const pb = after.production;

@@ -15,6 +15,7 @@
 import { getGarment, getSize, partColor, PRINT_METHOD_LABELS, zoneSpecOrFirst, type ZoneSpec } from '@/domain/garments';
 import { documentHash } from '@/domain/hash';
 import { runPreflight } from '@/domain/preflight';
+import { projectionsAsZone } from '@/domain/projected';
 import type { Colorway, DesignDocument, ZoneId } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
 import { canvasToBlob, sha256Hex } from '@/lib/download';
@@ -92,7 +93,7 @@ export interface PackageResult {
 /** Fonts the print files use and where they come from, so the factory can check licensing (spec AST-07). */
 export async function fontsUsed(doc: DesignDocument) {
   const seen = new Map<string, { family: string; weights: number[]; source: string; licence: string; file?: string }>();
-  for (const zone of Object.values(doc.zones)) {
+  for (const zone of [...Object.values(doc.zones), projectionsAsZone(doc)]) {
     for (const layer of Object.values(zone.layers)) {
       const c = layer.content;
       if (c.kind !== 'text' || !layer.visible) continue;
@@ -116,13 +117,14 @@ export async function fontsUsed(doc: DesignDocument) {
   return [...seen.values()];
 }
 
-/** Images and fonts every zone and colourway needs, loaded before anything is drawn. */
+/** Images and fonts every zone, projected layer and colourway needs, loaded before anything is drawn. */
 export async function prepareDocument(doc: DesignDocument, zones: ZoneId[]) {
   const ids = new Set<string>();
-  for (const z of zones) for (const l of Object.values(doc.zones[z].layers)) if (l.content.kind === 'image') ids.add(l.content.assetId);
+  const projected = projectionsAsZone(doc);
+  for (const zone of [...zones.map((z) => doc.zones[z]), projected]) for (const l of Object.values(zone.layers)) if (l.content.kind === 'image') ids.add(l.content.assetId);
   for (const c of doc.colorways) for (const s of Object.values(c.surfaces ?? {})) if (s?.kind === 'image') ids.add(s.assetId);
   await Promise.all([...ids].filter((id) => !getLoadedImage(id)).map((id) => loadAssetImage(id).catch(() => null)));
-  await ensureFonts(zones.map((z) => doc.zones[z]));
+  await ensureFonts([...zones.map((z) => doc.zones[z]), projected]);
 }
 
 export function zonesWithArtwork(doc: DesignDocument): ZoneId[] {
@@ -513,7 +515,7 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
       teamFile ? 'team/               One folder per person with their personalised print files, roster.csv and sizes.csv.' : null,
       opts.include.flats ? 'flats/              Placement drawings for each colourway, with the print area outlined.' : null,
       Object.keys(mockups).length ? 'mockups/            Product images for each colourway.' : null,
-      opts.include.cutAndSew ? 'cut-and-sew/        Every pattern piece with its all-over print, 10 mm bleed and a dashed cut line, for sublimation.' : null,
+      opts.include.cutAndSew ? 'cut-and-sew/        Every pattern piece with its all-over print and any artwork across seams (split at each seam), 10 mm bleed and a dashed cut line, for sublimation.' : null,
       opts.include.cutAndSew ? '                    Not mirrored: set mirroring for transfer paper in your RIP.' : null,
       opts.include.model && ctx.renderModel ? '3d/                 The garment as a GLB 3D model, in metres, for viewers, Blender and AR.' : null,
       opts.include.proof ? '*_proof_*.pdf       Client proof with an approval line.' : null,

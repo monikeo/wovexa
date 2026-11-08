@@ -4,14 +4,18 @@
  */
 import { getGarment, PRINT_METHOD_LABELS, type ZoneSpec } from './garments';
 import { mmToInch, overflow, rotatedBounds, roundMm } from './geometry';
-import { ZONE_IDS, type ArtworkLayer, type DesignDocument, type PrintMethod, type ZoneId } from './schema';
+import { projectedAsArtwork, projectedLayers } from './projected';
+import { ZONE_IDS, type ArtworkLayer, type DesignDocument, type PrintMethod, type ProjectedLayer, type ZoneId } from './schema';
 
 export type Severity = 'error' | 'warning' | 'info';
 
 export interface PreflightIssue {
   id: string;
+  /** The zone the issue belongs to; issues about projected layers or the whole design use 'front'. */
   zoneId: ZoneId;
   layerId?: string;
+  /** Set when the issue is about a projected (cross-seam) layer rather than a zone layer. */
+  projectionId?: string;
   severity: Severity;
   code:
     | 'out_of_bounds'
@@ -23,6 +27,8 @@ export interface PreflightIssue {
     | 'embroidery_raster'
     | 'zone_unavailable'
     | 'allover_print'
+    | 'cross_seam'
+    | 'flat_finish'
     | 'empty_design';
   message: string;
   /** Action-oriented resolution, only when it can be computed exactly. */
@@ -165,6 +171,67 @@ export function checkLayer(layer: ArtworkLayer, zone: ZoneSpec, method: PrintMet
   return issues;
 }
 
+const RAISED_FINISH: Partial<Record<ArtworkLayer['style']['finish'], string>> = { puff: 'Puff', embroidery: 'Embroidery', metallic: 'Metallic foil' };
+
+/**
+ * Checks for artwork projected across seams. A DTG or screen-print zone file holds one flat
+ * print area, so it can't carry artwork that runs over a seam: projected layers are printed on
+ * the fabric before sewing, by sublimation or as cut-and-sew panels, and preflight says so.
+ */
+export function checkProjectedLayer(layer: ProjectedLayer, opts: PreflightOptions = DEFAULT_PREFLIGHT): PreflightIssue[] {
+  const issues: PreflightIssue[] = [];
+  const base = { zoneId: 'front' as const, projectionId: layer.id };
+  issues.push({
+    ...base,
+    id: `${layer.id}:cross-seam`,
+    severity: 'info',
+    code: 'cross_seam',
+    message: 'Runs across seams, so it needs sublimation or cut-and-sew. Zone print files (DTG, screen print) can’t carry it',
+    fix: 'Export the cut-and-sew panels for the fabric printer, or move it back to a print zone',
+  });
+  const art = projectedAsArtwork(layer);
+  const dpi = effectiveDpi(art);
+  if (dpi && dpi.min < opts.goodDpi) {
+    const low = dpi.min < opts.minimumDpi;
+    const maxW = maxWidthAtDpi(art, low ? opts.minimumDpi : opts.goodDpi);
+    issues.push({
+      ...base,
+      id: `${layer.id}:dpi`,
+      severity: low ? 'error' : 'warning',
+      code: low ? 'low_dpi' : 'marginal_dpi',
+      message: low ? `Prints at ${Math.round(dpi.min)} dpi, below the ${opts.minimumDpi} dpi minimum` : `Prints at ${Math.round(dpi.min)} dpi; edges may look soft`,
+      fix: maxW ? `${low ? 'Use a larger source image, or print' : `For ${opts.goodDpi} dpi, print`} it at most ${roundMm(maxW)} mm wide` : undefined,
+    });
+  }
+  if (layer.content.kind === 'text') {
+    const lines = Math.max(1, layer.content.value.split('\n').length);
+    const lineHeightMm = layer.transform.heightMm / lines / layer.content.lineHeight;
+    const min = MIN_TEXT_HEIGHT_MM.SUBLIMATION;
+    if (lineHeightMm < min) {
+      issues.push({
+        ...base,
+        id: `${layer.id}:text`,
+        severity: 'warning',
+        code: 'small_text',
+        message: `Text is about ${roundMm(lineHeightMm)} mm tall; sublimation needs at least ${min} mm`,
+        fix: `Scale the text up by ${Math.ceil((min / lineHeightMm - 1) * 100)}%`,
+      });
+    }
+  }
+  const raised = RAISED_FINISH[layer.style.finish];
+  if (raised) {
+    issues.push({
+      ...base,
+      id: `${layer.id}:finish`,
+      severity: 'warning',
+      code: 'flat_finish',
+      message: `${raised} can’t be printed into the fabric across seams; it prints as flat colour`,
+      fix: 'Choose flat ink, or move it back to a print zone for that finish',
+    });
+  }
+  return issues;
+}
+
 export function runPreflight(doc: DesignDocument, opts: PreflightOptions = DEFAULT_PREFLIGHT): PreflightIssue[] {
   const model = getGarment(doc.garment.modelId);
   const issues: PreflightIssue[] = [];
@@ -200,6 +267,12 @@ export function runPreflight(doc: DesignDocument, opts: PreflightOptions = DEFAU
       });
     }
     for (const layer of layers) issues.push(...checkLayer(layer, spec, zone.printMethod, opts));
+  }
+
+  for (const layer of projectedLayers(doc)) {
+    if (!layer.visible) continue;
+    visibleLayers++;
+    issues.push(...checkProjectedLayer(layer, opts));
   }
 
   const colorway = doc.colorways.find((c) => c.id === doc.activeColorwayId) ?? doc.colorways[0];

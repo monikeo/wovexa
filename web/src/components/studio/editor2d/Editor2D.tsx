@@ -407,6 +407,9 @@ export function Editor2D() {
     const onSelection = () => {
       if (syncingSelection.current) return;
       const ids = canvas.getActiveObjects().flatMap(leaves).map((o) => o.layerId);
+      // Nothing selected here and nothing to clear: leave a selection made elsewhere (artwork
+      // across seams, picked in 3D or the layer list) alone.
+      if (!ids.length && !useStudio.getState().selectedLayerIds.length) return;
       useStudio.getState().select(ids);
     };
     canvas.on('selection:created', onSelection);

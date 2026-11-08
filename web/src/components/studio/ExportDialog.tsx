@@ -188,6 +188,7 @@ export function ExportPanel() {
   const screenZones = zones.filter((z) => doc.zones[z].printMethod === 'SCREEN_PRINT');
   const mainColorway = doc.colorways.find((c) => c.id === doc.activeColorwayId) ?? doc.colorways[0];
   const allOver = !!mainColorway?.surfaces && Object.values(mainColorway.surfaces).some(Boolean);
+  const acrossSeams = doc.projections.orderedLayerIds.some((id) => doc.projections.layers[id]?.visible);
   const placeholders = designPlaceholders(doc);
   const missingFields = roster.rows.length ? placeholders.filter((p) => !roster.fields.includes(p)) : [];
   const sizes = sizeBreakdown(roster);
@@ -384,7 +385,13 @@ export function ExportPanel() {
             checked={!!prefs.include.cutAndSew}
             onChange={(v) => setInclude('cutAndSew', v)}
             title="Cut-and-sew panels"
-            hint={allOver ? 'Every pattern piece with its all-over print, 10 mm bleed, 120 dpi. Recommended for this design' : 'Every pattern piece with its print and 10 mm bleed, for all-over sublimation'}
+            hint={
+              acrossSeams
+                ? 'Every pattern piece with the artwork across seams split at each seam, 10 mm bleed, 120 dpi. Needed for this design'
+                : allOver
+                  ? 'Every pattern piece with its all-over print, 10 mm bleed, 120 dpi. Recommended for this design'
+                  : 'Every pattern piece with its print and 10 mm bleed, for all-over sublimation'
+            }
           />
           <Option checked={!!prefs.include.model} onChange={(v) => setInclude('model', v)} title="3D model" hint="GLB in metres, for web viewers, Blender and AR" />
         </div>
