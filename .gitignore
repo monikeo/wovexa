@@ -1,0 +1,16 @@
+# Dependencies and build output (web/.gitignore covers the app in more detail)
+node_modules/
+.next/
+out/
+coverage/
+
+# Secrets
+.env*
+!.env.example
+*.pem
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log

@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WOVEXA Brand Guide</title>
+<meta name="description" content="WOVEXA brand guidelines: symbol, wordmark, lockups, colour, type and usage.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #000000;
+    --paper: #ffffff;
+    --blue: #2b59ff;
+    --blue-bright: #5b82ff;
+    --blue-wash: #eef2ff;
+    --graphite: #17181c;
+    --graphite-950: #0d0e11;
+    --steel: #6b6f7a;
+    --mist-200: #dcdee4;
+    --mist-100: #e9eaee;
+    --mist-50: #f5f6f8;
+    --red: #d0312d;
+    --gutter: clamp(16px, 4vw, 56px);
+    --measure: 64ch;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Archivo", system-ui, sans-serif;
+    font-size: 17px;
+    line-height: 1.55;
+    font-stretch: 100%;
+  }
+  a { color: inherit; text-underline-offset: 3px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; border-radius: 4px; }
+  .num { font-variant-numeric: tabular-nums; }
+  code, .code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 0.86em; }
+
+  /* ---- Layout ---- */
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 0 var(--gutter); }
+  section.block {
+    display: grid;
+    grid-template-columns: minmax(180px, 3fr) 9fr;
+    gap: 24px 48px;
+    padding: 72px 0;
+    border-top: 1px solid var(--mist-200);
+  }
+  section.block > header h2 {
+    margin: 0;
+    font-size: 1.75rem;
+    line-height: 1.15;
+    font-weight: 620;
+    font-stretch: 125%;
+    letter-spacing: -0.01em;
+  }
+  section.block > header p { margin: 10px 0 0; color: var(--steel); font-size: 0.95rem; max-width: 30ch; }
+  .lede { max-width: var(--measure); margin: 0 0 32px; }
+  @media (max-width: 860px) {
+    section.block { grid-template-columns: 1fr; padding: 56px 0; }
+    section.block > header p { max-width: none; }
+  }
+
+  /* ---- Hero ---- */
+  .hero {
+    min-height: min(92vh, 860px);
+    display: grid;
+    grid-template-columns: 1.05fr 1fr;
+    align-items: center;
+    gap: 48px;
+    padding: 56px 0 72px;
+  }
+  .hero-mark { width: 100%; max-width: 540px; height: auto; display: block; }
+  .hero-mark path { animation: thread 900ms cubic-bezier(0.2, 0, 0, 1) both; }
+  .hero-mark .t-under-a { animation-delay: 120ms; }
+  .hero-mark .t-under-b { animation-delay: 260ms; }
+  .hero-mark .t-over { animation-delay: 520ms; }
+  @keyframes thread {
+    from { clip-path: inset(0 0 100% 0); }
+    to { clip-path: inset(0 0 0 0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .hero-mark path { animation: none; }
+  }
+  .hero h1 { margin: 0 0 28px; }
+  .hero h1 svg { width: min(100%, 420px); height: auto; display: block; }
+  .slogan {
+    margin: 0;
+    font-size: clamp(2.4rem, 5.2vw, 4.4rem);
+    line-height: 1.0;
+    font-weight: 640;
+    font-stretch: 125%;
+    letter-spacing: -0.025em;
+    max-width: 11ch;
+  }
+  .hero-meta { margin: 28px 0 0; color: var(--steel); max-width: 42ch; }
+  @media (max-width: 860px) {
+    .hero { grid-template-columns: 1fr; min-height: 0; padding-top: 32px; gap: 32px; }
+    .hero-mark { max-width: 320px; }
+  }
+
+  /* ---- Figures ---- */
+  .figs { display: grid; gap: 24px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fig { margin: 0; }
+  .fig .plate {
+    border: 1px solid var(--mist-200);
+    border-radius: 6px;
+    aspect-ratio: 4 / 3;
+    display: grid;
+    place-items: center;
+    padding: 28px;
+    background: var(--paper);
+  }
+  .fig .plate.dark { background: var(--ink); border-color: var(--ink); }
+  .fig .plate.mist { background: var(--mist-50); }
+  .fig figcaption { margin-top: 10px; font-size: 0.92rem; color: var(--steel); max-width: 48ch; }
+  .fig figcaption strong { color: var(--ink); font-weight: 600; }
+  .span-2 { grid-column: 1 / -1; }
+  .span-2 .plate { aspect-ratio: auto; min-height: 260px; }
+  @media (max-width: 640px) { .figs { grid-template-columns: 1fr; } }
+
+  .specs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 32px; margin: 32px 0 0; }
+  .specs dt { font-size: 0.9rem; color: var(--steel); }
+  .specs dd { margin: 2px 0 0; font-weight: 560; }
+  @media (max-width: 640px) { .specs { grid-template-columns: 1fr 1fr; } }
+
+  /* ---- Name ---- */
+  .name-parts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; border: 1px solid var(--ink); }
+  .name-parts > div { padding: 28px 24px 26px; }
+  .name-parts > div + div { border-left: 1px solid var(--ink); }
+  .name-parts .syll { font-size: clamp(2.6rem, 6vw, 4.5rem); font-weight: 700; font-stretch: 125%; line-height: 1; letter-spacing: 0.02em; }
+  .name-parts p { margin: 18px 0 0; max-width: 26ch; }
+  @media (max-width: 640px) {
+    .name-parts { grid-template-columns: 1fr; }
+    .name-parts > div + div { border-left: 0; border-top: 1px solid var(--ink); }
+  }
+
+  /* ---- Colour ---- */
+  .swatches { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+  .swatch .chip { height: 132px; border-radius: 6px; border: 1px solid var(--mist-200); }
+  .swatch h3 { margin: 12px 0 2px; font-size: 1rem; font-weight: 600; }
+  .swatch p { margin: 0; font-size: 0.9rem; color: var(--steel); }
+  .swatch .code { color: var(--ink); }
+  .swatches.minor .chip { height: 64px; }
+  @media (max-width: 860px) { .swatches { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .ratio { display: flex; height: 56px; border: 1px solid var(--mist-200); border-radius: 6px; overflow: hidden; margin: 40px 0 10px; }
+  .ratio span { display: block; height: 100%; }
+  .ratio-legend { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0; padding: 0; list-style: none; font-size: 0.9rem; color: var(--steel); }
+  .ratio-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; border: 1px solid var(--mist-200); vertical-align: -1px; }
+
+  /* ---- Type ---- */
+  .specimen { border-top: 1px solid var(--ink); }
+  .specimen .row { display: grid; grid-template-columns: 160px 1fr; gap: 24px; padding: 20px 0; border-bottom: 1px solid var(--mist-200); align-items: baseline; }
+  .specimen .row .meta { font-size: 0.85rem; color: var(--steel); }
+  .t-display { font-size: clamp(2.2rem, 5vw, 4rem); line-height: 1.02; font-weight: 640; font-stretch: 125%; letter-spacing: -0.025em; }
+  .t-h1 { font-size: 2.5rem; line-height: 1.1; font-weight: 620; font-stretch: 115%; letter-spacing: -0.015em; }
+  .t-h2 { font-size: 1.75rem; line-height: 1.2; font-weight: 600; font-stretch: 100%; }
+  .t-body { font-size: 1rem; line-height: 1.55; max-width: 60ch; }
+  .t-ui { font-size: 0.8125rem; font-weight: 500; }
+  .t-num { font-size: 1.25rem; font-variant-numeric: tabular-nums; font-weight: 500; }
+  @media (max-width: 640px) { .specimen .row { grid-template-columns: 1fr; gap: 6px; } }
+
+  /* ---- Modules ---- */
+  .modules { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--ink); }
+  .modules li { display: grid; grid-template-columns: 300px 1fr; gap: 24px; padding: 22px 0; border-bottom: 1px solid var(--mist-200); align-items: center; }
+  .module-lockup { display: flex; align-items: center; gap: 12px; font-size: 1.35rem; font-weight: 600; font-stretch: 112%; letter-spacing: -0.005em; }
+  .module-lockup svg { width: 34px; height: auto; flex: none; }
+  .modules p { margin: 0; color: var(--steel); max-width: 52ch; }
+  @media (max-width: 760px) { .modules li { grid-template-columns: 1fr; gap: 8px; } }
+
+  /* ---- In product ---- */
+  .ui-demo { border: 1px solid var(--mist-200); border-radius: 12px; overflow: hidden; background: var(--mist-50); }
+  .ui-bar { display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 12px; background: var(--paper); border-bottom: 1px solid var(--mist-200); }
+  .ui-bar .proj { font-size: 0.8125rem; font-weight: 560; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  @media (max-width: 760px) { .ui-bar .saved { display: none; } }
+  .ui-bar .saved { font-size: 0.75rem; color: var(--steel); }
+  .ui-bar .spacer { flex: 1; }
+  .ui-seg { display: inline-flex; border: 1px solid var(--mist-200); border-radius: 8px; padding: 2px; }
+  .ui-seg span { font-size: 0.75rem; font-weight: 560; padding: 4px 10px; border-radius: 6px; color: var(--steel); }
+  .ui-seg span.on { background: var(--ink); color: var(--paper); }
+  .ui-btn { font: inherit; font-size: 0.8125rem; font-weight: 600; background: var(--blue); color: var(--paper); border: 0; border-radius: 8px; padding: 8px 14px; }
+  .ui-body { display: grid; grid-template-columns: 52px 1fr 240px; min-height: 260px; }
+  .ui-rail { background: var(--paper); border-right: 1px solid var(--mist-200); display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 0; }
+  .ui-rail span { width: 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; color: var(--ink); }
+  .ui-rail span.on { background: var(--blue-wash); color: var(--blue); }
+  .ui-rail svg { width: 18px; height: 18px; }
+  .ui-stage { display: grid; place-items: center; padding: 20px; }
+  .ui-stage .board { width: min(100%, 220px); aspect-ratio: 3 / 4; background: var(--paper); border: 1px dashed var(--steel); position: relative; }
+  .ui-stage .sel { position: absolute; left: 22%; top: 18%; width: 56%; height: 30%; border: 1.5px solid var(--blue); display: grid; place-items: center; }
+  .ui-stage .sel svg { width: 70%; height: auto; }
+  .ui-stage .sel::before, .ui-stage .sel::after { content: ""; position: absolute; width: 8px; height: 8px; background: var(--paper); border: 1.5px solid var(--blue); }
+  .ui-stage .sel::before { left: -5px; top: -5px; }
+  .ui-stage .sel::after { right: -5px; bottom: -5px; }
+  .ui-insp { background: var(--paper); border-left: 1px solid var(--mist-200); padding: 14px; font-size: 0.8125rem; }
+  .ui-insp h4 { margin: 0 0 10px; font-size: 0.8125rem; font-weight: 600; }
+  .ui-field { display: grid; grid-template-columns: 56px 1fr; align-items: center; gap: 8px; margin-bottom: 8px; color: var(--steel); }
+  .ui-field b { font-weight: 500; color: var(--ink); border: 1px solid var(--mist-200); border-radius: 6px; padding: 5px 8px; font-variant-numeric: tabular-nums; }
+  .ui-field b.focus { border-color: var(--blue); box-shadow: 0 0 0 2px rgb(43 89 255 / 0.25); }
+  @media (max-width: 760px) { .ui-body { grid-template-columns: 52px 1fr; } .ui-insp { display: none; } }
+
+  /* ---- Misuse ---- */
+  .donts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+  .donts .plate { aspect-ratio: 1; background: var(--mist-50); border-radius: 6px; display: grid; place-items: center; position: relative; overflow: hidden; }
+  .donts .plate::after { content: ""; position: absolute; inset: 0; background: linear-gradient(to top right, transparent calc(50% - 1px), var(--red) calc(50% - 1px), var(--red) calc(50% + 1px), transparent calc(50% + 1px)); opacity: 0.85; }
+  .donts svg { width: 52%; height: auto; }
+  .donts p { margin: 10px 0 0; font-size: 0.92rem; }
+  @media (max-width: 760px) { .donts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+  /* ---- Files ---- */
+  .files { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+  .files th, .files td { text-align: left; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--mist-200); vertical-align: top; }
+  .files th { font-weight: 600; border-bottom-color: var(--ink); }
+  .files td:first-child { white-space: nowrap; }
+  .table-scroll { overflow-x: auto; }
+
+  .note { margin: 0; padding: 20px 22px; background: var(--mist-50); border-left: 3px solid var(--ink); max-width: var(--measure); }
+  footer.end { padding: 48px 0 64px; border-top: 1px solid var(--mist-200); color: var(--steel); font-size: 0.9rem; display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  footer.end svg { width: 120px; height: auto; display: block; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="wx-symbol" viewBox="4 10 56 44">
+      <path d="M20 10L28 10L30.8 17.7L26.8 28.7ZM37.2 35.3L40 43L52 10L60 10L44 54L36 54L33.2 46.3ZM4 10L12 10L24 43L36 10L44 10L28 54L20 54Z"/>
+    </symbol>
+    <symbol id="wx-wordmark" viewBox="0 0 272.2 41.2">
+      <path transform="translate(0 0.6)" d="M0 0L6 0L17.5 40L11.5 40ZM23 0L29 0L17.5 40L11.5 40ZM23 0L29 0L40.5 40L34.5 40ZM46 0L52 0L40.5 40L34.5 40ZM62 20a20.6 20.6 0 1 1 41.2 0a20.6 20.6 0 1 1 -41.2 0ZM68 20a14.6 14.6 0 1 0 29.2 0a14.6 14.6 0 1 0 -29.2 0ZM112.2 0L118.4 0L132.3 40L126.1 40ZM140 0L146.2 0L132.3 40L126.1 40ZM157.2 0L162.8 0L162.8 40L157.2 40ZM157.2 0L185.2 0L185.2 5.6L157.2 5.6ZM157.2 17.2L182.2 17.2L182.2 22.8L157.2 22.8ZM157.2 34.4L185.2 34.4L185.2 40L157.2 40ZM195.2 0L202.2 0L229.2 40L222.2 40ZM222.2 0L229.2 0L202.2 40L195.2 40ZM251.1 0L257.3 0L242.4 40L236.2 40ZM251.1 0L257.3 0L272.2 40L266 40ZM244.031 24.5L264.369 24.5L264.369 30.1L244.031 30.1Z"/>
+    </symbol>
+  </defs>
+</svg>
+
+<main class="wrap">
+  <section class="hero" aria-labelledby="title">
+    <svg class="hero-mark" viewBox="4 10 56 44" aria-hidden="true">
+      <path class="t-under-a" d="M20 10L28 10L30.8 17.7L26.8 28.7Z"/>
+      <path class="t-under-b" d="M37.2 35.3L40 43L52 10L60 10L44 54L36 54L33.2 46.3Z"/>
+      <path class="t-over" d="M4 10L12 10L24 43L36 10L44 10L28 54L20 54Z"/>
+    </svg>
+    <div>
+      <h1 id="title"><svg role="img" aria-label="WOVEXA"><use href="#wx-wordmark"/></svg></h1>
+      <p class="slogan">From Concept to Creation.</p>
+      <p class="hero-meta">Brand guidelines for WOVEXA, the apparel design studio. Version 1.0, November 2026.</p>
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="mark">
+    <header>
+      <h2 id="mark">The symbol</h2>
+      <p>A W woven from two threads.</p>
+    </header>
+    <div>
+      <p class="lede">The symbol is two V strokes laid side by side. Where they meet, the first passes over the second, the way a weft thread crosses the warp. That single crossing is what makes the W ours: it says <em>woven</em> without drawing fabric. Strokes are parallel-sided with flat, horizontal ends.</p>
+      <div class="figs">
+        <figure class="fig">
+          <div class="plate mist">
+            <svg viewBox="0 0 64 64" style="width:78%;height:auto" aria-label="Construction grid">
+              <g stroke="#dcdee4" stroke-width="0.2">
+                <path d="M0 4H64M0 8H64M0 12H64M0 16H64M0 20H64M0 24H64M0 28H64M0 32H64M0 36H64M0 40H64M0 44H64M0 48H64M0 52H64M0 56H64M0 60H64"/>
+                <path d="M4 0V64M8 0V64M12 0V64M16 0V64M20 0V64M24 0V64M28 0V64M32 0V64M36 0V64M40 0V64M44 0V64M48 0V64M52 0V64M56 0V64M60 0V64"/>
+              </g>
+              <use href="#wx-symbol" x="4" y="10" width="56" height="44" fill="#000"/>
+              <g fill="none" stroke="#2b59ff" stroke-width="0.45" stroke-dasharray="1.2 0.8">
+                <polyline points="8,10 24,54 40,10"/>
+                <polyline points="24,10 40,54 56,10"/>
+              </g>
+              <circle cx="32" cy="32" r="3.2" fill="none" stroke="#2b59ff" stroke-width="0.45"/>
+            </svg>
+          </div>
+          <figcaption><strong>Construction.</strong> 64-unit grid. Each stroke is 8 units wide, centrelines run 8–24–40 and 24–40–56. The crossing sits on the centre of the grid.</figcaption>
+        </figure>
+        <figure class="fig">
+          <div class="plate">
+            <svg viewBox="-12 -6 88 76" style="width:72%;height:auto" aria-label="Clear space">
+              <rect x="-12" y="-6" width="88" height="76" fill="none" stroke="#2b59ff" stroke-width="0.45" stroke-dasharray="1.2 0.8"/>
+              <rect x="4" y="10" width="56" height="44" fill="none" stroke="#dcdee4" stroke-width="0.3"/>
+              <use href="#wx-symbol" x="4" y="10" width="56" height="44" fill="#000"/>
+            </svg>
+          </div>
+          <figcaption><strong>Clear space.</strong> Keep 16 units, two stroke widths, empty on every side. Nothing else enters the dashed line.</figcaption>
+        </figure>
+      </div>
+      <dl class="specs">
+        <div><dt>Stroke width</dt><dd class="num">8 units</dd></div>
+        <div><dt>Crossing gap</dt><dd class="num">2.4 units</dd></div>
+        <div><dt>Proportion</dt><dd class="num">56 × 44</dd></div>
+        <div><dt>Smallest on screen</dt><dd class="num">16 px tall</dd></div>
+        <div><dt>Smallest in print</dt><dd class="num">6 mm tall</dd></div>
+        <div><dt>Colours</dt><dd>Black or white only</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="name">
+    <header>
+      <h2 id="name">The name</h2>
+      <p>Three parts, one word.</p>
+    </header>
+    <div>
+      <div class="name-parts">
+        <div><div class="syll">WOV</div><p>From <em>woven</em>: textiles, fabric and the clothes made from them.</p></div>
+        <div><div class="syll">EX</div><p>Exploration, experimentation and creative expression.</p></div>
+        <div><div class="syll">A</div><p>A clean ending that keeps the name modern and easy to remember.</p></div>
+      </div>
+      <dl class="specs">
+        <div><dt>Wordmark and logo</dt><dd>WOVEXA</dd></div>
+        <div><dt>In sentences</dt><dd>Wovexa, Wovexa Studio</dd></div>
+        <div><dt>Full name</dt><dd>WOVEXA, Apparel Design Studio</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="lockups">
+    <header>
+      <h2 id="lockups">Wordmark and lockups</h2>
+      <p>The letters are drawn, not typed.</p>
+    </header>
+    <div>
+      <p class="lede">The wordmark is built from the same straight strokes and flat ends as the symbol, with one round O. Use the horizontal lockup by default; use the stacked lockup in square spaces such as profile images and packaging tags.</p>
+      <div class="figs">
+        <figure class="fig span-2">
+          <div class="plate">
+            <svg viewBox="0 0 223.71 44" style="width:min(100%,520px);height:auto" role="img" aria-label="WOVEXA horizontal lockup">
+              <use href="#wx-symbol" x="0" y="0" width="56" height="44" fill="#000"/>
+              <use href="#wx-wordmark" x="74" y="10.67" width="149.71" height="22.66" fill="#000"/>
+            </svg>
+          </div>
+          <figcaption><strong>Horizontal lockup.</strong> Wordmark cap height is half the symbol height. The gap between them is 18 units.</figcaption>
+        </figure>
+        <figure class="fig">
+          <div class="plate dark">
+            <svg viewBox="0 0 128 80" style="width:56%;height:auto" role="img" aria-label="WOVEXA stacked lockup, reversed">
+              <use href="#wx-symbol" x="36" y="0" width="56" height="44" fill="#fff"/>
+              <use href="#wx-wordmark" x="0" y="60" width="128" height="19.37" fill="#fff"/>
+            </svg>
+          </div>
+          <figcaption><strong>Stacked, reversed.</strong> On black, the whole lockup turns white. Never mix black and white within one lockup.</figcaption>
+        </figure>
+        <figure class="fig">
+          <div class="plate mist">
+            <svg viewBox="0 0 272.2 41.2" style="width:78%;height:auto" role="img" aria-label="WOVEXA wordmark">
+              <use href="#wx-wordmark" fill="#000"/>
+            </svg>
+          </div>
+          <figcaption><strong>Wordmark alone.</strong> For places where the symbol already appears nearby, such as a page footer under an app icon.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="colour">
+    <header>
+      <h2 id="colour">Colour</h2>
+      <p>Black and white carry the brand. Blue only shows the way.</p>
+    </header>
+    <div>
+      <p class="lede">The identity is black and white, so a garment's own colours always win. Wovexa Blue belongs to the product: it marks the active tool, the focused field and the one primary action on a screen. It never recolours the logo, with one exception: the blue app icon.</p>
+      <div class="swatches">
+        <div class="swatch"><div class="chip" style="background:#000"></div><h3>Ink</h3><p><span class="code">#000000</span><br>Logo, headlines, body text</p></div>
+        <div class="swatch"><div class="chip" style="background:#fff"></div><h3>Paper</h3><p><span class="code">#FFFFFF</span><br>Backgrounds, reversed logo</p></div>
+        <div class="swatch"><div class="chip" style="background:#2b59ff;border-color:#2b59ff"></div><h3>Wovexa Blue</h3><p><span class="code">#2B59FF</span><br>Accent on light, <span class="num">5.3:1</span> on white</p></div>
+        <div class="swatch"><div class="chip" style="background:#5b82ff;border-color:#5b82ff"></div><h3>Blue on dark</h3><p><span class="code">#5B82FF</span><br>Accent on graphite, <span class="num">5.6:1</span></p></div>
+      </div>
+      <div class="swatches minor" style="margin-top:24px">
+        <div class="swatch"><div class="chip" style="background:#17181c;border-color:#17181c"></div><h3>Graphite</h3><p><span class="code">#17181C</span><br>Dark interface panels</p></div>
+        <div class="swatch"><div class="chip" style="background:#6b6f7a;border-color:#6b6f7a"></div><h3>Steel</h3><p><span class="code">#6B6F7A</span><br>Secondary text, <span class="num">5.0:1</span></p></div>
+        <div class="swatch"><div class="chip" style="background:#dcdee4"></div><h3>Mist</h3><p><span class="code">#DCDEE4</span><br>Borders and rules</p></div>
+        <div class="swatch"><div class="chip" style="background:#f5f6f8"></div><h3>Canvas</h3><p><span class="code">#F5F6F8</span><br>Editor background</p></div>
+      </div>
+      <div class="ratio" role="img" aria-label="Colour proportions: paper 62 percent, ink 26 percent, neutrals 9 percent, blue 3 percent">
+        <span style="width:62%;background:#fff"></span>
+        <span style="width:26%;background:#000"></span>
+        <span style="width:9%;background:#dcdee4"></span>
+        <span style="width:3%;background:#2b59ff"></span>
+      </div>
+      <ul class="ratio-legend">
+        <li><i style="background:#fff"></i>Paper 62%</li>
+        <li><i style="background:#000"></i>Ink 26%</li>
+        <li><i style="background:#dcdee4"></i>Neutrals 9%</li>
+        <li><i style="background:#2b59ff;border-color:#2b59ff"></i>Blue 3% or less</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="type">
+    <header>
+      <h2 id="type">Typography</h2>
+      <p>Archivo, stretched for a voice, normal for work.</p>
+    </header>
+    <div>
+      <p class="lede">One family does everything. Archivo's width axis lets headlines run wide, echoing the open stance of the wordmark, while interface text stays at normal width for density. Measurements always use tabular figures so columns of numbers line up. Khmer and Chinese text falls back to Noto Sans Khmer and Noto Sans SC.</p>
+      <div class="specimen">
+        <div class="row"><div class="meta">Display<br>wdth 125, wght 640</div><div class="t-display">Design. Visualize. Produce.</div></div>
+        <div class="row"><div class="meta">Heading 1<br>wdth 115, 40 px</div><div class="t-h1">Every edit, on the garment</div></div>
+        <div class="row"><div class="meta">Heading 2<br>wdth 100, 28 px</div><div class="t-h2">Print zones and preflight</div></div>
+        <div class="row"><div class="meta">Body<br>16 px, 1.55</div><div class="t-body">Place artwork in real millimetres, see it on the shirt immediately, and hand the factory files that match what you approved.</div></div>
+        <div class="row"><div class="meta">Interface<br>13 px, wght 500</div><div class="t-ui">Front · Back · Left sleeve · Right sleeve</div></div>
+        <div class="row"><div class="meta">Measurements<br>tabular figures</div><div class="t-num">280.0 × 340.0 mm &nbsp; 312 dpi &nbsp; x 14.5 &nbsp; y −8.0</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="modules">
+    <header>
+      <h2 id="modules">Product modules</h2>
+      <p>One studio, five rooms.</p>
+    </header>
+    <div>
+      <p class="lede">Module names pair the symbol with "Wovexa" in title case and a plain noun. They share one account and one project, so a design made in Studio is the same design in 3D, Render and Production.</p>
+      <ul class="modules">
+        <li><div class="module-lockup"><svg viewBox="4 10 56 44" aria-hidden="true"><use href="#wx-symbol"/></svg>Wovexa Studio</div><p>The 2D editor: artwork, text, layers and print zones in real millimetres.</p></li>
+        <li><div class="module-lockup"><svg viewBox="4 10 56 44" aria-hidden="true"><use href="#wx-symbol"/></svg>Wovexa 3D</div><p>The live garment: every edit shown on the shirt as you make it, in any colourway.</p></li>
+        <li><div class="module-lockup"><svg viewBox="4 10 56 44" aria-hidden="true"><use href="#wx-symbol"/></svg>Wovexa Render</div><p>Product images and turntables for shops, lookbooks and social posts.</p></li>
+        <li><div class="module-lockup"><svg viewBox="4 10 56 44" aria-hidden="true"><use href="#wx-symbol"/></svg>Wovexa Production</div><p>Preflight checks, print files and tech packs locked to the approved version.</p></li>
+        <li><div class="module-lockup"><svg viewBox="4 10 56 44" aria-hidden="true"><use href="#wx-symbol"/></svg>Wovexa AI</div><p>Optional help, such as background removal, that you can always undo.</p></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="product">
+    <header>
+      <h2 id="product">In the product</h2>
+      <p>Blue appears where your attention should go.</p>
+    </header>
+    <div>
+      <p class="lede">The interface stays neutral around a full-colour garment. Blue marks the selected tool, the selection box, the focused field and the main action, and nothing else.</p>
+      <div class="ui-demo" aria-label="Interface example" role="img">
+        <div class="ui-bar">
+          <svg viewBox="4 10 56 44" style="width:22px;height:auto" aria-hidden="true"><use href="#wx-symbol"/></svg>
+          <span class="proj">Summer drop tee</span><span class="saved">Saved</span>
+          <span class="spacer"></span>
+          <span class="ui-seg"><span>2D</span><span class="on">Split</span><span>3D</span></span>
+          <button class="ui-btn" type="button" tabindex="-1">Export</button>
+        </div>
+        <div class="ui-body">
+          <div class="ui-rail">
+            <span class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 3l7 17 2.5-7.5L21 10z"/></svg></span>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 5h14M12 5v14"/></svg></span>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 15l5-4 4 3 3-2 4 3"/></svg></span>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/></svg></span>
+          </div>
+          <div class="ui-stage"><div class="board"><div class="sel"><svg viewBox="0 0 272.2 41.2" aria-hidden="true"><use href="#wx-wordmark"/></svg></div></div></div>
+          <div class="ui-insp">
+            <h4>Position and size</h4>
+            <div class="ui-field"><span>Width</span><b class="focus">280.0 mm</b></div>
+            <div class="ui-field"><span>Height</span><b>42.4 mm</b></div>
+            <div class="ui-field"><span>X</span><b>0.0 mm</b></div>
+            <div class="ui-field"><span>Y</span><b>−96.0 mm</b></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="misuse">
+    <header>
+      <h2 id="misuse">Keep it intact</h2>
+      <p>The symbol only works when its geometry does.</p>
+    </header>
+    <div class="donts">
+      <div><div class="plate"><svg viewBox="4 10 56 44" aria-hidden="true"><use href="#wx-symbol" fill="#2b59ff"/></svg></div><p>Don't recolour the symbol. Blue is for the interface.</p></div>
+      <div><div class="plate"><svg viewBox="2 8 60 48" aria-hidden="true"><use href="#wx-symbol" x="4" y="10" width="56" height="44" fill="none" stroke="#000" stroke-width="1"/></svg></div><p>Don't outline it or add shadows and gradients.</p></div>
+      <div><div class="plate"><svg viewBox="4 10 56 44" preserveAspectRatio="none" style="width:70%;height:30%" aria-hidden="true"><use href="#wx-symbol"/></svg></div><p>Don't stretch or squash it.</p></div>
+      <div><div class="plate"><svg viewBox="4 10 56 44" style="transform:rotate(-14deg)" aria-hidden="true"><use href="#wx-symbol"/></svg></div><p>Don't rotate it or set it at an angle.</p></div>
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="icon">
+    <header>
+      <h2 id="icon">App icon</h2>
+      <p>The only place the symbol meets blue.</p>
+    </header>
+    <div class="figs">
+      <figure class="fig">
+        <div class="plate mist">
+          <div style="display:flex;gap:24px;align-items:center">
+            <svg viewBox="0 0 512 512" style="width:112px;height:auto" aria-label="Black app icon"><rect width="512" height="512" rx="112" fill="#000"/><use href="#wx-symbol" x="110.4" y="141.6" width="291.2" height="228.8" fill="#fff"/></svg>
+            <svg viewBox="0 0 512 512" style="width:112px;height:auto" aria-label="Blue app icon"><rect width="512" height="512" rx="112" fill="#2b59ff"/><use href="#wx-symbol" x="110.4" y="141.6" width="291.2" height="228.8" fill="#fff"/></svg>
+          </div>
+        </div>
+        <figcaption><strong>Black is the default.</strong> The blue icon is approved for app stores and launch screens where the black one would disappear.</figcaption>
+      </figure>
+      <figure class="fig">
+        <div class="plate mist">
+          <div style="display:flex;gap:20px;align-items:end">
+            <svg viewBox="0 0 64 64" style="width:64px;height:auto" aria-label="Favicon at 64 pixels"><rect width="64" height="64" rx="14"/><use href="#wx-symbol" x="4" y="10" width="56" height="44" fill="#fff"/></svg>
+            <svg viewBox="0 0 64 64" style="width:32px;height:auto" aria-label="Favicon at 32 pixels"><rect width="64" height="64" rx="14"/><use href="#wx-symbol" x="4" y="10" width="56" height="44" fill="#fff"/></svg>
+            <svg viewBox="0 0 64 64" style="width:16px;height:auto" aria-label="Favicon at 16 pixels"><rect width="64" height="64" rx="14"/><use href="#wx-symbol" x="4" y="10" width="56" height="44" fill="#fff"/></svg>
+          </div>
+        </div>
+        <figcaption><strong>Favicon.</strong> Holds together down to 16 px. The maskable PWA icon keeps the symbol inside the central 80% safe circle.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="files">
+    <header>
+      <h2 id="files">Files</h2>
+      <p>Everything in the <code>brand/</code> folder.</p>
+    </header>
+    <div class="table-scroll">
+      <table class="files">
+        <thead><tr><th>File</th><th>Use it for</th></tr></thead>
+        <tbody>
+          <tr><td><code>logo/wovexa-symbol-black.svg</code>, <code>-white.svg</code></td><td>The symbol alone</td></tr>
+          <tr><td><code>logo/wovexa-wordmark-black.svg</code>, <code>-white.svg</code></td><td>The wordmark alone</td></tr>
+          <tr><td><code>logo/wovexa-lockup-horizontal-black.svg</code>, <code>-white.svg</code></td><td>Default logo: website headers, documents, email signatures</td></tr>
+          <tr><td><code>logo/wovexa-lockup-stacked-black.svg</code>, <code>-white.svg</code></td><td>Square spaces: profile images, tags, packaging</td></tr>
+          <tr><td><code>logo/wovexa-app-icon-black.svg</code>, <code>-blue.svg</code></td><td>App and store icons</td></tr>
+          <tr><td><code>logo/wovexa-app-icon-maskable.svg</code></td><td>PWA maskable icon (full bleed)</td></tr>
+          <tr><td><code>logo/wovexa-favicon.svg</code></td><td>Browser tab icon</td></tr>
+          <tr><td><code>tokens/wovexa-tokens.css</code>, <code>.json</code></td><td>Colour, type, spacing and motion values for code and design tools</td></tr>
+          <tr><td><code>scripts/build-logos.mjs</code></td><td>Regenerates every logo file from one set of geometry</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="clearance">
+    <header>
+      <h2 id="clearance">Before launch</h2>
+      <p>An open item, not a formality.</p>
+    </header>
+    <p class="note">A preliminary web search found no established apparel-design platform called WOVEXA. That is not trademark or domain clearance. Search the trademark registers in each market you plan to sell in, check the domain and social handles, and record the result before the name goes public.</p>
+  </section>
+
+  <footer class="end">
+    <svg viewBox="0 0 223.71 44" role="img" aria-label="WOVEXA"><use href="#wx-symbol" x="0" y="0" width="56" height="44"/><use href="#wx-wordmark" x="74" y="10.67" width="149.71" height="22.66"/></svg>
+    <span>From Concept to Creation.</span>
+  </footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,40 @@
+{
+  "$description": "WOVEXA design tokens v1.0 (November 2026). Mirrors wovexa-tokens.css.",
+  "color": {
+    "ink": { "$value": "#000000", "$description": "Logo and primary type" },
+    "paper": { "$value": "#FFFFFF", "$description": "Reversed logo and light surfaces" },
+    "blue": { "$value": "#2B59FF", "$description": "Wovexa Blue. Interface accent on light surfaces only. 5.3:1 on white" },
+    "blueBright": { "$value": "#5B82FF", "$description": "Accent on dark surfaces. 5.6:1 on graphite-950" },
+    "blueDeep": { "$value": "#1A3FD6", "$description": "Pressed accent on light" },
+    "blueWash": { "$value": "#EEF2FF", "$description": "Selected rows on light" },
+    "graphite950": { "$value": "#0D0E11" },
+    "graphite900": { "$value": "#17181C" },
+    "graphite800": { "$value": "#212329" },
+    "graphite700": { "$value": "#2E3139" },
+    "steel500": { "$value": "#6B6F7A", "$description": "Secondary text on light. 5.0:1 on white" },
+    "steel400": { "$value": "#8C909B" },
+    "steel300": { "$value": "#B9BCC5" },
+    "mist200": { "$value": "#DCDEE4" },
+    "mist100": { "$value": "#E9EAEE" },
+    "mist50": { "$value": "#F5F6F8" },
+    "success": { "$value": "#1F8A4C" },
+    "warning": { "$value": "#B45F06" },
+    "danger": { "$value": "#D0312D" }
+  },
+  "font": {
+    "sans": { "$value": "Archivo", "$description": "Variable: wdth 62–125, wght 100–900. Display at wdth 125, interface at wdth 100. Fallbacks: Noto Sans Khmer, Noto Sans SC" },
+    "numeric": { "$value": "tabular-nums", "$description": "All measurements, coordinates and DPI values" }
+  },
+  "size": {
+    "xs": "12px", "sm": "13px", "base": "16px", "lg": "20px", "xl": "28px", "2xl": "40px", "3xl": "64px"
+  },
+  "space": { "1": "4px", "2": "8px", "3": "12px", "4": "16px", "6": "24px", "8": "32px" },
+  "radius": { "control": "8px", "panel": "12px", "sheet": "20px" },
+  "layout": { "toolbarHeight": "52px", "toolrailWidth": "56px", "inspectorWidth": "312px", "touchTarget": "44px" },
+  "motion": { "fast": "120ms", "normal": "180ms", "ease": "cubic-bezier(0.2, 0, 0, 1)" },
+  "logo": {
+    "symbolClearSpace": "16 units on the 64-unit grid (2× stroke width) on every side",
+    "symbolMinSize": "16px tall on screen, 6mm printed",
+    "horizontalLockupMinWidth": "96px on screen, 30mm printed"
+  }
+}

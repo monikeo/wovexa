@@ -1,0 +1,148 @@
+/*
+ * WOVEXA design tokens, v1.0 (November 2026)
+ * Source of truth for colour, type, spacing, radius and motion.
+ * The web app mirrors this file in web/src/app/tokens.css; change both together.
+ *
+ * Primitives describe the palette. Semantic tokens (spec §22.2) are what components use.
+ */
+
+:root {
+  /* ---- Primitives: identity ---- */
+  --wx-ink: #000000;          /* logo, primary type */
+  --wx-paper: #ffffff;        /* logo reversed, light surfaces */
+  --wx-blue: #2b59ff;         /* Wovexa Blue: interface accent on light, 5.3:1 on white */
+  --wx-blue-bright: #5b82ff;  /* accent on dark surfaces, 5.6:1 on graphite */
+  --wx-blue-deep: #1a3fd6;    /* pressed state on light */
+  --wx-blue-wash: #eef2ff;    /* selected rows, light */
+
+  /* ---- Primitives: neutrals (cool, slightly blue-shifted to sit with the accent) ---- */
+  --wx-graphite-950: #0d0e11;
+  --wx-graphite-900: #17181c;
+  --wx-graphite-800: #212329;
+  --wx-graphite-700: #2e3139;
+  --wx-steel-500: #6b6f7a;    /* secondary text, 5.0:1 on white */
+  --wx-steel-400: #8c909b;
+  --wx-steel-300: #b9bcc5;
+  --wx-mist-200: #dcdee4;
+  --wx-mist-100: #e9eaee;
+  --wx-mist-50: #f5f6f8;
+
+  /* ---- Primitives: status (always paired with an icon and a label) ---- */
+  --wx-green: #1f8a4c;
+  --wx-amber: #b45f06;
+  --wx-red: #d0312d;
+
+  /* ---- Type ---- */
+  --wx-font-sans: "Archivo", "Noto Sans Khmer", "Noto Sans SC", system-ui, sans-serif;
+  --wx-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace; /* hex codes and IDs only */
+  --wx-width-display: 125;    /* Archivo wdth axis: expanded for display */
+  --wx-width-text: 100;       /* normal for interface and body */
+  --wx-text-xs: 0.75rem;      /* 12 */
+  --wx-text-sm: 0.8125rem;    /* 13: dense tool chrome */
+  --wx-text-base: 1rem;       /* 16 */
+  --wx-text-lg: 1.25rem;      /* 20 */
+  --wx-text-xl: 1.75rem;      /* 28 */
+  --wx-text-2xl: 2.5rem;      /* 40 */
+  --wx-text-3xl: 4rem;        /* 64 */
+
+  /* ---- Space (4px base) and shape ---- */
+  --wx-space-1: 4px;
+  --wx-space-2: 8px;
+  --wx-space-3: 12px;
+  --wx-space-4: 16px;
+  --wx-space-6: 24px;
+  --wx-space-8: 32px;
+  --wx-radius-control: 8px;
+  --wx-radius-panel: 12px;
+  --wx-radius-sheet: 20px;
+
+  /* ---- Layout (spec §21–22) ---- */
+  --toolbar-height: 52px;
+  --toolrail-width: 56px;
+  --inspector-width: 312px;
+  --touch-target: 44px;
+  --sheet-radius: var(--wx-radius-sheet);
+
+  /* ---- Motion ---- */
+  --motion-fast: 120ms;
+  --motion-normal: 180ms;
+  --motion-ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* ---- Semantic: light theme ---- */
+  --surface-canvas: var(--wx-mist-50);
+  --surface-panel: var(--wx-paper);
+  --surface-floating: var(--wx-paper);
+  --surface-hover: var(--wx-mist-100);
+  --surface-selected: var(--wx-blue-wash);
+  --text-primary: var(--wx-ink);
+  --text-secondary: var(--wx-steel-500);
+  --text-muted: var(--wx-steel-400);
+  --border: var(--wx-mist-200);
+  --border-strong: var(--wx-steel-300);
+  --focus-ring: var(--wx-blue);
+  --accent: var(--wx-blue);
+  --accent-pressed: var(--wx-blue-deep);
+  --accent-foreground: var(--wx-paper);
+  --success: var(--wx-green);
+  --warning: var(--wx-amber);
+  --danger: var(--wx-red);
+  --overlay-guide: rgb(43 89 255 / 0.55);
+  --overlay-zone: rgb(43 89 255 / 0.08);
+  --overlay-safe: rgb(31 138 76 / 0.6);
+  --overlay-scrim: rgb(13 14 17 / 0.45);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --surface-canvas: var(--wx-graphite-950);
+    --surface-panel: var(--wx-graphite-900);
+    --surface-floating: var(--wx-graphite-800);
+    --surface-hover: var(--wx-graphite-800);
+    --surface-selected: rgb(91 130 255 / 0.16);
+    --text-primary: #f4f5f7;
+    --text-secondary: var(--wx-steel-300);
+    --text-muted: var(--wx-steel-400);
+    --border: var(--wx-graphite-700);
+    --border-strong: #454953;
+    --focus-ring: var(--wx-blue-bright);
+    --accent: var(--wx-blue-bright);
+    --accent-pressed: var(--wx-blue);
+    --accent-foreground: var(--wx-graphite-950);
+    --success: #4cc282;
+    --warning: #f0a54a;
+    --danger: #ff6b66;
+    --overlay-guide: rgb(91 130 255 / 0.7);
+    --overlay-zone: rgb(91 130 255 / 0.1);
+    --overlay-scrim: rgb(0 0 0 / 0.6);
+  }
+}
+
+:root[data-theme="dark"] {
+  --surface-canvas: var(--wx-graphite-950);
+  --surface-panel: var(--wx-graphite-900);
+  --surface-floating: var(--wx-graphite-800);
+  --surface-hover: var(--wx-graphite-800);
+  --surface-selected: rgb(91 130 255 / 0.16);
+  --text-primary: #f4f5f7;
+  --text-secondary: var(--wx-steel-300);
+  --text-muted: var(--wx-steel-400);
+  --border: var(--wx-graphite-700);
+  --border-strong: #454953;
+  --focus-ring: var(--wx-blue-bright);
+  --accent: var(--wx-blue-bright);
+  --accent-pressed: var(--wx-blue);
+  --accent-foreground: var(--wx-graphite-950);
+  --success: #4cc282;
+  --warning: #f0a54a;
+  --danger: #ff6b66;
+  --overlay-guide: rgb(91 130 255 / 0.7);
+  --overlay-zone: rgb(91 130 255 / 0.1);
+  --overlay-scrim: rgb(0 0 0 / 0.6);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-normal: 0ms;
+  }
+}
