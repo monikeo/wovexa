@@ -7,6 +7,7 @@ import { buildGarment } from '@/components/studio/viewer3d/garment-geometry';
 import { drawPart, partSizeMm } from '@/components/studio/viewer3d/garment-textures';
 import { getGarment, getSize, partColor, type PartId } from '@/domain/garments';
 import type { Colorway, DesignDocument } from '@/domain/schema';
+import { BLEED_MM } from './marker-layout';
 
 export interface CutPiece {
   id: string;
@@ -17,7 +18,6 @@ export interface CutPiece {
   heightMm: number;
 }
 
-const BLEED_MM = 10;
 const MARGIN_MM = 14;
 
 export function renderCutAndSew(doc: DesignDocument, colorway: Colorway, caption: string): CutPiece[] {

@@ -124,6 +124,14 @@ export interface GarmentGeometry {
   limbPivots: Partial<Record<1 | 2 | 3 | 4, [number, number, number]>>;
 }
 
+/** A part's texture in millimetres: fabric width around the part (u) by its length (v). */
+export function partSizeMm(geo: Pick<GarmentGeometry, 'layout'>, part: PartId) {
+  const l = geo.layout;
+  if (part === 'torso') return { w: l.torsoCircumferenceMm, h: l.torsoHeightMm };
+  if (part === 'sleeveLeft' || part === 'sleeveRight') return { w: l.sleeveCircumferenceMm, h: l.sleeveLengthMm };
+  return { w: l.legCircumferenceMm, h: l.legLengthMm };
+}
+
 type Detail = 'low' | 'high';
 
 function gridGeometry(position: Float32Array, uv: Float32Array, nu: number, nv: number, flip: boolean, colors?: Float32Array) {

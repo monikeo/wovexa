@@ -7,6 +7,8 @@
  *   team/                  personalised print files per person, roster and size breakdown
  *   flats/                 placement drawings per colourway
  *   mockups/               3D product images per colourway
+ *   cut-and-sew/           every pattern piece with its all-over print and bleed
+ *   marker/                every piece of the order nested on the fabric roll, in roll lengths
  *   proof.pdf              two-page client proof with an approval line
  *   tech-sheet.html        the full spec, linking to the files above
  *   colourways.csv         every colour part as HEX, RGB and approximate CMYK
@@ -25,6 +27,8 @@ import { renderZoneSketch } from '@/lib/thumbnail';
 import { fileSafe, formatName, isoDate, revisionLabel } from './naming';
 import { pngBlobWithDpi } from './png-dpi';
 import { renderCutAndSew } from './cut-and-sew';
+import { buildMarker, type MarkerSummary } from './marker';
+import { DEFAULT_MARKER, type MarkerSettings } from './marker-layout';
 import { buildProofPdf, placementText, type ProofInput } from './proof';
 import { personalise, personalisedZones, sizeBreakdown, toCsv, type Roster } from './roster';
 import { buildSeparations, type Ink } from './separations';
@@ -44,11 +48,15 @@ export interface PackageOptions {
     techSheet: boolean;
     /** Every pattern piece with its all-over print, for sublimation (main colourway). */
     cutAndSew?: boolean;
+    /** Every piece of the order nested on the fabric roll, printed at true size (main colourway). */
+    marker?: boolean;
     /** The garment as a GLB 3D model (main colourway). */
     model?: boolean;
   };
   colorways: 'active' | 'all';
+  /** The order: one garment per row in its size; names and numbers personalise prints. */
   roster?: Roster | null;
+  marker?: MarkerSettings;
 }
 
 export interface ProductShot {
@@ -87,7 +95,11 @@ export interface PackageResult {
   warnings: string[];
   /** v3, r12 or a design ID: see revisionLabel. */
   revision: string;
+  marker?: MarkerSummary;
 }
+
+/** Progress units the marker counts for: nesting, printing pieces and writing roll lengths take a while. */
+const MARKER_STEPS = 8;
 
 /** Fonts the print files use and where they come from, so the factory can check licensing (spec AST-07). */
 export async function fontsUsed(doc: DesignDocument) {
@@ -283,12 +295,13 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
     1 +
     zones.length +
     screenZones.length +
-    (roster ? roster.rows.length : 0) +
+    (roster && teamZones.length ? roster.rows.length : 0) +
     (opts.include.flats ? colorways.length : 0) +
     (opts.include.mockups ? colorways.length : 0) +
     (opts.include.proof ? 2 : 0) +
     (opts.include.techSheet ? 1 : 0) +
     (opts.include.cutAndSew ? 1 : 0) +
+    (opts.include.marker ? MARKER_STEPS : 0) +
     (opts.include.model ? 1 : 0);
   let done = 0;
   const step = (label: string) => {
@@ -372,8 +385,10 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
   // ---- Team order: one print set per person ----
   let teamFile: string | undefined;
   if (roster) {
-    if (!teamZones.length) warnings.push('The roster was not used: add {name} or {number} to a text layer to personalise it.');
-    else {
+    if (!teamZones.length) {
+      // A roster of sizes alone is an order for the marker; names and numbers need a placeholder to print.
+      if (roster.fields.some((f) => f !== 'size')) warnings.push('Names and numbers were not printed: add {name} or {number} to a text layer to personalise them.');
+    } else {
       const listing: (string | number)[][] = [['#', ...roster.fields, 'files']];
       for (let i = 0; i < roster.rows.length; i++) {
         const row = roster.rows[i];
@@ -447,6 +462,28 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
       release(piece.canvas);
     }
   }
+  let marker: MarkerSummary | undefined;
+  if (opts.include.marker) {
+    step('Fabric marker');
+    const start = done - 1;
+    const made = await buildMarker(doc, active, roster, opts.marker ?? DEFAULT_MARKER, {
+      caption: `${doc.title} · ${active.name} · ${rev}`,
+      personalZones: teamZones,
+      personalise: teamZones.length
+        ? async (row) => {
+            const person = personalise(doc, row);
+            await ensureFonts(teamZones.map((z) => person.zones[z]));
+            return fitPersonalisedText(person, doc);
+          }
+        : undefined,
+      signal: ctx.signal,
+      onProgress: (label, fraction) => ctx.onProgress?.(label, Math.min(0.99, (start + fraction * MARKER_STEPS) / total)),
+    });
+    for (const f of made.files) await add(f.path, f.blob);
+    warnings.push(...made.warnings);
+    marker = made.summary;
+    done = start + MARKER_STEPS;
+  }
   if (opts.include.model) {
     step('3D model');
     if (!ctx.renderModel) warnings.push('The 3D model was skipped: open the 3D or Split view to include it.');
@@ -496,6 +533,7 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
         fonts,
         issues,
         team: teamFile && roster ? { people: roster.rows.length, sizes: sizeBreakdown(roster), file: teamFile } : undefined,
+        marker,
       }),
       'text/html;charset=utf-8',
     );
@@ -515,6 +553,15 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
       Object.keys(mockups).length ? 'mockups/            Product images for each colourway.' : null,
       opts.include.cutAndSew ? 'cut-and-sew/        Every pattern piece with its all-over print, 10 mm bleed and a dashed cut line, for sublimation.' : null,
       opts.include.cutAndSew ? '                    Not mirrored: set mirroring for transfer paper in your RIP.' : null,
+      marker
+        ? `marker/             Every piece of the order nested on a ${marker.rollWidthMm / 10} cm roll at true size (${marker.dpi} dpi), in ${marker.lengths.length} roll ${marker.lengths.length === 1 ? 'length' : 'lengths'}:`
+        : null,
+      marker
+        ? `                    ${(marker.lengthMm / 1000).toFixed(2)} m of fabric, ${Math.round(marker.utilisation * 100)}% used. Pieces keep the grain along the roll${marker.allowTurn ? ' and turn 180° at most' : ''}.`
+        : null,
+      marker ? `                    marker-plan.png shows the layout; marker-pieces.csv lists every piece and where it lies.` : null,
+      marker && marker.format === 'pdf' ? '                    PDF cut lines are also CutContour vector paths for print-and-cut RIPs.' : null,
+      marker ? '                    Not mirrored: set mirroring for transfer paper in your RIP.' : null,
       opts.include.model && ctx.renderModel ? '3d/                 The garment as a GLB 3D model, in metres, for viewers, Blender and AR.' : null,
       opts.include.proof ? '*_proof_*.pdf       Client proof with an approval line.' : null,
       opts.include.techSheet ? 'tech-sheet.html     Full specification. Open it in any browser from the unzipped folder.' : null,
@@ -549,6 +596,7 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
     outputs,
     separations: Object.fromEntries(Object.entries(inksByZone).map(([z, inks]) => [z, inks])),
     team: roster && teamZones.length ? { people: roster.rows.length, fields: roster.fields, zones: teamZones, sizes: sizeBreakdown(roster) } : null,
+    marker: marker ?? null,
     fonts,
     preflight: issues,
     production: {
@@ -563,5 +611,5 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
   };
   await zip.add('manifest.json', JSON.stringify(manifest, null, 2));
   ctx.onProgress?.('Finishing the ZIP', 1);
-  return { blob: zip.finish(), fileName: `${fileSafe(doc.title) || 'wovexa'}_production_${rev}.zip`, files, warnings, revision: rev };
+  return { blob: zip.finish(), fileName: `${fileSafe(doc.title) || 'wovexa'}_production_${rev}.zip`, files, warnings, revision: rev, marker };
 }

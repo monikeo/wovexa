@@ -35,6 +35,61 @@ describe('tech sheet measurements', () => {
     expect(html).toContain('<tr class="sel"><td>170 cm (L) <span class="pill">Sample</span></td><td>61</td><td>83</td><td>54</td><td>34</td><td>105</td><td>2</td></tr>');
     expect(html).toContain('<td>130 cm (2XS)</td><td>51.5</td><td>66</td><td>42</td><td>27</td><td>84</td><td>1</td>');
   });
+
+  it('summarises the fabric marker: fabric, utilisation, roll lengths and plan', () => {
+    const doc = createDocument({ projectId: 'p', title: 'Club uniforms' });
+    const html = buildTechSheet({
+      doc,
+      model: DOBOK,
+      size: getSize(DOBOK, '170'),
+      fabricLabel: 'Diamond weave',
+      approval: 'Draft',
+      revision: 'v1',
+      contentHash: 'abc',
+      dpi: 300,
+      zones: [],
+      colorwayFlats: {},
+      mockups: {},
+      fonts: [],
+      issues: [],
+      marker: {
+        rollWidthMm: 1600,
+        gapMm: 5,
+        marginMm: 15,
+        bleedMm: 10,
+        allowTurn: true,
+        format: 'pdf',
+        dpi: 120,
+        garments: 3,
+        pieces: 18,
+        sizes: [
+          { code: '130', garments: 1 },
+          { code: '170', garments: 2 },
+        ],
+        lengthMm: 6420,
+        fabricAreaM2: 10.272,
+        pieceAreaM2: 7.1,
+        utilisation: 0.6912,
+        perGarmentMm: 2140,
+        lengths: [
+          { file: 'marker/marker_160cm_01-of-02_3.00m.pdf', lengthMm: 3000, pieces: 9, utilisation: 0.7 },
+          { file: 'marker/marker_160cm_02-of-02_3.42m.pdf', lengthMm: 3420, pieces: 9, utilisation: 0.68 },
+        ],
+        plan: 'marker/marker-plan.png',
+        pieceList: 'marker/marker-pieces.csv',
+        unplaced: [],
+        strategy: 'area order, bottom-left',
+      },
+    });
+    expect(html).toContain('<h2>Fabric marker</h2>');
+    expect(html).toContain('6.42 m of 160 cm roll, 10.27 m²');
+    expect(html).toContain('69% cut into pieces (7.10 m²)');
+    expect(html).toContain('2.14 m');
+    expect(html).toContain('130 cm (2XS) × 1, 170 cm (L) × 2');
+    expect(html).toContain('<a href="marker/marker_160cm_02-of-02_3.42m.pdf">');
+    expect(html).toContain('<img class="plan" src="marker/marker-plan.png"');
+    expect(html).toContain('CutContour');
+  });
 });
 
 describe('crc32', () => {

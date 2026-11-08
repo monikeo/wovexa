@@ -494,6 +494,24 @@ export function getSize(model: GarmentModel, code: string): GarmentSize {
   return model.sizes.find((s) => s.code === code) ?? model.sizes.find((s) => s.code === model.defaultSize)!;
 }
 
+/**
+ * The size an order or roster names, as people write it: the code ("M", "170", "K8"), "170 cm",
+ * the letter of a height size ("L" for a 170 dobok), "XXL" for 2XL or "kids 8". Undefined when the
+ * garment has no such size.
+ */
+export function findSize(model: GarmentModel, label: string): GarmentSize | undefined {
+  const norm = (s: string) =>
+    s
+      .toUpperCase()
+      .replace(/\s+/g, '')
+      .replace(/CM$/, '')
+      .replace(/^KIDS?(?=\d)/, 'K')
+      .replace(/^(X{2,})([SL])$/, (_, xs: string, end: string) => `${xs.length}X${end}`);
+  const want = norm(label);
+  if (!want) return undefined;
+  return model.sizes.find((s) => norm(s.code) === want) ?? model.sizes.find((s) => s.alias && norm(s.alias) === want);
+}
+
 /** The spec of a zone this garment has, or undefined (a tank has no sleeves). */
 export function zoneSpecOf(model: GarmentModel, zoneId: ZoneId): ZoneSpec | undefined {
   return model.zones[zoneId];
