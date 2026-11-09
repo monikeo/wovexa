@@ -7,10 +7,11 @@
  *
  * Textures only: the garment's shape, baked shading, lining and motion attributes are untouched.
  */
+import { designAreas } from '@/domain/areas';
 import type { PartId } from '@/domain/garments';
 import { projectedAsArtwork } from '@/domain/projected';
-import type { DesignDocument, ProjectedLayer, ProjectedTransform, ProjectorSpec } from '@/domain/schema';
-import { drawLayerContent, layerBleedMm } from '@/lib/render/zone-renderer';
+import type { DesignArea, DesignDocument, LayerTransform, PrintMethod, ProjectedLayer, ProjectedTransform, ProjectorSpec } from '@/domain/schema';
+import { drawLayerContent, drawZone, drawZoneSurface, layerBleedMm, textRenderEpoch } from '@/lib/render/zone-renderer';
 import type { GarmentGeometry } from './garment-geometry';
 import {
   buildDepthMap,
@@ -28,7 +29,7 @@ import {
   type ProjectionMesh,
   type Vec3,
 } from './projection';
-import { paintMesh, restFromGeometry, type RestShape } from './rest-shape';
+import { paintMesh, restCloth, restFromGeometry, type RestShape } from './rest-shape';
 
 /** A projected layer mid-gesture: where it is being dragged to, or its new size and turn. */
 export interface ProjectionEdit {
@@ -127,34 +128,49 @@ export function layersOnPart(scene: ProjectionScene, part: PartId): ProjectedLay
 export interface Projection {
   frame: DecalFrame;
   parts: Map<PartId, { mesh: ProjectionMesh; projected: ProjectedPart }>;
+  /** A fitted shell's plain pieces under the artwork (by trim key): drawn over, not painted in. */
+  trims: Map<string, { mesh: ProjectionMesh; projected: ProjectedPart }>;
   depth: DepthMap | null;
 }
 
-const projections = new WeakMap<ProjectedLayer, Map<string, Projection>>();
+const projections = new WeakMap<object, Map<string, Projection>>();
 
-/** Project one layer onto the whole garment (cached per layer, rest shape and displayed garment). */
-export function projectLayer(layer: ProjectedLayer, scene: ProjectionScene): Projection {
+/** Project a placement onto the whole garment (cached per owner, rest shape and displayed garment). */
+function projectOnto(owner: object, placement: DecalPlacement, scene: ProjectionScene): Projection {
   const key = `${idOf(scene.rest)}:${idOf(scene.geo)}`;
-  let byScene = projections.get(layer);
+  let byScene = projections.get(owner);
   const hit = byScene?.get(key);
   if (hit) return hit;
   const meshes = scene.rest.parts.map((r) => paintMesh(r, scene.geo.parts.find((p) => p.id === r.id)?.geometry));
   // The centre sits on the cloth along the projector's axis, wherever this size or drape puts it.
-  const frame = decalFrame(placementOf(layer), settle(meshes, layer.projector));
+  const frame = decalFrame(placement, settle(restCloth(scene.rest, meshes), placement.projector));
   const parts = new Map<PartId, { mesh: ProjectionMesh; projected: ProjectedPart }>();
   scene.rest.parts.forEach((r, i) => {
     if (!reachesBounds(frame, r.min, r.max)) return;
     const projected = selectTriangles(meshes[i], frame);
     if (projected.triangles.length) parts.set(r.id, { mesh: meshes[i], projected });
   });
-  const result: Projection = { frame, parts, depth: parts.size ? buildDepthMap([...parts.values()], frame) : null };
+  const trims = new Map<string, { mesh: ProjectionMesh; projected: ProjectedPart }>();
+  for (const t of scene.rest.trims ?? []) {
+    if (!reachesBounds(frame, t.min, t.max)) continue;
+    const projected = selectTriangles(t.mesh, frame);
+    if (projected.triangles.length) trims.set(t.key, { mesh: t.mesh, projected });
+  }
+  // A hood in front of the back panel hides it from the print, so plain pieces count for depth too.
+  const covered = [...parts.values(), ...trims.values()];
+  const result: Projection = { frame, parts, trims, depth: covered.length ? buildDepthMap(covered, frame) : null };
   if (!byScene) {
     byScene = new Map();
-    projections.set(layer, byScene);
+    projections.set(owner, byScene);
   }
   byScene.set(key, result);
   if (byScene.size > 4) byScene.delete(byScene.keys().next().value!);
   return result;
+}
+
+/** Project one layer onto the whole garment (cached per layer, rest shape and displayed garment). */
+export function projectLayer(layer: ProjectedLayer, scene: ProjectionScene): Projection {
+  return projectOnto(layer, placementOf(layer), scene);
 }
 
 // ---------------------------------------------------------------------------
@@ -182,7 +198,7 @@ export function renderArtwork(layer: ProjectedLayer, pxPerMm: number, outline?: 
   const t = layer.transform;
   const bleedMm = layerBleedMm(art);
   const ppm = Math.min(pxPerMm, MAX_ART_SIDE / (Math.max(t.widthMm, t.heightMm) + 2 * bleedMm));
-  const key = JSON.stringify([layer.id, layer.content, layer.style.finish, layer.style.distress ?? null, t.widthMm, t.heightMm, Math.round(ppm * 1000), outline ?? null]);
+  const key = JSON.stringify([layer.id, layer.content, layer.style.finish, layer.style.distress ?? null, t.widthMm, t.heightMm, Math.round(ppm * 1000), outline ?? null, textRenderEpoch()]);
   const hit = artCache.get(key);
   if (hit) {
     artCache.delete(key);
@@ -300,6 +316,189 @@ export function drawProjectionOutline(ctx: CanvasRenderingContext2D, part: PartI
   const outline = onPart ? renderArtwork(layer, pxPerMm, color) : null;
   if (!onPart || !outline) return;
   composite(ctx, paintTriangles(onPart.mesh, onPart.projected, outline, { width: ctx.canvas.width, height: ctx.canvas.height }, { depth: projection.depth ?? undefined, padPx: 1 }), 1, 'source-over');
+}
+
+// ---------------------------------------------------------------------------
+// Design areas: a whole artboard, designed in 2D, projected onto the garment as one
+// ---------------------------------------------------------------------------
+
+const editedAreas = new WeakMap<ProjectionEdit, DesignArea>();
+/** A design area with any in-progress move, resize or turn applied (the same live channel as projected layers, by id). */
+export function effectiveArea(area: DesignArea, live?: ProjectionEdit | null): DesignArea {
+  if (!live || live.id !== area.id) return area;
+  const hit = editedAreas.get(live);
+  if (hit && hit.id === area.id) return hit;
+  const t = live.transform;
+  const out: DesignArea = {
+    ...area,
+    projector: live.projector ?? area.projector,
+    widthMm: t?.widthMm ?? area.widthMm,
+    heightMm: t?.heightMm ?? area.heightMm,
+    rotationDeg: t?.rotationDeg ?? area.rotationDeg,
+  };
+  editedAreas.set(live, out);
+  return out;
+}
+
+const areaPlacements = new WeakMap<DesignArea, DecalPlacement>();
+/** Where a design area is projected from, at its size and turn. Its artwork is clipped to it, so no bleed. */
+export function areaPlacement(area: DesignArea): DecalPlacement {
+  let p = areaPlacements.get(area);
+  if (!p) {
+    p = { projector: area.projector, widthMm: area.widthMm, heightMm: area.heightMm, rotationDeg: area.rotationDeg, bleedMm: 0 };
+    areaPlacements.set(area, p);
+  }
+  return p;
+}
+
+/** Project a design area onto the whole garment (cached like layers). */
+export function projectArea(area: DesignArea, scene: ProjectionScene): Projection {
+  return projectOnto(area, areaPlacement(area), scene);
+}
+
+/** Visible design areas that can touch `part`, in tab order, with any live edit applied. */
+export function areasOnPart(scene: ProjectionScene, part: PartId): DesignArea[] {
+  const restPart = scene.rest.parts.find((p) => p.id === part);
+  const areas = designAreas(scene.doc);
+  if (!restPart || !areas.length) return [];
+  const m = REACH_MARGIN_MM;
+  const min: Vec3 = [restPart.min[0] - m, restPart.min[1] - m, restPart.min[2] - m];
+  const max: Vec3 = [restPart.max[0] + m, restPart.max[1] + m, restPart.max[2] + m];
+  return areas.filter((a) => a.visible).map((a) => effectiveArea(a, scene.live)).filter((a) => reachesBounds(decalFrame(areaPlacement(a)), min, max));
+}
+
+type Overrides = Record<string, Partial<LayerTransform>> | undefined;
+const areaArt = new Map<string, DecalImage>();
+
+/**
+ * A design area's artwork at `pxPerMm`: every visible layer, clipped to the area (as its print
+ * file is), or, with `method`, its print surface (ink height, roughness, metal). Null while an
+ * image is still loading.
+ */
+export function renderAreaArtwork(area: DesignArea, pxPerMm: number, opts: { overrides?: Overrides; simulateFinish?: boolean; method?: PrintMethod } = {}): DecalImage | null {
+  const ppm = Math.min(pxPerMm, MAX_ART_SIDE / Math.max(area.widthMm, area.heightMm));
+  const key = [idOf(area.layers), idOf(area.orderedLayerIds), area.widthMm, area.heightMm, Math.round(ppm * 1000), idOf(opts.overrides), opts.simulateFinish ? 1 : 0, opts.method ?? '', textRenderEpoch()].join(':');
+  const hit = areaArt.get(key);
+  if (hit) {
+    areaArt.delete(key);
+    areaArt.set(key, hit);
+    return hit;
+  }
+  const canvas = canvasOf(Math.max(1, Math.ceil(area.widthMm * ppm)), Math.max(1, Math.ceil(area.heightMm * ppm)));
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+  const ok = opts.method
+    ? drawZoneSurface(ctx, area, { pxPerMm: ppm, overrides: opts.overrides, method: opts.method })
+    : drawZone(ctx, area, { pxPerMm: ppm, overrides: opts.overrides, simulateFinish: opts.simulateFinish });
+  if (!ok) return null;
+  const image: DecalImage = { width: canvas.width, height: canvas.height, data: ctx.getImageData(0, 0, canvas.width, canvas.height).data, pxPerMm: ppm, originMm: 0 };
+  canvas.width = canvas.height = 0;
+  areaArt.set(key, image);
+  while (areaArt.size > 12) areaArt.delete(areaArt.keys().next().value!);
+  return image;
+}
+
+/** Live layer moves inside the area being dragged (2D or 3D). */
+export interface AreaLive {
+  zoneId: string | null;
+  overrides?: Overrides;
+}
+
+/**
+ * Paint the design areas that reach `part` into its colour texture, in tab order. They go on
+ * last, like transfers pressed onto the finished garment. Returns false while an image loads.
+ */
+export function drawAreas(ctx: CanvasRenderingContext2D, part: PartId, scene: ProjectionScene, pxPerMm: number, opts: { live?: AreaLive; simulateFinish?: boolean } = {}): boolean {
+  let complete = true;
+  const target = { width: ctx.canvas.width, height: ctx.canvas.height };
+  for (const area of areasOnPart(scene, part)) {
+    const projection = projectArea(area, scene);
+    const onPart = projection.parts.get(part);
+    if (!onPart) continue;
+    const art = renderAreaArtwork(area, pxPerMm, { overrides: opts.live?.zoneId === area.id ? opts.live.overrides : undefined, simulateFinish: opts.simulateFinish });
+    if (!art) {
+      complete = false;
+      continue;
+    }
+    composite(ctx, paintTriangles(onPart.mesh, onPart.projected, art, target, { depth: projection.depth ?? undefined, padPx: PAD_PX }), 1, 'source-over');
+  }
+  return complete;
+}
+
+/** The design areas' print surfaces, into a part's surface map (see drawPartSurface). */
+export function drawAreaSurfaces(ctx: CanvasRenderingContext2D, part: PartId, scene: ProjectionScene, pxPerMm: number, opts: { live?: AreaLive } = {}): boolean {
+  let complete = true;
+  const target = { width: ctx.canvas.width, height: ctx.canvas.height };
+  for (const area of areasOnPart(scene, part)) {
+    const projection = projectArea(area, scene);
+    const onPart = projection.parts.get(part);
+    if (!onPart) continue;
+    const art = renderAreaArtwork(area, pxPerMm, { overrides: opts.live?.zoneId === area.id ? opts.live.overrides : undefined, method: area.printMethod });
+    if (!art) {
+      complete = false;
+      continue;
+    }
+    composite(ctx, paintTriangles(onPart.mesh, onPart.projected, art, target, { depth: projection.depth ?? undefined, padPx: PAD_PX }), 1, 'source-over');
+  }
+  return complete;
+}
+
+/**
+ * Each design area's print area traced on the cloth (dashed), the active one solid with its
+ * selected layers boxed: on-garment guides, never printed.
+ */
+export function drawAreaOutlines(
+  ctx: CanvasRenderingContext2D,
+  part: PartId,
+  scene: ProjectionScene,
+  pxPerMm: number,
+  opts: { accent: string; all: boolean; active: string | null; selected?: string[]; live?: AreaLive },
+) {
+  for (const area of areasOnPart(scene, part)) {
+    const active = area.id === opts.active;
+    if (!opts.all && !active) continue;
+    const projection = projectArea(area, scene);
+    const onPart = projection.parts.get(part);
+    if (!onPart) continue;
+    const image = areaOutlineImage(area, pxPerMm, { accent: opts.accent, active, selected: opts.selected, live: opts.live });
+    composite(ctx, paintTriangles(onPart.mesh, onPart.projected, image, { width: ctx.canvas.width, height: ctx.canvas.height }, { depth: projection.depth ?? undefined, padPx: 1 }), 1, 'source-over');
+  }
+}
+
+/** A design area's guide at `pxPerMm`: its edge (dashed unless active) and, when active, its selected layers' boxes. */
+export function areaOutlineImage(area: DesignArea, pxPerMm: number, opts: { accent: string; active: boolean; selected?: string[]; live?: AreaLive }): DecalImage {
+  const ppm = Math.min(pxPerMm, MAX_ART_SIDE / Math.max(area.widthMm, area.heightMm));
+  const canvas = canvasOf(Math.max(1, Math.ceil(area.widthMm * ppm)), Math.max(1, Math.ceil(area.heightMm * ppm)));
+  const c = canvas.getContext('2d', { willReadFrequently: true })!;
+  const line = Math.max(2, 1.4 * ppm);
+  c.strokeStyle = opts.accent;
+  c.lineWidth = line;
+  c.globalAlpha = opts.active ? 1 : 0.8;
+  if (!opts.active) c.setLineDash([6 * ppm, 4 * ppm]);
+  c.strokeRect(line / 2, line / 2, canvas.width - line, canvas.height - line);
+  c.setLineDash([]);
+  if (opts.active && opts.selected?.length) {
+    for (const id of opts.selected) {
+      const layer = area.layers[id];
+      if (!layer) continue;
+      const t = { ...layer.transform, ...(opts.live?.zoneId === area.id ? opts.live.overrides?.[id] : undefined) };
+      c.save();
+      c.translate(t.centerXmm * ppm, t.centerYmm * ppm);
+      c.rotate((t.rotationDeg * Math.PI) / 180);
+      c.strokeRect((-t.widthMm / 2) * ppm, (-t.heightMm / 2) * ppm, t.widthMm * ppm, t.heightMm * ppm);
+      c.restore();
+    }
+  }
+  const image: DecalImage = { width: canvas.width, height: canvas.height, data: c.getImageData(0, 0, canvas.width, canvas.height).data, pxPerMm: ppm, originMm: 0 };
+  canvas.width = canvas.height = 0;
+  return image;
+}
+
+/** What a part's design areas depend on (artwork, place, live moves, guides), for its texture's change key. */
+export function areasKey(scene: ProjectionScene, part: PartId, live?: AreaLive, guides?: string) {
+  const areas = areasOnPart(scene, part);
+  if (!areas.length) return '-';
+  const moving = live?.zoneId && areas.some((a) => a.id === live.zoneId) ? idOf(live.overrides) : 0;
+  return `${areas.map(idOf).join('.')}:${idOf(scene.rest)}:${moving}:${guides ?? ''}`;
 }
 
 /** What a part's projected artwork depends on, for its texture's change key. */

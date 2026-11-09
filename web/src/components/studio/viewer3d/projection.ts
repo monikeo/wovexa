@@ -898,6 +898,76 @@ export function dragProjector(meshes: readonly ProjectionMesh[], prev: Projector
   return { point: s.point, normal: s.normal, up: tangentUp(s.normal, rotateBetween(upH, nh, s.normal)) };
 }
 
+/** Each triangle's centroid and area-weighted outward normal, per mesh: the table footprint normals read. */
+const faceTables = new WeakMap<ProjectionMesh, { centroid: Float32Array; normal: Float32Array; count: number }>();
+function facesOf(mesh: ProjectionMesh) {
+  let t = faceTables.get(mesh);
+  if (t) return t;
+  const idx = mesh.index;
+  const p = mesh.position;
+  const count = Math.floor(idx.length / 3);
+  const centroid = new Float32Array(count * 3);
+  const normal = new Float32Array(count * 3);
+  for (let f = 0; f < count; f++) {
+    const a = idx[f * 3] * 3;
+    const b = idx[f * 3 + 1] * 3;
+    const c = idx[f * 3 + 2] * 3;
+    const e1x = p[b] - p[a];
+    const e1y = p[b + 1] - p[a + 1];
+    const e1z = p[b + 2] - p[a + 2];
+    const e2x = p[c] - p[a];
+    const e2y = p[c + 1] - p[a + 1];
+    const e2z = p[c + 2] - p[a + 2];
+    centroid[f * 3] = (p[a] + p[b] + p[c]) / 3;
+    centroid[f * 3 + 1] = (p[a + 1] + p[b + 1] + p[c + 1]) / 3;
+    centroid[f * 3 + 2] = (p[a + 2] + p[b + 2] + p[c + 2]) / 3;
+    normal[f * 3] = e1y * e2z - e1z * e2y;
+    normal[f * 3 + 1] = e1z * e2x - e1x * e2z;
+    normal[f * 3 + 2] = e1x * e2y - e1y * e2x;
+  }
+  t = { centroid, normal, count };
+  faceTables.set(mesh, t);
+  return t;
+}
+
+/**
+ * Which way the cloth faces on average over a disc round `point` (area-weighted, nearer counts
+ * more): the direction to project a whole print along. A crease or fold under the centre then
+ * no longer tips the print; cloth facing away from `normal` (the far side, a fold's back) is left out.
+ */
+export function footprintNormal(meshes: readonly ProjectionMesh[], point: Vec3, normal: Vec3, radiusMm: number): Vec3 {
+  const n0 = normalize(normal) ?? [0, 0, 1];
+  const r2 = radiusMm * radiusMm;
+  let sx = 0;
+  let sy = 0;
+  let sz = 0;
+  for (const mesh of meshes) {
+    const { centroid, normal: an, count } = facesOf(mesh);
+    for (let f = 0; f < count; f++) {
+      const dx = centroid[f * 3] - point[0];
+      const dy = centroid[f * 3 + 1] - point[1];
+      const dz = centroid[f * 3 + 2] - point[2];
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > r2) continue;
+      const nx = an[f * 3];
+      const ny = an[f * 3 + 1];
+      const nz = an[f * 3 + 2];
+      if (nx * n0[0] + ny * n0[1] + nz * n0[2] <= 0) continue;
+      const w = 1 - d2 / r2;
+      sx += nx * w;
+      sy += ny * w;
+      sz += nz * w;
+    }
+  }
+  return normalize([sx, sy, sz]) ?? n0;
+}
+
+/** A projector turned to face along the cloth's average over a print `sizeMm` across (see footprintNormal), its up kept. */
+export function steadyProjector(meshes: readonly ProjectionMesh[], projector: Projector, sizeMm: number): Projector {
+  const normal = footprintNormal(meshes, projector.point, projector.normal, Math.max(10, sizeMm / 2));
+  return { point: projector.point, normal, up: tangentUp(normal, projector.up) };
+}
+
 /**
  * The projector's centre on the current garment: where its axis meets the cloth nearest the stored
  * point. After a size change or a different drape the surface moves; the artwork stays on it.

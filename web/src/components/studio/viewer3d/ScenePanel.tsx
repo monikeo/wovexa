@@ -36,6 +36,8 @@ export function ScenePanel({ onClose, compact }: { onClose: () => void; compact?
   const doc = useStudio((s) => s.document);
   const dispatch = useStudio((s) => s.dispatch);
   const scene = sceneOf(doc);
+  // A GLB shell keeps its own modelled folds; the drape setting applies to built-in shapes only.
+  const ownFolds = doc?.garment.shape?.kind === 'shell' && doc.garment.shape.modelId === doc.garment.modelId;
   const ref = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [looks, setLooks] = useState<StoredScene[]>([]);
@@ -158,12 +160,12 @@ export function ScenePanel({ onClose, compact }: { onClose: () => void; compact?
           <h3 className="label font-semibold text-fg">Drape</h3>
           <div className="seg" role="group" aria-label="Drape">
             {DRAPES.map((d) => (
-              <button key={d.id} aria-pressed={drapeOf(scene) === d.id} onClick={() => set({ drape: d.id }, `Drape: ${d.label.toLowerCase()}`)} title={d.description}>
+              <button key={d.id} aria-pressed={drapeOf(scene) === d.id} disabled={ownFolds} onClick={() => set({ drape: d.id }, `Drape: ${d.label.toLowerCase()}`)} title={d.description}>
                 {d.label}
               </button>
             ))}
           </div>
-          <p className="text-[11px] text-fg-3">{DRAPES.find((d) => d.id === drapeOf(scene))?.description}</p>
+          <p className="text-[11px] text-fg-3">{ownFolds ? 'Your 3D model keeps the folds it was made with.' : DRAPES.find((d) => d.id === drapeOf(scene))?.description}</p>
         </section>
 
         <section className="space-y-2">

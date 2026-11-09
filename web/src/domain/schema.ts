@@ -16,7 +16,9 @@
  *      garment part, graphic (path) shapes and image masks. Upgrading adds empty leg zones.
  *   4  Projected layers: artwork placed straight onto the 3D garment that runs across seams
  *      (over the shoulder, round the side seams), printed by sublimation or cut-and-sew.
- *      Upgrading adds an empty list.
+ *      Upgrading adds an empty list. Optional, additive fields within version 4: design areas
+ *      (print areas the person places anywhere on the 3D garment) and 3D shapes from the app's
+ *      model library.
  */
 import { z } from 'zod';
 
@@ -265,6 +267,49 @@ export const projectionsSchema = z.object({
 });
 export type Projections = z.infer<typeof projectionsSchema>;
 
+/** Design area ids start with `area_`, so they never collide with a zone's name. */
+export const AREA_ID_PREFIX = 'area_';
+export const areaIdSchema = z.string().regex(/^area_[A-Za-z0-9_-]{1,48}$/, 'Expected a design area id');
+export type AreaId = `area_${string}`;
+/** Where artwork is designed: one of the garment's print zones, or a design area the person placed. */
+export type ArtboardId = ZoneId | AreaId;
+
+export function isAreaId(id: string | null | undefined): id is AreaId {
+  return typeof id === 'string' && id.startsWith(AREA_ID_PREFIX);
+}
+
+/**
+ * A design area: a print area the person makes, of any size, placed anywhere on the 3D garment
+ * (a hood, a side panel, across a seam). Its artwork is designed in 2D like a zone's, with every
+ * tool, and projected onto the garment from the area's projector, so the whole area moves, turns
+ * and resizes as one. Optional and additive within format 4.
+ */
+export const designAreaSchema = z.object({
+  id: areaIdSchema,
+  name: z.string().min(1).max(60),
+  visible: z.boolean(),
+  locked: z.boolean(),
+  projector: projectorSchema,
+  widthMm: finite.min(10).max(1500),
+  heightMm: finite.min(10).max(1500),
+  /** Clockwise as seen from outside, like a layer's rotation. */
+  rotationDeg: finite.min(-360).max(360),
+  printMethod: printMethodSchema,
+  orderedLayerIds: z.array(id).max(200),
+  layers: z.record(id, artworkLayerSchema),
+});
+export type DesignArea = z.infer<typeof designAreaSchema>;
+
+/** Design areas in tab order. */
+export const designAreasSchema = z.object({
+  orderedIds: z.array(areaIdSchema).max(24),
+  items: z.record(areaIdSchema, designAreaSchema),
+});
+export type DesignAreas = z.infer<typeof designAreasSchema>;
+
+/** What a zone and a design area share: layers in stacking order, bottom first. */
+export type LayerStack = Pick<ZoneDesign, 'orderedLayerIds' | 'layers'>;
+
 export const colorwaySchema = z.object({
   id,
   name: z.string().min(1).max(60),
@@ -339,8 +384,28 @@ export const designDocumentSchema = z.object({
     assetVersion: z.string().max(32),
     sizeCode: z.string().max(8),
     fabricPresetId: z.string().max(32),
-    /** A 3D shape made from this style's template (GLB) in Blender, Clo3D or Marvelous Designer, used instead of the built-in shape. */
-    shape: z.object({ assetId: id, name: z.string().min(1).max(120), modelId: z.string().max(64), sizeCode: z.string().max(8) }).optional(),
+    /**
+     * A 3D shape used instead of the built-in one. A template shape was made from this style's
+     * template GLB in Blender, Clo3D or Marvelous Designer and keeps its print layout; a shell is
+     * any garment GLB, fitted over the style's pattern (prints wrap onto it; production files
+     * still come from the pattern). Documents from before shells have no `kind`: templates.
+     */
+    shape: z
+      .object({
+        /** An uploaded file kept on this device. */
+        assetId: id.optional(),
+        /** Or a model from the app's 3D model library, by file name (any device has it). */
+        library: z.string().min(5).max(372).optional(),
+        name: z.string().min(1).max(120),
+        modelId: z.string().max(64),
+        sizeCode: z.string().max(8),
+        kind: z.enum(['template', 'shell']).optional(),
+        /** Shells: turned round from the way WOVEXA read the file's front. */
+        turn: z.boolean().optional(),
+        /** Shells: the model's own credit, shown wherever it is used (CC BY and similar licences require it). */
+        credit: z.object({ title: z.string().max(200).optional(), author: z.string().max(200).optional(), license: z.string().max(200).optional(), source: z.string().max(500).optional() }).optional(),
+      })
+      .optional(),
   }),
   activeColorwayId: id,
   colorways: z.array(colorwaySchema).min(1).max(24),
@@ -357,6 +422,8 @@ export const designDocumentSchema = z.object({
   scene: sceneSchema.optional(),
   /** Artwork placed on the 3D garment across seams (format 4). */
   projections: projectionsSchema,
+  /** Design areas the person placed anywhere on the 3D garment, beyond the style's zones (optional in format 4). */
+  areas: designAreasSchema.optional(),
 });
 export type DesignDocument = z.infer<typeof designDocumentSchema>;
 
@@ -392,6 +459,22 @@ export function checkDocumentInvariants(doc: DesignDocument): string[] {
   for (const [layerId, layer] of Object.entries(projected.layers)) {
     if (!listed.has(layerId)) problems.push(`projections have unordered layer ${layerId}`);
     if (layer.id !== layerId) problems.push(`projected layer ${layerId} has mismatched id ${layer.id}`);
+  }
+  const shape = doc.garment.shape;
+  if (shape && !shape.assetId && !shape.library) problems.push('3D shape names no file');
+  const areas = doc.areas;
+  if (areas) {
+    const ids = new Set(areas.orderedIds);
+    if (ids.size !== areas.orderedIds.length) problems.push('design areas list an area twice');
+    for (const areaId of areas.orderedIds) if (!areas.items[areaId]) problems.push(`design areas order missing area ${areaId}`);
+    for (const [areaId, area] of Object.entries(areas.items)) {
+      if (!ids.has(areaId)) problems.push(`design areas have unordered area ${areaId}`);
+      if (area.id !== areaId) problems.push(`design area ${areaId} has mismatched id ${area.id}`);
+      const layers = new Set(area.orderedLayerIds);
+      if (layers.size !== area.orderedLayerIds.length) problems.push(`design area ${areaId} lists a layer twice`);
+      for (const layerId of area.orderedLayerIds) if (!area.layers[layerId]) problems.push(`design area ${areaId} orders missing layer ${layerId}`);
+      for (const layerId of Object.keys(area.layers)) if (!layers.has(layerId)) problems.push(`design area ${areaId} has unordered layer ${layerId}`);
+    }
   }
   return problems;
 }

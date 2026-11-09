@@ -2,17 +2,18 @@
  * Print preflight (spec §10, PRT-02/03/05). Pure functions over the canonical document.
  * DPI thresholds are configurable heuristics, not universal print standards.
  */
+import { areaSpec, designAreas } from './areas';
 import { getGarment, PRINT_METHOD_LABELS, type ZoneSpec } from './garments';
 import { mmToInch, overflow, rotatedBounds, roundMm } from './geometry';
 import { projectedAsArtwork, projectedLayers } from './projected';
-import { ZONE_IDS, type ArtworkLayer, type DesignDocument, type PrintMethod, type ProjectedLayer, type ZoneId } from './schema';
+import { ZONE_IDS, type AreaId, type ArtboardId, type ArtworkLayer, type DesignDocument, type PrintMethod, type ProjectedLayer } from './schema';
 
 export type Severity = 'error' | 'warning' | 'info';
 
 export interface PreflightIssue {
   id: string;
-  /** The zone the issue belongs to; issues about projected layers or the whole design use 'front'. */
-  zoneId: ZoneId;
+  /** The zone or design area the issue belongs to; issues about projected layers or the whole design use 'front'. */
+  zoneId: ArtboardId;
   layerId?: string;
   /** Set when the issue is about a projected (cross-seam) layer rather than a zone layer. */
   projectionId?: string;
@@ -273,6 +274,17 @@ export function runPreflight(doc: DesignDocument, opts: PreflightOptions = DEFAU
     if (!layer.visible) continue;
     visibleLayers++;
     issues.push(...checkProjectedLayer(layer, opts));
+  }
+
+  // Design areas print like zones of their own size, by their own method.
+  for (const area of designAreas(doc)) {
+    if (!area.visible) continue;
+    const spec = areaSpec(area);
+    const layers = area.orderedLayerIds.map((id) => area.layers[id]).filter((l) => l && l.visible);
+    visibleLayers += layers.length;
+    for (const layer of layers) {
+      issues.push(...checkLayer(layer, spec, area.printMethod, opts).map((i) => ({ ...i, id: `${area.id}:${i.id}`, zoneId: area.id as AreaId, message: `${area.name}: ${i.message}` })));
+    }
   }
 
   const colorway = doc.colorways.find((c) => c.id === doc.activeColorwayId) ?? doc.colorways[0];

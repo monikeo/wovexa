@@ -19,9 +19,27 @@ export interface RestPart {
   max: Vec3;
 }
 
+/** A fitted shell's plain piece (its hood, belt, collar): no print texture, but cloth design areas can lie on. */
+export interface RestTrim {
+  key: string;
+  mesh: ProjectionMesh;
+  min: Vec3;
+  max: Vec3;
+}
+
 export interface RestShape {
   parts: RestPart[];
+  /** A fitted shell's plain pieces: design areas lie on them too (drawn over them), and prints settle onto them. */
+  trims?: RestTrim[];
   layout: GarmentLayout;
+}
+
+/** Trim keys of a fitted shell's plain pieces (see garment-shell.ts). */
+export const SHELL_TRIM_PREFIX = 'shell-';
+
+/** Every piece of cloth at rest, parts first: what prints are settled, dragged and steadied on. */
+export function restCloth(rest: RestShape, parts: readonly ProjectionMesh[] = rest.parts.map((p) => p.mesh)): ProjectionMesh[] {
+  return rest.trims?.length ? [...parts, ...rest.trims.map((t) => t.mesh)] : [...parts];
 }
 
 function meshOf(g: THREE.BufferGeometry): ProjectionMesh {
@@ -47,11 +65,18 @@ function bounds(position: ArrayLike<number>): { min: Vec3; max: Vec3 } {
 
 /** The rest shape of a garment built without drape (as the cut-and-sew export builds it). */
 export function restFromGeometry(geo: GarmentGeometry): RestShape {
+  const trims = geo.trims
+    .filter((t) => t.key.startsWith(SHELL_TRIM_PREFIX) && t.geometry.getAttribute('uv') && t.geometry.getIndex())
+    .map((t) => {
+      const mesh = meshOf(t.geometry);
+      return { key: t.key, mesh, ...bounds(mesh.position) };
+    });
   return {
     parts: geo.parts.map((p) => {
       const mesh = meshOf(p.geometry);
       return { id: p.id, mesh, ...bounds(mesh.position) };
     }),
+    ...(trims.length ? { trims } : {}),
     layout: geo.layout,
   };
 }

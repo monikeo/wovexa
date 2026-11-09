@@ -9,7 +9,7 @@ import { newId } from '@/domain/factory';
 import { getGarment, getSize, hasZone, zoneSpecOrFirst } from '@/domain/garments';
 import { clamp, normalizeDeg } from '@/domain/geometry';
 import { artworkAsProjected, projectedAsArtwork } from '@/domain/projected';
-import type { DesignDocument, ProjectedLayer, ProjectorSpec, ZoneId } from '@/domain/schema';
+import { isAreaId, type DesignDocument, type ProjectedLayer, type ProjectorSpec, type ZoneId } from '@/domain/schema';
 import { toast } from '@/components/ui/primitives';
 import { useStudio } from '@/stores/studio-store';
 import { angleAbout, slideProjector, surfaceAlong, surfaceAtUv, textureAxes } from './viewer3d/projection';
@@ -44,7 +44,12 @@ export function wrapSelectionAcrossSeams() {
   const s = useStudio.getState();
   const doc = s.document;
   if (!doc) return;
-  const zone = doc.zones[s.activeZoneId];
+  const zoneId = s.activeZoneId;
+  if (isAreaId(zoneId)) {
+    toast('Artwork in a design area already sits on the garment: move the whole area anywhere in Place mode.');
+    return;
+  }
+  const zone = doc.zones[zoneId];
   const layers = s.selectedLayerIds.map((id) => zone.layers[id]).filter(Boolean);
   if (!layers.length) return;
   if (doc.projections.orderedLayerIds.length + layers.length > 50) {
@@ -53,14 +58,14 @@ export function wrapSelectionAcrossSeams() {
   }
   const projected: ProjectedLayer[] = [];
   for (const layer of layers) {
-    const projector = projectorAtZonePoint(doc, s.activeZoneId, layer.transform.centerXmm, layer.transform.centerYmm);
+    const projector = projectorAtZonePoint(doc, zoneId, layer.transform.centerXmm, layer.transform.centerYmm);
     if (!projector) {
       toast(`${layer.name} isn’t on this garment’s surface, so it can’t be wrapped.`, 'error');
       return;
     }
     projected.push(artworkAsProjected(layer, projector));
   }
-  const commands = projected.map((p) => cmd.wrapAcrossSeams(s.activeZoneId, p.id, p));
+  const commands = projected.map((p) => cmd.wrapAcrossSeams(zoneId, p.id, p));
   s.dispatch(commands.length === 1 ? commands[0] : cmd.batch('Wrap across seams', commands));
   s.selectProjection(projected[projected.length - 1].id);
   showOnGarment();
@@ -77,7 +82,7 @@ export function returnProjectionToZone(layerId: string) {
   const layer = doc?.projections.layers[layerId];
   if (!doc || !layer) return;
   const { model, rest } = garmentAtRest(doc);
-  let zoneId: ZoneId = hasZone(model, s.activeZoneId) ? s.activeZoneId : model.zoneOrder[0];
+  let zoneId: ZoneId = !isAreaId(s.activeZoneId) && hasZone(model, s.activeZoneId) ? s.activeZoneId : model.zoneOrder[0];
   let at: { xMm: number; yMm: number } | null = null;
   let turn = 0;
   const hit = surfaceAlong(

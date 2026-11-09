@@ -5,7 +5,7 @@
 import { getGarment, PRINT_METHOD_LABELS } from './garments';
 import { roundMm } from './geometry';
 import { projectedAsArtwork } from './projected';
-import { ZONE_IDS, type ArtworkLayer, type DesignDocument } from './schema';
+import { ZONE_IDS, type ArtworkLayer, type DesignDocument, type LayerStack } from './schema';
 
 export interface Change {
   area: string;
@@ -54,6 +54,23 @@ function describeLayerChange(a: ArtworkLayer, b: ArtworkLayer): string[] {
   return out;
 }
 
+/** Layers added, removed, edited or restacked between two versions of one zone or design area. */
+function stackChanges(area: string, za: LayerStack, zb: LayerStack, changes: Change[]) {
+  for (const id of zb.orderedLayerIds) {
+    const a = za.layers[id];
+    const b = zb.layers[id];
+    if (!a) changes.push({ area, kind: 'added', text: `Added ${b.name}` });
+    else {
+      const what = describeLayerChange(a, b);
+      if (what.length) changes.push({ area, kind: 'changed', text: `${b.name}: ${what.join('; ')}` });
+    }
+  }
+  for (const id of za.orderedLayerIds) if (!zb.layers[id]) changes.push({ area, kind: 'removed', text: `Removed ${za.layers[id].name}` });
+  const common = zb.orderedLayerIds.filter((id) => za.layers[id]);
+  const commonBefore = za.orderedLayerIds.filter((id) => zb.layers[id]);
+  if (common.join() !== commonBefore.join()) changes.push({ area, kind: 'changed', text: 'Layer order changed' });
+}
+
 export function diffDocuments(before: DesignDocument, after: DesignDocument): Change[] {
   const changes: Change[] = [];
   const model = getGarment(after.garment.modelId);
@@ -88,20 +105,33 @@ export function diffDocuments(before: DesignDocument, after: DesignDocument): Ch
     if (!za || !zb) continue;
     const area = model.zones[zoneId]?.label ?? zoneId.replace('_', ' ');
     if (za.printMethod !== zb.printMethod) changes.push({ area, kind: 'changed', text: `Print method changed to ${PRINT_METHOD_LABELS[zb.printMethod]}` });
-    for (const id of zb.orderedLayerIds) {
-      const a = za.layers[id];
-      const b = zb.layers[id];
-      if (!a) changes.push({ area, kind: 'added', text: `Added ${b.name}` });
-      else {
-        const what = describeLayerChange(a, b);
-        if (what.length) changes.push({ area, kind: 'changed', text: `${b.name}: ${what.join('; ')}` });
-      }
-    }
-    for (const id of za.orderedLayerIds) if (!zb.layers[id]) changes.push({ area, kind: 'removed', text: `Removed ${za.layers[id].name}` });
-    const common = zb.orderedLayerIds.filter((id) => za.layers[id]);
-    const commonBefore = za.orderedLayerIds.filter((id) => zb.layers[id]);
-    if (common.join() !== commonBefore.join()) changes.push({ area, kind: 'changed', text: 'Layer order changed' });
+    stackChanges(area, za, zb, changes);
   }
+
+  // Design areas: added, removed, moved on the garment, resized or turned, and their artwork.
+  const areasBefore = before.areas?.items ?? {};
+  const areasAfter = after.areas?.items ?? {};
+  for (const id of after.areas?.orderedIds ?? []) {
+    const a = areasBefore[id];
+    const b = areasAfter[id];
+    if (!b) continue;
+    if (!a) {
+      changes.push({ area: b.name, kind: 'added', text: `Added design area ${b.name}, ${Math.round(b.widthMm)} × ${Math.round(b.heightMm)} mm` });
+      stackChanges(b.name, { orderedLayerIds: [], layers: {} }, b, changes);
+      continue;
+    }
+    const what: string[] = [];
+    if (a.name !== b.name) what.push(`renamed from ${a.name}`);
+    if (JSON.stringify(a.projector) !== JSON.stringify(b.projector)) what.push('moved on the garment');
+    if (Math.abs(a.widthMm - b.widthMm) > EPS || Math.abs(a.heightMm - b.heightMm) > EPS) what.push(`resized to ${roundMm(b.widthMm)} × ${roundMm(b.heightMm)} mm`);
+    if (Math.abs(a.rotationDeg - b.rotationDeg) > 0.05) what.push(`turned to ${Math.round(b.rotationDeg)}°`);
+    if (a.visible !== b.visible) what.push(b.visible ? 'shown' : 'hidden');
+    if (a.locked !== b.locked) what.push(b.locked ? 'locked' : 'unlocked');
+    if (a.printMethod !== b.printMethod) what.push(`print method ${PRINT_METHOD_LABELS[b.printMethod]}`);
+    if (what.length) changes.push({ area: b.name, kind: 'changed', text: `Design area ${what.join('; ')}` });
+    stackChanges(b.name, a, b, changes);
+  }
+  for (const id of before.areas?.orderedIds ?? []) if (!areasAfter[id] && areasBefore[id]) changes.push({ area: areasBefore[id].name, kind: 'removed', text: `Removed design area ${areasBefore[id].name}` });
 
   // Artwork across seams: added, removed, moved on the garment, or edited like any layer.
   const seams = 'Across seams';

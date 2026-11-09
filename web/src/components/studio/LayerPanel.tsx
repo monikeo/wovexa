@@ -4,7 +4,7 @@ import { useState } from 'react';
 import * as cmd from '@/domain/commands';
 import { projectedLayers } from '@/domain/projected';
 import type { ArtworkLayer, ProjectedLayer } from '@/domain/schema';
-import { useActiveZoneSpec, useStudio } from '@/stores/studio-store';
+import { useActiveArtboard, useActiveZoneSpec, useStudio } from '@/stores/studio-store';
 import { addImages, addText, selectLayers } from './actions';
 import { moveProjectionBy, selectProjection } from './projection-actions';
 
@@ -174,7 +174,7 @@ function LayerRow({ layer, index, count, groupEdge }: { layer: ArtworkLayer; ind
 }
 
 export function LayerPanel() {
-  const zone = useStudio((s) => s.document?.zones[s.activeZoneId]);
+  const zone = useActiveArtboard();
   const spec = useActiveZoneSpec();
   if (!zone) return null;
   const layers = zone.orderedLayerIds.map((id) => zone.layers[id]).filter(Boolean);

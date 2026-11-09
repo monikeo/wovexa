@@ -8,7 +8,8 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import * as cmd from '@/domain/commands';
 import { createImageLayer } from '@/domain/factory';
-import { getGarment, zoneSpecOrFirst } from '@/domain/garments';
+import { artboardOf, artboardSpec } from '@/domain/areas';
+import { getGarment } from '@/domain/garments';
 import type { TextContent } from '@/domain/schema';
 import { nearestWeight } from '@/lib/fonts';
 import { getAsset, listBrandKits, type BrandKit, type StoredAsset } from '@/lib/local-db';
@@ -34,7 +35,7 @@ function useAssets(ids: string[]) {
 function insertLogo(asset: StoredAsset) {
   const s = useStudio.getState();
   if (!s.document) return;
-  const spec = zoneSpecOrFirst(getGarment(s.document.garment.modelId), s.activeZoneId);
+  const spec = artboardSpec(getGarment(s.document.garment.modelId), s.document, s.activeZoneId);
   const layer = createImageLayer(spec, { id: asset.id, width: asset.width, height: asset.height, mime: asset.mime, name: asset.name });
   s.dispatch(cmd.addLayer(s.activeZoneId, layer));
   s.select([layer.id]);
@@ -42,7 +43,7 @@ function insertLogo(asset: StoredAsset) {
 
 function applyColour(hex: string) {
   const s = useStudio.getState();
-  const zone = s.document?.zones[s.activeZoneId];
+  const zone = s.document ? artboardOf(s.document, s.activeZoneId) : undefined;
   if (!zone) return;
   const targets = s.selectedLayerIds.map((id) => zone.layers[id]).filter((l) => l && l.content.kind !== 'image');
   if (!targets.length) return toast('Select text or a shape to colour it.');
@@ -51,7 +52,7 @@ function applyColour(hex: string) {
 
 function applyFont(family: string) {
   const s = useStudio.getState();
-  const zone = s.document?.zones[s.activeZoneId];
+  const zone = s.document ? artboardOf(s.document, s.activeZoneId) : undefined;
   if (!zone) return;
   const texts = s.selectedLayerIds.map((id) => zone.layers[id]).filter((l) => l?.content.kind === 'text');
   if (!texts.length) return toast('Select a text layer to change its font.');

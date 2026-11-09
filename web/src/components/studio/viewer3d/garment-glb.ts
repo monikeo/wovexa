@@ -11,7 +11,7 @@
  */
 import * as THREE from 'three';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { newId } from '@/domain/factory';
@@ -134,18 +134,33 @@ function findInfo(root: THREE.Object3D): Partial<TemplateInfo> {
   return info;
 }
 
-/** Read a garment GLB and check it can stand in for `model`. Throws ShapeError with what to fix. */
-export async function parseGarmentShape(data: ArrayBuffer, model: GarmentModel): Promise<ParsedShape> {
+/** Whether a GLB was made from a WOVEXA template: it says so, or its meshes carry the part names. */
+export function looksLikeTemplate(root: THREE.Object3D): boolean {
+  if (findInfo(root).format === TEMPLATE_FORMAT) return true;
+  let named = false;
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (mesh.isMesh && partOfName(mesh.name || mesh.parent?.name || '')) named = true;
+  });
+  return named;
+}
+
+/** Parse a GLB, decoding Meshopt locally. Draco needs a decoder from a third-party server, so it is refused. */
+export async function loadGltf(data: ArrayBuffer): Promise<GLTF> {
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
-  let gltf: Awaited<ReturnType<GLTFLoader['parseAsync']>>;
   try {
-    gltf = await loader.parseAsync(data, '');
+    return await loader.parseAsync(data, '');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (/draco/i.test(message)) throw new ShapeError('This file uses Draco compression. Export it again uncompressed or with Meshopt compression.');
     throw new ShapeError(`This file couldn’t be read as a GLB (${message}).`);
   }
+}
+
+/** Read a garment GLB and check it can stand in for `model`. Throws ShapeError with what to fix. */
+export async function parseGarmentShape(data: ArrayBuffer, model: GarmentModel): Promise<ParsedShape> {
+  const gltf = await loadGltf(data);
   const scene = gltf.scene;
   scene.updateMatrixWorld(true);
   const info = findInfo(scene);
@@ -197,19 +212,31 @@ export const MAX_SHAPE_BYTES = 80 * 1048576;
  * made at comes from the template's own record when it has one, else the size on show now.
  */
 export async function importGarmentShape(file: File, model: GarmentModel, sizeCode: string) {
+  const data = await readGlbFile(file);
+  const shape = await parseGarmentShape(data, model);
+  const assetId = await keepGlb(file.name, data);
+  const madeAt = shape.info.sizeCode && model.sizes.some((s) => s.code === shape.info.sizeCode) ? shape.info.sizeCode : sizeCode;
+  return { kind: 'template' as const, assetId, name: file.name.replace(/\.glb$/i, '').slice(0, 120) || 'Custom shape', modelId: model.id, sizeCode: madeAt };
+}
+
+/** A chosen file's bytes, once it is known to be a binary glTF within the size limit. */
+export async function readGlbFile(file: File): Promise<ArrayBuffer> {
   if (file.size > MAX_SHAPE_BYTES) throw new ShapeError(`${file.name} is ${(file.size / 1048576).toFixed(1)} MB. The limit is 80 MB: compress it with Meshopt first (gltf-transform).`);
   const data = await file.arrayBuffer();
   if (data.byteLength < 12 || new DataView(data).getUint32(0, true) !== 0x46546c67) throw new ShapeError(`${file.name} isn’t a binary glTF (.glb) file.`);
-  const shape = await parseGarmentShape(data, model);
+  return data;
+}
+
+/** Keep a GLB on this device, once per content, and return its asset id. */
+export async function keepGlb(fileName: string, data: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', data);
   const sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
   let asset: StoredAsset | undefined = await findAssetByHash(sha256);
   if (!asset) {
-    asset = { id: newId(), name: file.name.slice(0, 120), mime: 'model/gltf-binary', width: 0, height: 0, bytes: data.byteLength, sha256, blob: new Blob([data], { type: 'model/gltf-binary' }), createdAt: Date.now() };
+    asset = { id: newId(), name: fileName.slice(0, 120), mime: 'model/gltf-binary', width: 0, height: 0, bytes: data.byteLength, sha256, blob: new Blob([data], { type: 'model/gltf-binary' }), createdAt: Date.now() };
     await putAsset(asset);
   }
-  const madeAt = shape.info.sizeCode && model.sizes.some((s) => s.code === shape.info.sizeCode) ? shape.info.sizeCode : sizeCode;
-  return { assetId: asset.id, name: file.name.replace(/\.glb$/i, '').slice(0, 120) || 'Custom shape', modelId: model.id, sizeCode: madeAt };
+  return asset.id;
 }
 
 const shapeCache = new Map<string, Promise<ParsedShape>>();

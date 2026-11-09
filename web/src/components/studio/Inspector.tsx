@@ -36,7 +36,7 @@ import { selectionUnits, type AlignMode } from '@/domain/arrange';
 import * as cmd from '@/domain/commands';
 import { checkLayer, checkProjectedLayer, DEFAULT_PREFLIGHT, effectiveDpi } from '@/domain/preflight';
 import { projectedAsArtwork } from '@/domain/projected';
-import type { ArtworkLayer, ImageAdjust, ImageContent, ImageRepeat, LayerStyle, LayerTransform, ProjectedLayer, ProjectedTransform, ShapeContent, TextContent } from '@/domain/schema';
+import { isAreaId, type ArtworkLayer, type DesignArea, type ImageAdjust, type ImageContent, type ImageRepeat, type LayerStyle, type LayerTransform, type ProjectedLayer, type ProjectedTransform, type ShapeContent, type TextContent } from '@/domain/schema';
 import { AssetError, getLoadedImage, importImageFile, loadAssetImage } from '@/lib/assets';
 import { ARTWORK_FONTS, fontWeights, loadFontStylesheets } from '@/lib/fonts';
 import { extractPalette, removeBackground, type PaletteColour } from '@/lib/image-ops';
@@ -44,10 +44,11 @@ import { getAsset } from '@/lib/local-db';
 import { usePreference } from '@/lib/preferences';
 import { DEFAULT_REPEAT, effectiveDistress, isCurved, isNeutralAdjust, isWarped, NEUTRAL_ADJUST, textAspect } from '@/lib/render/zone-renderer';
 import { ColorField, NumberField, toast } from '@/components/ui/primitives';
-import { useActiveZoneSpec, useStudio } from '@/stores/studio-store';
+import { useActiveArtboard, useActiveZoneSpec, useStudio } from '@/stores/studio-store';
 import { alignSelection, deleteSelection, distributeSelection, duplicateSelection, groupSelection, placementsFor, placeSelection, ungroupSelection } from './actions';
 import { useBrandKit } from './brand-context';
 import { FontPicker } from './FontPicker';
+import { AreaPanel } from './AreaPanel';
 import { GarmentPanel } from './GarmentPanel';
 import { FillControls, RangeField } from './inspector-controls';
 import { IssueItem } from './PreflightPanel';
@@ -777,7 +778,7 @@ function AppearanceSection({ layer }: { layer: ArtworkLayer }) {
 }
 
 function MultiSelection({ count, layers }: { count: number; layers: ArtworkLayer[] }) {
-  const zone = useStudio((s) => s.document?.zones[s.activeZoneId]);
+  const zone = useActiveArtboard();
   const ids = layers.map((l) => l.id);
   const units = zone ? selectionUnits(zone, ids) : [];
   const groupIds = new Set(layers.map((l) => l.groupId).filter(Boolean));
@@ -936,7 +937,8 @@ function ProjectionInspector({ layer }: { layer: ProjectedLayer }) {
 }
 
 export function Inspector() {
-  const zone = useStudio((s) => s.document?.zones[s.activeZoneId]);
+  const zone = useActiveArtboard();
+  const zoneId = useStudio((s) => s.activeZoneId);
   const selectedIds = useStudio((s) => s.selectedLayerIds);
   const projection = useStudio((s) => (s.selectedProjectionId ? s.document?.projections.layers[s.selectedProjectionId] : undefined));
   const dispatch = useStudio((s) => s.dispatch);
@@ -945,7 +947,17 @@ export function Inspector() {
 
   if (!zone) return null;
   if (projection) return <ProjectionInspector layer={projection} />;
-  if (layers.length === 0) return <GarmentPanel />;
+  if (layers.length === 0) {
+    // A design area being designed on, nothing in it selected: its own settings, then the garment's.
+    return isAreaId(zoneId) && 'id' in zone ? (
+      <>
+        <AreaPanel area={zone as DesignArea} />
+        <GarmentPanel />
+      </>
+    ) : (
+      <GarmentPanel />
+    );
+  }
   if (layers.length > 1) return <MultiSelection count={layers.length} layers={layers} />;
 
   const layer = layers[0];
@@ -960,7 +972,7 @@ export function Inspector() {
           className="field h-9 flex-1 font-semibold"
           defaultValue={layer.name}
           aria-label="Layer name"
-          onBlur={(e) => e.target.value.trim() && e.target.value !== layer.name && dispatch(cmd.updateLayer(zone.zoneId, layer.id, { name: e.target.value.trim() }, 'Rename layer'))}
+          onBlur={(e) => e.target.value.trim() && e.target.value !== layer.name && dispatch(cmd.updateLayer(zoneId, layer.id, { name: e.target.value.trim() }, 'Rename layer'))}
           onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
         />
         <button className="icon-btn" onClick={duplicateSelection} aria-label="Duplicate layer" title="Duplicate (Ctrl+D)">
@@ -986,10 +998,10 @@ export function Inspector() {
       <WrapSection count={1} />
       <Section title="Arrange">
         <div className="flex gap-2">
-          <button className="btn btn-outline flex-1 px-2 text-xs" disabled={index === zone.orderedLayerIds.length - 1} onClick={() => dispatch(cmd.reorderLayer(zone.zoneId, layer.id, zone.orderedLayerIds.length))}>
+          <button className="btn btn-outline flex-1 px-2 text-xs" disabled={index === zone.orderedLayerIds.length - 1} onClick={() => dispatch(cmd.reorderLayer(zoneId, layer.id, zone.orderedLayerIds.length))}>
             <ArrowUpToLine size={14} /> To front
           </button>
-          <button className="btn btn-outline flex-1 px-2 text-xs" disabled={index === 0} onClick={() => dispatch(cmd.reorderLayer(zone.zoneId, layer.id, 0))}>
+          <button className="btn btn-outline flex-1 px-2 text-xs" disabled={index === 0} onClick={() => dispatch(cmd.reorderLayer(zoneId, layer.id, 0))}>
             <ArrowDownToLine size={14} /> To back
           </button>
         </div>

@@ -29,6 +29,8 @@ export interface ZoneSpec {
   /** Leg zones: distance from the waistband to the top of the printable area, down the outer leg. */
   topFromWaistMm?: number;
   methods: PrintMethod[];
+  /** Set when this describes a design area the person placed, not one of the style's zones (`id` is then a stand-in). */
+  areaId?: string;
 }
 
 export interface GarmentSize {

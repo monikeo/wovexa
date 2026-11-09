@@ -1,8 +1,10 @@
 'use client';
 import { AlertTriangle, CheckCircle2, Info, XOctagon } from 'lucide-react';
 import { useMemo } from 'react';
+import { artboardOf } from '@/domain/areas';
 import { getGarment } from '@/domain/garments';
 import { runPreflight, summarize, type PreflightIssue, type Severity } from '@/domain/preflight';
+import { isAreaId } from '@/domain/schema';
 import { useStudio } from '@/stores/studio-store';
 import { selectProjection } from './projection-actions';
 
@@ -20,8 +22,13 @@ export const SEVERITY: Record<Severity, { label: string; Icon: typeof Info; clas
 export function IssueItem({ issue, onSelect }: { issue: PreflightIssue; onSelect?: () => void }) {
   const doc = useStudio((s) => s.document);
   const { label, Icon, className } = SEVERITY[issue.severity];
-  const layerName = issue.projectionId ? doc?.projections.layers[issue.projectionId]?.name : issue.layerId ? doc?.zones[issue.zoneId].layers[issue.layerId]?.name : undefined;
-  const zoneLabel = issue.projectionId ? 'Across seams' : ((doc ? getGarment(doc.garment.modelId).zones[issue.zoneId]?.label : undefined) ?? issue.zoneId.replace('_', ' '));
+  const area = isAreaId(issue.zoneId) ? doc?.areas?.items[issue.zoneId] : undefined;
+  const layerName = issue.projectionId ? doc?.projections.layers[issue.projectionId]?.name : issue.layerId && doc ? artboardOf(doc, issue.zoneId)?.layers[issue.layerId]?.name : undefined;
+  const zoneLabel = issue.projectionId
+    ? 'Across seams'
+    : area
+      ? area.name
+      : ((doc && !isAreaId(issue.zoneId) ? getGarment(doc.garment.modelId).zones[issue.zoneId]?.label : undefined) ?? issue.zoneId.replace('_', ' '));
   const body = (
     <>
       <Icon size={16} className={`mt-0.5 flex-none ${className}`} aria-hidden />
