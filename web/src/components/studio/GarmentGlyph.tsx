@@ -6,10 +6,12 @@
 import { useMemo } from 'react';
 import { sketchBounds, sketchForZone } from '@/components/studio/editor2d/flat-sketch';
 import type { GarmentModel } from '@/domain/garments';
+import type { Colorway } from '@/domain/schema';
 
 const toPath = (pts: [number, number][], close = true) => `${pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`).join(' ')}${close ? ' Z' : ''}`;
 
-export function GarmentGlyph({ model, className, fill = 'var(--surface-panel)', accent }: { model: GarmentModel; className?: string; fill?: string; accent?: string }) {
+/** Line art, or with `colors` the garment filled in a colourway's colours (body, sleeves, rib, pants, belt). */
+export function GarmentGlyph({ model, className, fill = 'var(--surface-panel)', accent, colors }: { model: GarmentModel; className?: string; fill?: string; accent?: string; colors?: Colorway['parts'] }) {
   const art = useMemo(() => {
     const front = model.zones.front!;
     const sketch = sketchForZone(model, front, 1);
@@ -23,11 +25,20 @@ export function GarmentGlyph({ model, className, fill = 'var(--surface-panel)', 
       area: { x: 0, y: 0, w: front.printableWidthMm, h: front.printableHeightMm },
     };
   }, [model]);
+  const fillOf = (part: string) => {
+    if (!colors) return part === 'belt' ? 'currentColor' : fill;
+    if (part === 'sleeves' || part === 'collar') return colors[part];
+    if (part === 'pants') return colors.pants ?? colors.body;
+    if (part === 'belt') return colors.belt ?? 'currentColor';
+    return colors.body;
+  };
   return (
     <svg viewBox={art.viewBox} className={className} aria-hidden fill="none" stroke="currentColor" strokeLinejoin="round" strokeLinecap="round">
       {art.shapes.map((s, i) => (
-        <path key={i} d={s.d} fill={s.part === 'belt' ? 'currentColor' : fill} strokeWidth={1.4} vectorEffect="non-scaling-stroke" />
+        <path key={i} d={s.d} fill={fillOf(s.part)} strokeWidth={1.4} vectorEffect="non-scaling-stroke" />
       ))}
+      {/* Rib and binding bands, in the collar colour, under their outline. */}
+      {colors ? art.bands.map((b, i) => <path key={`c${i}`} d={b.d} stroke={colors.collar} strokeWidth={b.width} strokeLinecap="butt" />) : null}
       {art.bands.map((b, i) => (
         <path key={`b${i}`} d={b.d} strokeWidth={1.2} vectorEffect="non-scaling-stroke" />
       ))}

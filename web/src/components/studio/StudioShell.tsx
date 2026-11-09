@@ -26,6 +26,7 @@ import {
   Plus,
   Redo2,
   RotateCcw,
+  Search,
   Settings2,
   Shapes,
   Shirt,
@@ -75,6 +76,7 @@ import { activeBareArea, addDesignArea, nudgeArea } from './area-actions';
 import { BrandKitProvider } from './brand-context';
 import { BrandPanel } from './BrandPanel';
 import { ColorwayCompare } from './ColorwayCompare';
+import { CommandPalette, openCommandPalette, useModKey } from './CommandPalette';
 import { ExportPanel } from './ExportDialog';
 import { GarmentPanel } from './GarmentPanel';
 import { GraphicsGrid, GraphicsMenu } from './GraphicsLibrary';
@@ -245,6 +247,7 @@ function MoreMenu() {
     setOpen(false);
     setPanel(panel);
   };
+  const mod = useModKey();
   return (
     <div className="relative" ref={ref}>
       <button
@@ -265,6 +268,17 @@ function MoreMenu() {
       </button>
       {open ? (
         <div ref={menuRef} role="menu" aria-label="Project actions" className="absolute right-0 top-full z-40 mt-1 w-56 rounded-xl border border-line bg-floating p-1 shadow-xl">
+          <button
+            role="menuitem"
+            className={`${item} mb-1 border-b border-line`}
+            onClick={() => {
+              setOpen(false);
+              openCommandPalette();
+            }}
+          >
+            <Search size={15} /> Find an action
+            <span className="ml-auto text-[11px] text-fg-3 [@media(hover:none)]:hidden">{mod}+K</span>
+          </button>
           <button role="menuitem" className={item} onClick={pick('render')}>
             <Clapperboard size={15} /> Wovexa Render
           </button>
@@ -293,6 +307,23 @@ function MoreMenu() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+/** Opens the command palette; on wide screens it shows its shortcut, to teach it. */
+function PaletteButton({ showKeys }: { showKeys: boolean }) {
+  const mod = useModKey();
+  return (
+    <button
+      className="btn btn-ghost min-h-9 gap-2 px-2 text-fg-2 hover:text-fg"
+      onClick={openCommandPalette}
+      aria-label="Find an action"
+      aria-keyshortcuts="Control+K Meta+K"
+      title={`Find an action (${mod}+K)`}
+    >
+      <Search size={16} />
+      {showKeys ? <kbd className="rounded border border-line px-1 py-px font-sans text-[10.5px] font-medium text-fg-2">{mod} K</kbd> : null}
+    </button>
   );
 }
 
@@ -327,6 +358,7 @@ function Topbar({ mode, onOpenChecks }: { mode: 'desktop' | 'tablet' | 'mobile';
           <ViewSwitch modes={['2d', 'split', '3d']} />
           {mode === 'desktop' ? <PreflightBadge onClick={onOpenChecks} /> : null}
           <ApprovalBadge />
+          <PaletteButton showKeys={mode === 'desktop'} />
           <MoreMenu />
           <button className="btn btn-primary" onClick={() => setExportOpen(true)}>
             <Download size={15} /> Export
@@ -587,6 +619,14 @@ function Stage({ mode }: { mode: 'desktop' | 'tablet' | 'mobile' }) {
 function useShortcuts() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // The command palette opens from anywhere in the studio, a text field included, but not over another dialog.
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
+        if (!document.querySelector('[aria-modal="true"]')) {
+          e.preventDefault();
+          openCommandPalette();
+        }
+        return;
+      }
       // Keys sent to the window itself (no element focused) act on the page.
       const target = e.target instanceof Element ? e.target : document.body;
       if (target.closest('input, textarea, select, [contenteditable="true"]')) return;
@@ -800,6 +840,7 @@ export function StudioShell() {
   const closeInspector = useCallback(() => setInspectorOpen(false), [setInspectorOpen]);
   const closeLayers = useCallback(() => setLayersOpen(false), [setLayersOpen]);
   const closeChecks = useCallback(() => setChecksOpen(false), []);
+  const openChecks = useCallback(() => (mode === 'mobile' ? setSheet('preflight') : setChecksOpen(true)), [mode, setSheet]);
   const closePanel = useCallback(() => setPanel(null), [setPanel]);
   const panelSide = mode === 'mobile' ? 'bottom' : 'right';
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -913,6 +954,7 @@ export function StudioShell() {
       <Sheet open={shortcutsOpen} onClose={closeShortcuts} title="Keys and gestures" side={panelSide} wide>
         <ShortcutsPanel />
       </Sheet>
+      <CommandPalette mode={mode} onOpenChecks={openChecks} />
 
       <StudioTour mobile={mode === 'mobile'} />
       <Toaster />

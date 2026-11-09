@@ -69,6 +69,7 @@ export function ShortcutsPanel() {
       <Section title="Keyboard">
         <Rows
           rows={[
+            ['Find any action by name: add, align, go to a zone, switch colourway, export', 'Mod+K'],
             ['Undo, redo', 'Mod+Z Mod+Shift+Z or Mod+Y'],
             ['Copy, cut, paste layers (into any zone or design area)', 'Mod+C Mod+X Mod+V'],
             ['Duplicate', 'Mod+D'],
