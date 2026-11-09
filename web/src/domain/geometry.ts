@@ -87,6 +87,38 @@ export function croppedTransform(t: LayerTransform, natW: number, natH: number, 
   };
 }
 
+/** A crop as fractions of an image's width and height. */
+export interface CropRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export const FULL_CROP: CropRect = { x: 0, y: 0, w: 1, h: 1 };
+
+/** A layer's box after its crop changes from `from` to `to`: the photo stays exactly where it was. */
+export function recroppedTransform(t: LayerTransform, from: CropRect, to: CropRect) {
+  return croppedTransform(t, from.w, from.h, { x: to.x - from.x, y: to.y - from.y, w: to.w, h: to.h });
+}
+
+/**
+ * The largest crop of `aspect` (width ÷ height, in pixels) that fits a `natW` × `natH` image,
+ * centred on (`cx`, `cy`) as far as the image allows. Used to frame a photo in a fixed shape.
+ */
+export function fitCrop(aspect: number, natW: number, natH: number, cx = 0.5, cy = 0.5, zoom = 1): CropRect {
+  const imageAspect = natW / natH;
+  let w = aspect >= imageAspect ? 1 : aspect / imageAspect;
+  let h = aspect >= imageAspect ? imageAspect / aspect : 1;
+  const z = Math.max(1, zoom);
+  w /= z;
+  h /= z;
+  return { x: clamp(cx - w / 2, 0, 1 - w), y: clamp(cy - h / 2, 0, 1 - h), w, h };
+}
+
+/** Whether a crop shows the whole image. */
+export const isFullCrop = (k: CropRect | undefined) => !k || (k.x <= 1e-4 && k.y <= 1e-4 && k.w >= 0.9999 && k.h >= 0.9999);
+
 type Box = Pick<LayerTransform, 'centerXmm' | 'centerYmm' | 'widthMm' | 'heightMm' | 'rotationDeg'>;
 
 /**

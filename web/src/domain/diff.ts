@@ -33,6 +33,7 @@ function describeLayerChange(a: ArtworkLayer, b: ArtworkLayer): string[] {
   if (ta.flipX !== tb.flipX || ta.flipY !== tb.flipY) out.push('flipped');
   if (a.visible !== b.visible) out.push(b.visible ? 'shown' : 'hidden');
   if (a.locked !== b.locked) out.push(b.locked ? 'locked' : 'unlocked');
+  if (!!a.clip !== !!b.clip) out.push(b.clip ? 'clipped to the layer below' : 'released from clipping');
   if (a.style.opacity !== b.style.opacity) out.push(`opacity ${Math.round(b.style.opacity * 100)}%`);
   if (a.style.blendMode !== b.style.blendMode) out.push(`blend ${b.style.blendMode}`);
   if (a.style.finish !== b.style.finish) out.push(`finish ${b.style.finish.replace('_', ' ')}`);
@@ -43,7 +44,8 @@ function describeLayerChange(a: ArtworkLayer, b: ArtworkLayer): string[] {
   if (ca.kind === 'text' && cb.kind === 'text') {
     if (ca.value !== cb.value) out.push(`text changed to “${cb.value.slice(0, 40)}”`);
     if (ca.fontFamily !== cb.fontFamily || ca.fontWeight !== cb.fontWeight || ca.italic !== cb.italic) out.push(`font ${cb.fontFamily} ${cb.fontWeight}${cb.italic ? ' italic' : ''}`);
-    if (ca.fill !== cb.fill) out.push(`colour ${cb.fill}`);
+    if (ca.fill !== cb.fill && !cb.letterColors) out.push(`colour ${cb.fill}`);
+    if (JSON.stringify(ca.letterColors ?? null) !== JSON.stringify(cb.letterColors ?? null)) out.push(cb.letterColors ? `letter colours ${cb.letterColors.join(', ')}` : 'one colour for every letter');
     if (ca.curveDeg !== cb.curveDeg) out.push(cb.curveDeg ? `curved ${Math.round(cb.curveDeg)}°` : 'straightened');
     if (ca.strokeColor !== cb.strokeColor || ca.strokeWidthMm !== cb.strokeWidthMm) out.push('outline changed');
     if (!!ca.hollow !== !!cb.hollow) out.push(cb.hollow ? 'outline only' : 'filled');

@@ -164,8 +164,10 @@ export function designInks(doc: DesignDocument, limit = 24): Ink[] {
   const inksOf = (layer: { name: string; visible: boolean; content: LayerContent; transform: { widthMm: number; heightMm: number } }, part: Ink['part']) => {
     const c = layer.content;
     if (!layer.visible || c.kind === 'image') return;
-    const also = c.fillStyle?.kind === 'gradient' ? [c.fillStyle.to] : c.fillStyle?.kind === 'pattern' ? [c.fillStyle.color2] : [];
-    const ink: Ink & { area: number } = { hex: c.fill.toUpperCase(), name: layer.name, part, area: layer.transform.widthMm * layer.transform.heightMm };
+    // Letter colours take the fill's place: the first is the layer's ink, the rest go with it.
+    const letters = c.kind === 'text' && c.letterColors?.length ? [...new Set(c.letterColors.map((x) => x.toUpperCase()))] : null;
+    const also = letters ? letters.slice(1) : c.fillStyle?.kind === 'gradient' ? [c.fillStyle.to] : c.fillStyle?.kind === 'pattern' ? [c.fillStyle.color2] : [];
+    const ink: Ink & { area: number } = { hex: (letters?.[0] ?? c.fill).toUpperCase(), name: layer.name, part, area: layer.transform.widthMm * layer.transform.heightMm };
     if (also.length) ink.also = also.map((x) => x.toUpperCase());
     if (c.strokeColor && (c.strokeWidthMm ?? 0) >= BOLD_OUTLINE_MM) ink.outline = c.strokeColor.toUpperCase();
     found.push(ink);

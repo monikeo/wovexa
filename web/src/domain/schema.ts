@@ -179,7 +179,13 @@ export const imageContentSchema = z.object({
   repeat: imageRepeatSchema.optional(),
   /** Crop the image to a shape (spec ED2-10 mask). */
   mask: z.enum(['circle', 'rounded', 'star', 'heart', 'hexagon', 'shield']).optional(),
+  /** Free crop (spec ED2-10): the part of the image shown, as fractions of its width and height. Absent shows all of it. */
+  crop: z
+    .object({ x: finite.min(0).max(1), y: finite.min(0).max(1), w: finite.min(0.005).max(1), h: finite.min(0.005).max(1) })
+    .refine((k) => k.x + k.w <= 1.0001 && k.y + k.h <= 1.0001, 'Expected a crop inside the image')
+    .optional(),
 });
+export type ImageCrop = NonNullable<z.infer<typeof imageContentSchema>['crop']>;
 
 export const textContentSchema = z.object({
   kind: z.literal('text'),
@@ -203,6 +209,11 @@ export const textContentSchema = z.object({
   fontAssetId: id.optional(),
   /** Outline only: the letters drawn as lines (the outline colour and width, else the fill colour at 1 mm), no fill. */
   hollow: z.boolean().optional(),
+  /**
+   * Each letter in its own colour: these run across the letters in turn and repeat, spaces skipped.
+   * They take the place of the fill colour and any gradient or pattern.
+   */
+  letterColors: z.array(hex).min(1).max(40).optional(),
 });
 
 export const SHAPES = ['rect', 'ellipse', 'triangle', 'star', 'polygon', 'heart', 'line', 'path'] as const;
@@ -240,17 +251,27 @@ export const artworkLayerSchema = z.object({
   locked: z.boolean(),
   /** Layers sharing a groupId move, scale and select together. Members stay adjacent in the stack. */
   groupId: id.optional(),
+  /**
+   * Clipped to the layer below (spec ED2-05): shown only where that layer has ink, like a photo
+   * inside lettering. Clipped layers stacked together all clip to the first unclipped layer under them.
+   */
+  clip: z.boolean().optional(),
   transform: transformSchema,
   style: layerStyleSchema,
   content: layerContentSchema,
 });
 export type ArtworkLayer = z.infer<typeof artworkLayerSchema>;
 
+/** Ruler guides on a print area (spec ED2-08): vertical lines at these x, horizontal ones at these y, in mm. */
+export const guidesSchema = z.object({ x: z.array(finite.min(-2000).max(2000)).max(40), y: z.array(finite.min(-2000).max(2000)).max(40) });
+export type Guides = z.infer<typeof guidesSchema>;
+
 export const zoneDesignSchema = z.object({
   zoneId: zoneIdSchema,
   printMethod: printMethodSchema,
   orderedLayerIds: z.array(id).max(200),
   layers: z.record(id, artworkLayerSchema),
+  guides: guidesSchema.optional(),
 });
 export type ZoneDesign = z.infer<typeof zoneDesignSchema>;
 
@@ -328,6 +349,7 @@ export const designAreaSchema = z.object({
   printMethod: printMethodSchema,
   orderedLayerIds: z.array(id).max(200),
   layers: z.record(id, artworkLayerSchema),
+  guides: guidesSchema.optional(),
 });
 export type DesignArea = z.infer<typeof designAreaSchema>;
 
@@ -339,7 +361,7 @@ export const designAreasSchema = z.object({
 export type DesignAreas = z.infer<typeof designAreasSchema>;
 
 /** What a zone and a design area share: layers in stacking order, bottom first. */
-export type LayerStack = Pick<ZoneDesign, 'orderedLayerIds' | 'layers'>;
+export type LayerStack = Pick<ZoneDesign, 'orderedLayerIds' | 'layers' | 'guides'>;
 
 export const colorwaySchema = z.object({
   id,
@@ -400,6 +422,8 @@ export const sceneSchema = z.object({
   tone: z.enum(['neutral', 'agx', 'aces']).optional(),
   /** How the cloth falls in 3D: pressed flat, natural folds (default) or relaxed. */
   drape: z.enum(['pressed', 'natural', 'relaxed']).optional(),
+  /** What the garment is shown on: nothing (default), a display form over a podium, or a table for a flat lay. */
+  stage: z.enum(['none', 'podium', 'table']).optional(),
 });
 export type Scene = z.infer<typeof sceneSchema>;
 

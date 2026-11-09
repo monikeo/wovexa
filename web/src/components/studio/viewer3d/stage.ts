@@ -3,7 +3,8 @@
  * panel, export). Free of three.js imports, so panels can use it without pulling the 3D engine
  * into their bundle; the viewer fills in `viewerApi` while it is mounted.
  */
-import type { CameraBookmark, ProjectorSpec, ZoneId } from '@/domain/schema';
+import type { ArtboardId, CameraBookmark, ProjectorSpec, ZoneId } from '@/domain/schema';
+import type { CameraKey } from '@/lib/camera-path';
 import type { ProjectionMesh } from './projection';
 
 export type ViewPreset = 'front' | 'back' | 'left' | 'right' | 'three_quarter' | 'top' | 'bottom';
@@ -89,6 +90,8 @@ export interface TurntableOptions {
   frameCurrent?: boolean;
   /** Frames per second, so the scene's motion (wind, float, knit) plays in real time in the clip. */
   fps?: number;
+  /** A camera move instead of a turn: from the start view in to a print, or through saved views. */
+  move?: { kind: 'fly-in'; artboard: ArtboardId } | { kind: 'path'; keys: CameraKey[] };
   /** Receives each finished frame; awaited, so an encoder can apply backpressure. */
   onFrame: (canvas: HTMLCanvasElement, index: number) => Promise<void> | void;
   signal?: AbortSignal;
@@ -111,6 +114,8 @@ export const viewerApi: {
   areaAnchor?: () => ProjectorSpec | null;
   /** The cloth at rest that design areas lie on, as the 3D view shows it (a fitted shell is its own). */
   restCloth?: () => readonly ProjectionMesh[];
+  /** A camera close on a print area's artwork, square to the cloth there. Null when it can't be found. */
+  printCloseUp?: (artboard: ArtboardId, fovDeg: number) => CameraKey | null;
 } = {};
 
 export function shotKey(shot: ShotSpec) {

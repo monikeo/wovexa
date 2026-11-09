@@ -24,6 +24,8 @@ import {
   Columns2,
   Copy,
   CopyPlus,
+  CornerLeftDown,
+  Crop,
   Download,
   Eraser,
   Eye,
@@ -53,6 +55,7 @@ import {
   Maximize,
   Minus,
   Moon,
+  Move,
   Orbit,
   PaintBucket,
   Palette,
@@ -95,7 +98,7 @@ import { searchCommands, type Searchable } from '@/domain/command-search';
 import * as cmd from '@/domain/commands';
 import { GARMENT_LIST, getGarment, partColor, sizeLabel } from '@/domain/garments';
 import { GRAPHICS } from '@/domain/graphics';
-import { DRAPES, drapeOf, MOTIONS, motionOf, SCENE_PRESETS, sceneOf, toneOf, TONES } from '@/domain/scene';
+import { DRAPES, drapeOf, MOTIONS, motionOf, SCENE_PRESETS, sceneOf, STAGES, stageOf, toneOf, TONES } from '@/domain/scene';
 import { MAX_SHELL_TRIANGLES, type LibraryModel } from '@/domain/model-library';
 import { isAreaId, type AreaId, type ArtboardId, type DesignDocument, type ShapeContent } from '@/domain/schema';
 import { ACCEPTED_TYPES } from '@/lib/assets';
@@ -110,6 +113,7 @@ import {
   addText,
   alignSelection,
   clearEffects,
+  clipSelection,
   copiedLayerCount,
   copySelection,
   deleteSelection,
@@ -118,6 +122,7 @@ import {
   flipSelection,
   groupSelection,
   moveSelectionInStack,
+  openCrop,
   outlineOnlySelection,
   pasteLayers,
   placementsFor,
@@ -221,6 +226,7 @@ interface Context {
   library: LibraryModel[];
   theme: Preferences['theme'];
   units: Preferences['units'];
+  seamGuides: Preferences['seamGuides'];
   copied: number;
   mod: string;
   go: (href: string) => void;
@@ -270,6 +276,11 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
     titles.Selection = `Selected: ${layers.length === 1 ? layers[0].name : plural(layers.length, 'layer')}`;
     const units = selectionUnits(zone, c.selectedIds).length;
     const groups = new Set(layers.map((l) => l.groupId ?? `solo:${l.id}`));
+    // One layer clips to the one under it; several clip to the lowest of them.
+    const lowest = zone.orderedLayerIds.find((id) => c.selectedIds.includes(id));
+    const clipTargets = layers.length > 1 ? layers.filter((l) => l.id !== lowest) : layers;
+    const clipped = clipTargets.length > 0 && clipTargets.every((l) => l.clip);
+    const canClip = clipped || layers.length > 1 || zone.orderedLayerIds.indexOf(layers[0].id) > 0;
     add('Selection', [
       { id: 'sel-duplicate', label: 'Duplicate', keywords: 'copy clone again repeat', icon: CopyPlus, keys: 'Mod+D', run: duplicateSelection },
       { id: 'sel-copy', label: 'Copy', keywords: 'clipboard', icon: Copy, keys: 'Mod+C', run: () => copyLayers(false, c.mod) },
@@ -279,6 +290,19 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
       { id: 'sel-backward', label: 'Send backward', keywords: 'down lower order stack back arrange', icon: SendToBack, keys: '[', run: () => moveSelectionInStack(-1) },
       ...(layers.length > 1 && groups.size > 1 ? [{ id: 'sel-group', label: 'Group', keywords: 'combine join together', icon: Group, keys: 'Mod+G', run: groupSelection }] : []),
       ...(layers.some((l) => l.groupId) ? [{ id: 'sel-ungroup', label: 'Ungroup', keywords: 'split apart separate', icon: Ungroup, keys: 'Mod+Shift+G', run: ungroupSelection }] : []),
+      ...(canClip
+        ? [
+            clipped
+              ? { id: 'sel-unclip', label: 'Release clipping', keywords: 'unclip clipping mask free', icon: CornerLeftDown, keys: 'Mod+Alt+G', run: () => clipSelection(false) }
+              : { id: 'sel-clip', label: layers.length > 1 ? 'Clip into lowest layer' : 'Clip to layer below', keywords: 'clipping mask inside fill photo in text lettering knockout frame', icon: CornerLeftDown, keys: 'Mod+Alt+G', run: () => clipSelection(true) },
+          ]
+        : []),
+      ...(layers.length === 1 && layers[0].content.kind === 'image'
+        ? [
+            { id: 'img-crop', label: 'Crop image', keywords: 'trim cut photo picture aspect square portrait', icon: Crop, run: () => openCrop('crop') },
+            { id: 'img-frame', label: 'Move photo in frame', keywords: 'reframe pan zoom mask shape circle badge position inside', icon: Move, run: () => openCrop('frame') },
+          ]
+        : []),
       { id: 'sel-flip-x', label: 'Flip horizontally', keywords: 'mirror reverse left right', icon: FlipHorizontal2, run: () => flipSelection('x') },
       { id: 'sel-flip-y', label: 'Flip vertically', keywords: 'mirror upside down', icon: FlipVertical2, run: () => flipSelection('y') },
       { id: 'sel-rotate', label: 'Rotate 90°', keywords: 'turn clockwise quarter', icon: RotateCw, run: () => rotateSelection(90) },
@@ -426,6 +450,35 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
       .filter((m) => m.mode !== current && (m.mode !== 'split' || (!mobile && c.wide)))
       .map((m) => ({ id: `view:${m.mode}`, label: m.label, keywords: m.keywords, icon: m.icon, run: () => s().setViewMode(m.mode) })),
     ...(twoShown ? [{ id: 'fit', label: 'Fit the print area', keywords: 'zoom reset whole view', icon: Maximize, keys: 'Shift+1', run: () => window.dispatchEvent(new CustomEvent('wovexa:fit')) }] : []),
+    ...(zone
+      ? [
+          {
+            id: 'guides-centre',
+            label: 'Add centre guides',
+            keywords: 'ruler guide line middle centre center snap align',
+            icon: Ruler,
+            searchOnly: true,
+            run: () => {
+              const spec = artboardSpec(model, doc, activeZoneId);
+              const g = zone.guides ?? { x: [], y: [] };
+              s().dispatch(cmd.setGuides(activeZoneId, { x: [...g.x.filter((x) => x !== spec.printableWidthMm / 2), spec.printableWidthMm / 2], y: [...g.y.filter((y) => y !== spec.printableHeightMm / 2), spec.printableHeightMm / 2] }, 'Add centre guides'));
+            },
+          },
+          ...(zone.guides ? [{ id: 'guides-clear', label: 'Clear guides', keywords: 'ruler guide lines remove delete', icon: Ruler, searchOnly: true, run: () => s().dispatch(cmd.setGuides(activeZoneId, undefined, 'Clear guides')) }] : []),
+        ]
+      : []),
+    ...(!area
+      ? [
+          {
+            id: 'seam-guides',
+            label: c.seamGuides === 'on' ? 'Hide seam clearance' : 'Show seam clearance',
+            keywords: 'seams edges collar side hem keep away print safe margin',
+            icon: Shirt,
+            searchOnly: true,
+            run: () => setPreference('seamGuides', c.seamGuides === 'on' ? 'off' : 'on'),
+          },
+        ]
+      : []),
     ...(Object.keys(VIEW_PRESETS) as ViewPreset[]).map((v) => ({
       id: `camera:${v}`,
       label: `${VIEW_PRESETS[v].long} view`,
@@ -453,6 +506,14 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
       run: () => setScene({ motion: { ...motionOf(scene), kind: m.id } }, `Motion: ${m.label.toLowerCase()}`),
     })),
     ...(ownFolds ? [] : DRAPES.filter((d) => d.id !== drapeOf(scene))).map((d) => ({ id: `drape:${d.id}`, label: `Drape: ${d.label}`, keywords: '3d folds cloth wrinkles fabric', icon: Shirt, searchOnly: true, run: () => setScene({ drape: d.id }, `Drape: ${d.label.toLowerCase()}`) })),
+    ...STAGES.filter((st) => st.id !== stageOf(scene)).map((st) => ({
+      id: `stage:${st.id}`,
+      label: `Stage: ${st.label}`,
+      keywords: '3d scene set podium plinth pedestal display form table flat lay top down wood photo product',
+      icon: Box,
+      searchOnly: true,
+      run: () => setScene({ stage: st.id === 'none' ? undefined : st.id }, `Stage: ${st.label.toLowerCase()}`),
+    })),
     {
       id: 'floor-shadow',
       label: scene.shadows ? 'Hide the floor shadow' : 'Show the floor shadow',
@@ -646,6 +707,7 @@ function PaletteDialog({ mode, onClose, pickImage, openChecks }: { mode: LayoutM
   const redoLabel = useStudio((s) => s.history.future[0]?.label);
   const theme = usePreference('theme');
   const units = usePreference('units');
+  const seamGuides = usePreference('seamGuides');
   const mod = useModKey();
   const [library, setLibrary] = useState<LibraryModel[]>([]);
   const [query, setQuery] = useState('');
@@ -689,9 +751,9 @@ function PaletteDialog({ mode, onClose, pickImage, openChecks }: { mode: LayoutM
   const { commands, titles } = useMemo(
     () =>
       doc
-        ? buildCommands({ doc, activeZoneId, selectedIds, projectionId, viewMode, undoLabel, redoLabel, projectId, mode, wide, library, theme, units, copied, mod, go, pickImage, openChecks })
+        ? buildCommands({ doc, activeZoneId, selectedIds, projectionId, viewMode, undoLabel, redoLabel, projectId, mode, wide, library, theme, units, seamGuides, copied, mod, go, pickImage, openChecks })
         : { commands: [], titles: {} },
-    [doc, activeZoneId, selectedIds, projectionId, viewMode, undoLabel, redoLabel, projectId, mode, wide, library, theme, units, copied, mod, go, pickImage, openChecks],
+    [doc, activeZoneId, selectedIds, projectionId, viewMode, undoLabel, redoLabel, projectId, mode, wide, library, theme, units, seamGuides, copied, mod, go, pickImage, openChecks],
   );
 
   const searching = query.trim().length > 0;

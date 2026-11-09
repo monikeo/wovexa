@@ -33,7 +33,7 @@ import { buildMarker, type MarkerSummary } from './marker';
 import { DEFAULT_MARKER, type MarkerSettings } from './marker-layout';
 import { buildProofPdf, placementText, type ProofInput } from './proof';
 import { personalise, personalisedAreas, personalisedZones, sizeBreakdown, toCsv, type Roster } from './roster';
-import { buildSeparations, type Ink } from './separations';
+import { buildSeparations, needsUnderbase, type Ink } from './separations';
 import { approxCmyk, buildTechSheet, hexToRgb, type TechSheetInput } from './tech-sheet';
 import { zoneSvg } from './svg-artwork';
 import { ZipWriter } from './zip';
@@ -152,16 +152,6 @@ export function zonesWithArtwork(doc: DesignDocument): ZoneId[] {
 /** Design areas that print: shown, with at least one visible layer. Each is a print file of its own. */
 export function areasWithArtwork(doc: DesignDocument): DesignArea[] {
   return designAreas(doc).filter((a) => a.visible && a.orderedLayerIds.some((id) => a.layers[id]?.visible));
-}
-
-/** Relative luminance below this reads as a dark garment that needs a white underbase. */
-const DARK = 0.42;
-function luminance(hex: string) {
-  const [r, g, b] = hexToRgb(hex).map((v) => {
-    const c = v / 255;
-    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-  });
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
 const release = (c: HTMLCanvasElement) => {
@@ -351,6 +341,11 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
     art.fonts.forEach((f) => vectorFonts.add(f));
     const file = await add(`print/vector/${name}.svg`, art.svg, 'image/svg+xml');
     outputs.push({ zone: label, filename: file, format: 'svg', physicalWidthMm: widthMm, physicalHeightMm: heightMm, liveTextFonts: art.fonts, placedImages: art.rasterLayers, sha256: files[files.length - 1].sha256 });
+    // Sticker outlines come with their cut line, for a vinyl cutter or plotter.
+    if (art.cut) {
+      const cutFile = await add(`print/vector/${name}_cut.svg`, art.cut, 'image/svg+xml');
+      outputs.push({ zone: `${label}, cut line`, filename: cutFile, format: 'svg', physicalWidthMm: widthMm, physicalHeightMm: heightMm, sha256: files[files.length - 1].sha256 });
+    }
   };
   const step = (label: string) => {
     abortIfNeeded(ctx.signal);
@@ -384,7 +379,7 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
   // ---- Print files and screen-print films ----
   const zoneRecords: TechSheetInput['zones'] = [];
   const outputs: Record<string, unknown>[] = [];
-  const darkGarment = colorways.some((c) => luminance(c.parts.body) < DARK);
+  const darkGarment = colorways.some((c) => needsUnderbase(c.parts.body));
   const inksByZone: Partial<Record<ZoneId, Ink[]>> = {};
   for (const zoneId of zones) {
     const spec = zoneSpecOrFirst(model, zoneId);

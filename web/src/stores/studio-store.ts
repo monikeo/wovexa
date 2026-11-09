@@ -254,6 +254,17 @@ export interface LiveProjection {
   transform?: Partial<ProjectedTransform>;
 }
 
+/** One screen of a print area shown alone on the 2D artboard: the white underbase, or one ink. */
+export interface PlatePreview {
+  zoneId: ArtboardId;
+  label: string;
+  /** What that screen prints, over the print area (transparent where it prints nothing). */
+  canvas: HTMLCanvasElement;
+  /** The garment colour it prints on. */
+  garment: string;
+  plate: 'underbase' | number;
+}
+
 interface LiveState {
   zoneId: ArtboardId | null;
   overrides: Record<string, Partial<LayerTransform>>;
@@ -268,12 +279,15 @@ interface LiveState {
   sceneOverride: Partial<Scene> | null;
   /** Output aspect (width / height) the render studio is set to; the 3D view frames it. */
   renderAspect: number | null;
+  /** A single screen shown on the 2D artboard instead of the artwork (the ink count's preview). */
+  platePreview: PlatePreview | null;
   setOverrides: (zoneId: ArtboardId, overrides: Record<string, Partial<LayerTransform>>, source?: '2d' | '3d') => void;
   setProjection: (projection: LiveProjection | null) => void;
   setColorwayOverride: (id: string | null) => void;
   setColorwayPreview: (colorway: Colorway | null) => void;
   setSceneOverride: (scene: Partial<Scene> | null) => void;
   setRenderAspect: (aspect: number | null) => void;
+  setPlatePreview: (preview: PlatePreview | null) => void;
   clear: () => void;
 }
 
@@ -286,12 +300,14 @@ export const useLive = create<LiveState>((set) => ({
   colorwayPreview: null,
   sceneOverride: null,
   renderAspect: null,
+  platePreview: null,
   setOverrides: (zoneId, overrides, source = '2d') => set({ zoneId, overrides, source }),
   setProjection: (projection) => set({ projection, source: projection ? '3d' : null }),
   setColorwayOverride: (colorwayOverride) => set({ colorwayOverride }),
   setColorwayPreview: (colorwayPreview) => set({ colorwayPreview }),
   setSceneOverride: (sceneOverride) => set({ sceneOverride }),
   setRenderAspect: (renderAspect) => set({ renderAspect }),
+  setPlatePreview: (platePreview) => set({ platePreview }),
   clear: () => set({ zoneId: null, overrides: {}, projection: null, source: null }),
 }));
 

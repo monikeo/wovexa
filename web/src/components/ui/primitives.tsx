@@ -203,7 +203,11 @@ export function Sheet({
           onPointerDown: (e: React.PointerEvent) => {
             if ((e.target as HTMLElement).closest('button')) return;
             setDrag({ startY: e.clientY, id: e.pointerId });
-            (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+            try {
+              (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+            } catch {
+              // A pointer already released (or a synthetic one) can't be captured; the drag still follows it.
+            }
           },
           onPointerMove: (e: React.PointerEvent) => {
             if (drag?.id === e.pointerId) setDragY(Math.max(0, e.clientY - drag.startY));

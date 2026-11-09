@@ -413,6 +413,8 @@ export function ExportPanel() {
         art.fonts.forEach((f) => fonts.add(f));
         const name = formatName(prefs.naming, { project: current.title, zone: job.zone, colorway: current.colorways[0]?.name, size: current.garment.sizeCode, method: PRINT_METHOD_LABELS[job.method], w: Math.round(job.w), h: Math.round(job.h), dpi: prefs.dpi, rev: label, date: isoDate() });
         out.push({ name: `${name}.svg`, svg: art.svg });
+        // Sticker outlines come with their cut line, for a vinyl cutter or plotter.
+        if (art.cut) out.push({ name: `${name}_cut.svg`, svg: art.cut });
       }
       let blob: Blob;
       let fileName: string;

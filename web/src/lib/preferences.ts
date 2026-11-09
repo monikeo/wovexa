@@ -9,9 +9,11 @@ export interface Preferences {
   units: 'mm' | 'in';
   theme: 'system' | 'light' | 'dark';
   quality: 'auto' | 'low' | 'medium' | 'high';
+  /** Bands along seams and edges on the 2D artboard, where a print should not go. */
+  seamGuides: 'off' | 'on';
 }
 
-const DEFAULTS: Preferences = { units: 'mm', theme: 'system', quality: 'auto' };
+const DEFAULTS: Preferences = { units: 'mm', theme: 'system', quality: 'auto', seamGuides: 'off' };
 const listeners = new Set<() => void>();
 
 function read<K extends keyof Preferences>(key: K): Preferences[K] {

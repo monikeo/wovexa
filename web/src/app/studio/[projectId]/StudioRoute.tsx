@@ -1,10 +1,20 @@
 'use client';
 import Link from 'next/link';
-import { useEffect } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import { StudioShell } from '@/components/studio/StudioShell';
 import { useStudio } from '@/stores/studio-store';
 
-export function StudioRoute({ projectId }: { projectId: string }) {
+const noSubscribe = () => () => {};
+
+/** The project in the address bar. Offline, the service worker may answer with another project's cached studio page. */
+function projectInUrl(fallback: string) {
+  const match = /^\/studio\/([^/?#]+)/.exec(window.location.pathname);
+  return match ? decodeURIComponent(match[1]) : fallback;
+}
+
+export function StudioRoute({ projectId: routed }: { projectId: string }) {
+  // The server knows the project it rendered; the browser knows the one asked for. They differ only offline.
+  const projectId = useSyncExternalStore(noSubscribe, () => projectInUrl(routed), () => routed);
   const status = useStudio((s) => s.status);
   const errors = useStudio((s) => s.loadErrors);
   const load = useStudio((s) => s.load);

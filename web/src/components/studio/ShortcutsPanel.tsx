@@ -81,6 +81,7 @@ export function ShortcutsPanel() {
             ['Rotate 1°, 15°', ', . Shift+, Shift+.'],
             ['Send backward, bring forward', '[ ]'],
             ['Group, ungroup', 'Mod+G Mod+Shift+G'],
+            ['Clip to the layer below (a photo inside lettering), or release', 'Mod+Alt+G'],
             ['Previous or next print area', 'PageUp PageDown'],
             ['Add text', 'T'],
             ['Pen: draw your own shape (Enter closes it, Backspace takes back a point, Esc cancels)', 'P'],

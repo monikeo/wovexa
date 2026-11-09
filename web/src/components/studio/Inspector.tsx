@@ -14,6 +14,7 @@ import {
   ArrowDownToLine,
   ArrowUpToLine,
   Copy,
+  CornerLeftDown,
   CopyPlus,
   Crop,
   Dices,
@@ -37,7 +38,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { selectionUnits, type AlignMode, type CopyPlan } from '@/domain/arrange';
 import * as cmd from '@/domain/commands';
 import { changeCase, isCase, type LetterCase } from '@/domain/letter-case';
-import { checkLayer, checkProjectedLayer, DEFAULT_PREFLIGHT, effectiveDpi } from '@/domain/preflight';
+import { checkLayer, checkProjectedLayer, DEFAULT_PREFLIGHT, effectiveDpi, shownPixels } from '@/domain/preflight';
 import { projectedAsArtwork } from '@/domain/projected';
 import {
   isAreaId,
@@ -58,14 +59,15 @@ import { AssetError, getLoadedImage, importImageFile, loadAssetImage } from '@/l
 import { ARTWORK_FONTS, fontWeights, loadFontStylesheets } from '@/lib/fonts';
 import { alphaBounds, extractPalette, removeBackground, type PaletteColour } from '@/lib/image-ops';
 import { canvasToBlob } from '@/lib/download';
-import { croppedTransform } from '@/domain/geometry';
+import { croppedTransform, FULL_CROP, recroppedTransform, type CropRect } from '@/domain/geometry';
 import { getAsset } from '@/lib/local-db';
 import { usePreference } from '@/lib/preferences';
 import { DEFAULT_REPEAT, effectiveDistress, isCurved, isNeutralAdjust, isWarped, NEUTRAL_ADJUST, textAspect } from '@/lib/render/zone-renderer';
 import { ColorField, NumberField, toast } from '@/components/ui/primitives';
 import { useActiveArtboard, useActiveZoneSpec, useStudio } from '@/stores/studio-store';
-import { alignSelection, deleteSelection, distributeSelection, duplicateSelection, groupSelection, placementsFor, placeSelection, repeatSelection, ungroupSelection } from './actions';
+import { alignSelection, clipSelection, deleteSelection, distributeSelection, duplicateSelection, groupSelection, placementsFor, placeSelection, repeatSelection, ungroupSelection } from './actions';
 import { useBrandKit } from './brand-context';
+import { CropEditor } from './CropEditor';
 import { FontPicker } from './FontPicker';
 import { AreaPanel } from './AreaPanel';
 import { GarmentPanel } from './GarmentPanel';
@@ -399,7 +401,7 @@ function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextCon
       ) : null}
     </Section>
     <Section title="Fill and effects">
-      <FillControls fill={content.fill} fillStyle={content.fillStyle} swatches={kit?.colors} onChange={(patch, label, gesture) => update(patch, label, gesture)} />
+      <FillControls fill={content.fill} fillStyle={content.fillStyle} letterColors={content.letterColors} allowLetters swatches={kit?.colors} onChange={(patch, label, gesture) => update(patch, label, gesture)} />
       <OutlineOnly hollow={!!content.hollow} width={content.strokeWidthMm} onChange={(patch, label) => update(patch, label)} />
       {content.hollow ? null : (
         <>
@@ -625,13 +627,53 @@ const IMAGE_MASKS: { id: NonNullable<ImageContent['mask']> | 'none'; label: stri
   { id: 'heart', label: 'Heart', icon: 'M12 21s-9-5.6-9-12a5 5 0 0 1 9-3a5 5 0 0 1 9 3c0 6.4-9 12-9 12z' },
 ];
 
+/** Shapes that should come out round on a rectangular photo: the frame squares up on the photo's middle. */
+const ROUND_MASKS = new Set<string>(['circle', 'hexagon', 'shield', 'star', 'heart']);
+
 function ImageSection({ layer }: { layer: ArtworkLayer }) {
   const edit = useLayerEdit();
   const dispatch = useStudio((s) => s.dispatch);
+  const [cropMode, setCropMode] = useState<'crop' | 'frame' | null>(null);
+  // The command palette and the canvas menu open the crop here.
+  useEffect(() => {
+    const open = (e: Event) => {
+      const detail = (e as CustomEvent<{ layerId: string; mode: 'crop' | 'frame' }>).detail;
+      if (detail?.layerId === layer.id) setCropMode(detail.mode);
+    };
+    window.addEventListener('wovexa:crop', open);
+    return () => window.removeEventListener('wovexa:crop', open);
+  }, [layer.id]);
   if (layer.content.kind !== 'image') return null;
   const dpi = effectiveDpi(layer);
   const c = layer.content;
-  const at300 = { widthMm: (c.naturalWidthPx / 300) * 25.4, heightMm: (c.naturalHeightPx / 300) * 25.4 };
+  const t = layer.transform;
+  const shown = shownPixels(c);
+  const at300 = { widthMm: (shown.w / 300) * 25.4, heightMm: (shown.h / 300) * 25.4 };
+
+  const applyCrop = (crop: CropRect | undefined) => {
+    const from = c.crop ?? FULL_CROP;
+    const to = crop ?? FULL_CROP;
+    // Cropping fits the box to what is kept, leaving the photo in place; a frame or a repeat tile keeps the box.
+    const transform = cropMode === 'crop' && !c.repeat ? recroppedTransform(t, from, to) : undefined;
+    dispatch(edit(layer.id, { content: { crop }, ...(transform ? { transform } : {}) }, cropMode === 'frame' ? 'Move photo in frame' : crop ? 'Crop image' : 'Remove crop'));
+    setCropMode(null);
+  };
+
+  const pickMask = (mask: NonNullable<ImageContent['mask']> | 'none') => {
+    const label = mask === 'none' ? 'Remove image shape' : `Image shape: ${mask}`;
+    // A circle should be round: square the frame on the middle of the photo, without stretching it.
+    if (mask !== 'none' && ROUND_MASKS.has(mask) && !c.repeat && Math.abs(t.widthMm / t.heightMm - 1) > 0.02) {
+      const from = c.crop ?? FULL_CROP;
+      const side = Math.min(t.widthMm, t.heightMm);
+      const w = (from.w * side) / t.widthMm;
+      const h = (from.h * side) / t.heightMm;
+      const to = { x: from.x + (from.w - w) / 2, y: from.y + (from.h - h) / 2, w, h };
+      dispatch(edit(layer.id, { content: { mask, crop: to }, transform: recroppedTransform(t, from, to) }, label));
+      return;
+    }
+    dispatch(edit(layer.id, { content: { mask: mask === 'none' ? undefined : mask } }, label));
+  };
+
   return (
     <>
       <Section title="Image">
@@ -640,6 +682,14 @@ function ImageSection({ layer }: { layer: ArtworkLayer }) {
           <dd className="num text-right">
             {c.naturalWidthPx} × {c.naturalHeightPx} px
           </dd>
+          {c.crop ? (
+            <>
+              <dt className="text-fg-2">Cropped to</dt>
+              <dd className="num text-right">
+                {Math.round(shown.w)} × {Math.round(shown.h)} px
+              </dd>
+            </>
+          ) : null}
           <dt className="text-fg-2">Prints at</dt>
           <dd className="num text-right font-semibold">{dpi ? `${Math.round(dpi.min)} dpi` : 'Vector, any size'}</dd>
         </dl>
@@ -657,7 +707,7 @@ function ImageSection({ layer }: { layer: ArtworkLayer }) {
                 key={m.id}
                 className="flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-xs font-medium text-fg-2 hover:border-line-strong hover:text-fg aria-pressed:border-[var(--accent)] aria-pressed:text-fg"
                 aria-pressed={(c.mask ?? 'none') === m.id}
-                onClick={() => dispatch(edit(layer.id, { content: { mask: m.id === 'none' ? undefined : m.id } }, m.id === 'none' ? 'Remove image shape' : `Image shape: ${m.label.toLowerCase()}`))}
+                onClick={() => pickMask(m.id)}
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden className="flex-none">
                   <path d={m.icon} fill="currentColor" fillRule="evenodd" />
@@ -667,6 +717,20 @@ function ImageSection({ layer }: { layer: ArtworkLayer }) {
             ))}
           </div>
         </div>
+        <div className="flex gap-2">
+          <button className="btn btn-outline flex-1 px-2 text-xs" onClick={() => setCropMode(cropMode === 'crop' ? null : 'crop')} aria-expanded={cropMode === 'crop'} title="Keep part of the image; the rest is hidden, not deleted">
+            <Crop size={14} /> {c.crop ? 'Edit crop' : 'Crop'}
+          </button>
+          <button className="btn btn-outline flex-1 px-2 text-xs" onClick={() => setCropMode(cropMode === 'frame' ? null : 'frame')} aria-expanded={cropMode === 'frame'} title="Move or zoom the photo inside the layer's shape">
+            <Move size={14} /> Move in frame
+          </button>
+        </div>
+        {cropMode ? <CropEditor key={cropMode} content={c} mode={cropMode} boxAspect={t.widthMm / t.heightMm} onApply={applyCrop} onClose={() => setCropMode(null)} /> : null}
+        {c.crop && !cropMode ? (
+          <button className="btn btn-ghost min-h-8 w-full px-2 text-xs" onClick={() => dispatch(edit(layer.id, { content: { crop: undefined }, ...(c.repeat ? {} : { transform: recroppedTransform(t, c.crop!, FULL_CROP) }) }, 'Remove crop'))}>
+            <RotateCcw size={13} /> Show the whole image
+          </button>
+        ) : null}
         <BackgroundRemoval layer={layer} />
         <TrimEdges layer={layer} />
         <ImagePalette content={c} />
@@ -1091,6 +1155,11 @@ function MultiSelection({ count, layers }: { count: number; layers: ArtworkLayer
   const units = zone ? selectionUnits(zone, ids) : [];
   const groupIds = new Set(layers.map((l) => l.groupId).filter(Boolean));
   const isOneGroup = groupIds.size === 1 && layers.every((l) => l.groupId);
+  // Several selected clip to the lowest of them.
+  const lowest = zone?.orderedLayerIds.find((id) => ids.includes(id));
+  const clipTargets = layers.filter((l) => l.id !== lowest);
+  const clipped = clipTargets.length > 0 && clipTargets.every((l) => l.clip);
+  const lowestName = lowest ? zone?.layers[lowest]?.name : undefined;
   return (
     <div>
       <Section title={isOneGroup ? `Group of ${count} layers` : `${count} layers selected`}>
@@ -1121,6 +1190,11 @@ function MultiSelection({ count, layers }: { count: number; layers: ArtworkLayer
             <Trash2 size={14} />
           </button>
         </div>
+        {lowestName ? (
+          <button className="btn btn-outline w-full justify-start text-xs" onClick={() => clipSelection(!clipped)} title="Ctrl+Alt+G">
+            <CornerLeftDown size={14} /> {clipped ? 'Release clipping' : `Clip the others into ${lowestName}`}
+          </button>
+        ) : null}
       </Section>
       <WrapSection count={count} />
     </div>
@@ -1272,6 +1346,12 @@ export function Inspector() {
   const layer = layers[0];
   const issues = checkLayer(layer, spec, zone.printMethod, DEFAULT_PREFLIGHT);
   const index = zone.orderedLayerIds.indexOf(layer.id);
+  // What this layer clips to: the first unclipped layer under it.
+  const clipBase = zone.orderedLayerIds
+    .slice(0, index)
+    .reverse()
+    .map((id) => zone.layers[id])
+    .find((l) => l && !l.clip);
 
   return (
     <div>
@@ -1316,6 +1396,19 @@ export function Inspector() {
             <ArrowDownToLine size={14} /> To back
           </button>
         </div>
+        {clipBase ? (
+          <label className="flex items-start gap-2 text-xs">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={!!layer.clip}
+              onChange={(e) => dispatch(cmd.updateLayer(zoneId, layer.id, { clip: e.target.checked }, e.target.checked ? 'Clip to layer below' : 'Release clipping'))}
+            />
+            <span>
+              Clip to {clipBase.name}: show this layer only inside it, like a photo inside lettering. <span className="text-fg-3">Ctrl+Alt+G</span>
+            </span>
+          </label>
+        ) : null}
       </Section>
     </div>
   );

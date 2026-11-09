@@ -69,6 +69,7 @@ import {
   startPen,
   switchArtboard,
   ungroupSelection,
+  clipSelection,
   zoomToSelection,
 } from './actions';
 import { deleteProjection, duplicateProjection, moveProjectionBy, nudgeProjection } from './projection-actions';
@@ -821,6 +822,10 @@ function useShortcuts() {
         e.preventDefault();
         if (s.selectedProjectionId) duplicateProjection(s.selectedProjectionId);
         else duplicateSelection();
+      } else if (mod && e.altKey && e.code === 'KeyG') {
+        // Alt changes the key's character on some layouts, so match the physical key.
+        e.preventDefault();
+        clipSelection();
       } else if (mod && key === 'g') {
         e.preventDefault();
         if (e.shiftKey) ungroupSelection();
@@ -1009,7 +1014,7 @@ export function StudioShell() {
     }
   }, [upgradedFrom]);
 
-  // Open the right panel when a text layer is double-clicked or added on smaller screens.
+  // Open the right panel when a layer is double-clicked, a text added or a crop opened on smaller screens.
   useEffect(() => {
     const onEdit = () => {
       if (mode === 'tablet') setInspectorOpen(true);
