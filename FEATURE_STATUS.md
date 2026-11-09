@@ -13,10 +13,10 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | Priority | Features | Done | Partial | Not started |
 | --- | ---: | ---: | ---: | ---: |
 | P0 | 34 | 27 | 7 | 0 |
-| P1 | 88 | 41 | 29 | 18 |
-| P2 | 59 | 4 | 12 | 43 |
-| Platform requirements (no priority) | 80 | 41 | 22 | 17 |
-| **All** | 261 | 113 | 70 | 78 |
+| P1 | 88 | 45 | 26 | 17 |
+| P2 | 59 | 4 | 13 | 42 |
+| Platform requirements (no priority) | 80 | 41 | 23 | 16 |
+| **All** | 261 | 117 | 69 | 75 |
 
 ## Accounts and onboarding
 
@@ -71,15 +71,15 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | ED2-02 | P0 | Zone artboards | Done | Four zone artboards plus any design areas; switching (tabs, Page Up/Down) keeps per-artboard layers and moves the 3D camera. |
 | ED2-03 | P0 | Upload and place | Done | PNG, JPEG, WebP and sanitized SVG, checked by file signature, size and pixel count. |
 | ED2-04 | P0 | Transform objects | Done | Move, resize, rotate, flip, align, nudge, duplicate; numeric fields in mm or in. |
-| ED2-05 | P0 | Layer stack | Done | Select, reorder, lock, hide, rename, opacity, duplicate, multi-select, groups. |
+| ED2-05 | P0 | Layer stack | Done | Select, reorder, lock, hide, rename, opacity, duplicate, multi-select, groups. Clip a layer to the one below (a photo inside lettering; Ctrl+Alt+G, the layer list, the canvas menu or the palette): the same in 2D (live while either is dragged), on the 3D garment, in PNG print files and as a true SVG mask. |
 | ED2-06 | P0 | Core text | Done | Text layers with font, weight, italic, spacing, leading, alignment, fill, outline. |
 | ED2-07 | P1 | Advanced typography | Done | Arc and wave warps, outlines, shadows, 61 catalogue fonts incl. Khmer and Chinese, uploaded fonts with licence confirmation, auto-fit boxes. Shaping is the browser’s; no shaping review step. |
 | ED2-08 | P0 | Align tools | Done | Align to print area or selection, distribute, snapping to artboard, centre lines and layer edges. Step and repeat: copies in a row, a grid or round a circle (turned to face out), arranged round the original and grouped with it. |
 | ED2-09 | P1 | Vector drawing | Partial | Rectangle, ellipse, triangle, star, polygon, heart, line, plus a library of 19 vector graphics (badges, sport, symbols, nature) with solid, gradient or pattern fills and outlines, or outline only (drawn as lines in their fill, exported as vector strokes). A pen (P) draws shapes of your own: corners and dragged-out curves, closed into a shape that prints and exports as vector. No node editing after drawing, no boolean operations. |
-| ED2-10 | P1 | Image adjustments | Partial | Brightness, contrast, saturation, hue, greyscale, invert, threshold (non-destructive), background removal, and crop shapes (circle, rounded, hexagon, shield, star, heart), shown while editing in 2D and able to clip a repeat. Printed effects on any layer: drop shadow or glow, a sticker outline round the cut-out, and a halftone screen (dots, squares or lines, sized by darkness or fade, in one ink or the artwork's own colours). No free crop or sharpen. |
+| ED2-10 | P1 | Image adjustments | Partial | Brightness, contrast, saturation, hue, greyscale, invert, threshold (non-destructive), background removal, and crop shapes (circle, rounded, hexagon, shield, star, heart), shown while editing in 2D and able to clip a repeat. Printed effects on any layer: drop shadow or glow, a sticker outline round the cut-out, and a halftone screen (dots, squares or lines, sized by darkness or fade, in one ink or the artwork's own colours). Free crop (any box or a set proportion; the kept part stays where it was) and moving or zooming a photo inside its frame; round shapes square the frame on the photo's middle instead of stretching it. All non-destructive. No sharpen. |
 | ED2-11 | P1 | Pattern tool | Done | Image repeat: grid, half-drop, brick, mirror; tile size, gap, angle, offset; clipped to the layer box; DPI checked per tile. |
 | ED2-12 | P1 | Reusable components | Partial | Brand kit logos, user templates, graphics library and standard placements (left chest, centre chest, full front, below collar, upper back, leg and sleeve positions). No reusable component library. |
-| ED2-13 | P1 | Guides and constraints | Partial | Safe-margin checks and centre snapping. No draggable guides or seam clearance. |
+| ED2-13 | P1 | Guides and constraints | Done | Ruler guides dragged out of either ruler, saved with each print area, snapped to (and clicking onto the print area's edges and middle); moved by their ruler marks and removed by dropping them back or double-clicking. A seam clearance band shows where seams, edges and trims run into the print area. Safe-margin checks and centre snapping. |
 | ED2-14 | P0 | Undo/redo | Done | Semantic command history with merged drags and slider gestures. |
 | ED2-15 | P1 | Shortcuts / commands | Partial | Command palette (Ctrl+K or ⌘K, the top bar, or the project menu on phones): every studio action by name with forgiving search, only what makes sense for the selection, recent picks first, shortcut hints, colourways previewed on the 3D garment as you move through them. Shortcuts (copy, cut and paste layers between zones and design areas, Tab through layers, rotate with comma and period, pen, artboard switching), a "Keys and gestures" reference (?), right-click/long-press/keyboard context menu, labelled undo. Keys can't be remapped. |
 | ED2-16 | P1 | Color sampling | Done | Screen eyedropper (EyeDropper API, Chromium), brand swatches, hex entry, image palette extraction. |
@@ -113,10 +113,10 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | --- | --- | --- | --- | --- |
 | PRT-01 | P0 | Physical-unit geometry | Done | Zones in millimetres from the print-area corner; tested UV mapping. |
 | PRT-02 | P0 | DPI resolution audit | Done | Horizontal/vertical effective DPI from source pixels; per tile for repeats. |
-| PRT-03 | P0 | Safe/bleed/no-print boundaries | Partial | Print area and safe margin per zone. No per-size polygons or seam warnings. |
+| PRT-03 | P0 | Safe/bleed/no-print boundaries | Partial | Print area and safe margin per zone, and a seam clearance band on the 2D artboard where seams, edges and trims meet the print area. No per-size polygons or automatic seam warnings. |
 | PRT-04 | P1 | Print method selector | Done | Per-zone method with only supported methods offered. |
 | PRT-05 | P1 | Live preflight panel | Done | Live checks: bounds, safe margin, DPI, small text, unsupported method, raster embroidery. |
-| PRT-06 | P1 | Ink color estimation | Not started | Palette extraction exists; no separations or underbase preview. |
+| PRT-06 | P1 | Ink color estimation | Done | In the studio, per print area: the inks (or thread or vinyl colours) the artwork takes, each with its share of the print, counted by the same separation the production films use; screens for screen print; a white underbase on dark garments, previewed on the artboard, as can any single ink; inks that match the garment marked as left off (no underbase under them); a warning past a press's heads, and a halftone hint for photos and gradients. |
 | PRT-07 | P1 | Embroidery feasibility | Partial | Minimum text height and raster warning for embroidery; no stitch estimates. |
 | PRT-08 | P1 | Print placement presets | Partial | Built-in templates for left chest, centre chest and back placements; no anchor presets per garment. |
 | PRT-09 | P1 | Method-dependent artwork rule sets | Partial | Minimum text height per method; no admin rule sets. |
@@ -132,7 +132,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | AST-02 | P0 | Safe file intake | Partial | Signature sniffing, size and megapixel limits, SVG sanitization, font validation by loading. No antivirus scanning (no server yet). |
 | AST-03 | P0 | Original + proxy | Partial | Originals are immutable and kept when derived copies are made. No separate proxy textures. |
 | AST-04 | P1 | Upload progress and recovery | Not started | Local storage only so far. |
-| AST-05 | P1 | Image operations | Partial | Background removal, adjustments and greyscale non-destructively, and trimming empty edges (the box hugs the artwork, which stays in place; the original is kept and restorable). No free crop. |
+| AST-05 | P1 | Image operations | Done | Background removal, adjustments and greyscale non-destructively, and trimming empty edges (the box hugs the artwork, which stays in place; the original is kept and restorable), and free crop or framing inside a shape, non-destructive and printed at the kept pixels' resolution. |
 | AST-06 | P1 | Vector cleanup | Not started |  |
 | AST-07 | P1 | Font vault | Partial | Upload TTF/OTF/WOFF/WOFF2 with a licence statement; stored on this device; fonts and licences listed in the manifest. No glyph coverage check. |
 | AST-08 | P1 | Palette extraction | Done | Dominant colours from an image, copyable, labelled as suggestions. |
@@ -146,7 +146,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | --- | --- | --- | --- | --- |
 | TYP-01 | P0 | Editable text objects | Done | Text stays editable text in the document; textures are caches. |
 | TYP-02 | P1 | Curved and circular text | Done | Positive and negative arcs, grapheme-safe for Khmer combining marks. |
-| TYP-03 | P1 | Text styles | Done | Fill (solid; gradient across or from the centre, with an optional middle colour and eight presets; pattern), outline, outline only, a second outline round the word (the varsity double outline), shadow or glow, halftone, arch and wave, letter case (capitals, title, lower), transforms, line height, and one-tap styles (varsity, college arch, athletic, retro, script, stencil, wave, Korean and Khmer display). |
+| TYP-03 | P1 | Text styles | Done | Fill (solid; gradient across or from the centre, with an optional middle colour and eight presets; pattern), outline, outline only, a second outline round the word (the varsity double outline), shadow or glow, halftone, arch and wave, letter case (capitals, title, lower), a colour for each letter (colours that run across the letters and repeat, from ready-made runs or the brand's, kept as live text in SVG), transforms, line height, and one-tap styles (varsity, college arch, athletic, retro, script, stencil, wave, Korean and Khmer display). |
 | TYP-04 | P1 | Text legibility validation | Done | Small-text warning per print method. |
 | TYP-05 | P1 | Repeat design patterns | Done | Image repeat patterns plus procedural pattern fills; parameters stay editable. |
 | TYP-06 | P1 | Print finish simulation | Done | Puff relief, satin-stitch embroidery rows, foil and vinyl gloss, plastisol and DTF ink edges, and cracked vintage ink (the cracks also print). Lit in real time and path traced in photoreal renders. |
@@ -171,13 +171,13 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | ID | Priority | Feature | Status | Notes |
 | --- | --- | --- | --- | --- |
 | MED-01 | P0 | Four-angle images | Done | Front, back, sides and ¾ (plus saved views) as PNG, JPEG, WebP, AVIF (where the browser encodes it), TIFF or PDF. |
-| MED-02 | P1 | Scene presets | Partial | Studio, shop white, daylight, dark studio, golden hour, neon, flat, each with a tone curve. No podium or ghost-mannequin scenes. |
+| MED-02 | P1 | Scene presets | Done | Studio, shop white, daylight, dark studio, golden hour, neon, flat, ghost mannequin, podium and flat lay, each with a tone curve. A stage setting puts the garment on a display form over a plinth (framed together) or on an oak table for a top-down flat lay. A folded garment is not modelled. |
 | MED-03 | P1 | Camera controls | Done | Lens (field of view), saved views, orbit bounds, auto framing for tall frames. |
 | MED-04 | P1 | Background options | Done | Transparent, colour, gradient and uploaded photo backdrops, in the view and in every render. |
 | MED-05 | P1 | Still render settings | Done | 1:1, 4:5, 9:16, 16:9 at seven qualities (Low 720, Social 1080, High 1600, then 2K, 4K, 5K and 6K on the long side); the frame is outlined on the live view; quality for the lossy formats; GPU-limit checks. Real time or Photoreal (GPU path tracing, three-gpu-pathtracer): Draft, Studio and Final quality, depth of field, grain removal, progress and cancel. |
-| MED-06 | P1 | Turntable clip | Done | Turntable and motion video (walk, wind, hanger, float, knit): length, turn (or a still camera that films the motion alone), motion chosen right in Render, size, frame rate, start view, backdrop; motion plays on the video clock, frame-accurate. |
+| MED-06 | P1 | Turntable clip | Done | Turntable and motion video (walk, wind, hanger, float, knit): length, turn (or a still camera that films the motion alone), motion chosen right in Render, size, frame rate, start view, backdrop; motion plays on the video clock, frame-accurate. The camera can instead fly in from the start view to the print, or glide through saved views. |
 | MED-07 | P1 | Scene template saving | Partial | Saved looks (lighting, backdrop, lens) reusable across projects on this device; not shared with a workspace yet. |
-| MED-08 | P2 | Keyframe timeline | Not started |  |
+| MED-08 | P2 | Keyframe timeline | Partial | Camera moves for video: a fly-in from any start view to a close-up of the print (found on the cloth, square to it), or a smooth path through saved views as keyframes, easing in and out. No timeline editor or animated properties. |
 | MED-09 | P2 | Batch gallery generator | Done | Every colourway × every chosen view × every lighting look (seven, for comparing moods without changing the scene), named files or one labelled contact sheet. |
 | MED-10 | P2 | Lifestyle model images | Not started |  |
 | MED-11 | P2 | 3D animation states | Partial | Static, walk, wind, hanger, float and knit states for every garment, with pressed, natural or relaxed drape. No retail fold or visible mannequin. |
@@ -190,13 +190,13 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | EXP-01 | P0 | Immediate screen image | Done | Snapshot button saves the current view at up to twice the stage size. |
 | EXP-02 | P0 | Export preset | Done | Quick front/back 4:5 export and social aspect presets in Wovexa Render. |
 | EXP-03 | P1 | High-resolution image output | Done | Up to 6K (6144 px on the long side). Real-time renders in one offscreen pass up to the GPU's limit and past it in tiles of one camera, joined seamlessly. Photoreal renders in overlapping tiles, so GPU memory stays bounded; it stops at the device's largest render size. No remote fallback. |
-| EXP-04 | P1 | Isolated print artwork | Done | Transparent PNG per zone and design area at true physical size and chosen DPI; finish simulation excluded. The same prints as SVG at true size (1 unit = 1 mm): text stays live text, shapes and graphics are paths, gradients stay gradients, photos and raster effects are placed images, for screen-print films, vinyl and embroidery. |
+| EXP-04 | P1 | Isolated print artwork | Done | Transparent PNG per zone and design area at true physical size and chosen DPI; finish simulation excluded. The same prints as SVG at true size (1 unit = 1 mm): text stays live text, shapes and graphics are paths, gradients stay gradients, sticker outlines are traced paths and halftones one shape a dot (with a separate cut file of the outlines' edges), clipped layers are masked by their base's own shape, and photos and the remaining raster effects are placed images, for screen-print films, vinyl, cutters and embroidery. |
 | EXP-05 | P1 | Production ZIP | Done | One production ZIP: print files (zones and design areas, optionally also as SVG) with dpi written in, screen films, team files, placement drawings, product images, client proof PDF, tech sheet, cut-and-sew panels, 3D model, colour CSV and a manifest with SHA-256 for every file. |
 | EXP-06 | P1 | Tech pack PDF | Done | Two-page client proof PDF (product per colourway with colour values, then placements with sizes and methods) and a self-contained HTML tech sheet in the package. |
 | EXP-07 | P1 | Export history | Partial | Export history per project in the export panel, and the Exports page for every project on the device: grouped by day, filtered by kind, searchable, with the design version, files, size, a "design changed since" flag, a link to the project and removal of a record. Exports run on the device as you wait, so there are no queued, failed or retry states and no expiry. |
 | EXP-08 | P1 | Naming templates | Done | File-name templates with tokens (project, zone, colourway, size, method, size in mm, dpi, design version, date, name, number), Unicode-safe. |
 | EXP-09 | P2 | Commercial video | Partial | MP4 (H.264) or WebM in the browser via WebCodecs, frame-accurate. No server pipeline. |
-| EXP-10 | P2 | Professional color outputs | Partial | Screen-print colour separations (one film per ink, white underbase for dark garments, registration marks), vector SVG print files, TIFF renders (300 dpi, with transparency) and approximate CMYK in the colour CSV. No ICC-managed PDF/X or CMYK TIFF. |
+| EXP-10 | P2 | Professional color outputs | Partial | Screen-print colour separations (one film per ink, white underbase for dark garments, registration marks), vector SVG print files with vector halftones and a cut-line file, TIFF renders (300 dpi, with transparency) and approximate CMYK in the colour CSV. No ICC-managed PDF/X or CMYK TIFF. |
 | EXP-11 | P2 | One-click client media kit (new) | Partial | Package includes product images per colourway, proof PDF and a 3D model (GLB); USDZ for AR Quick Look on its own. Both carry the fabric's inside as a plain lining, so viewers that draw one side show a real inside rather than the print mirrored. No social crops, carousel or QR viewer yet. |
 | EXP-12 | P2 | Export API (new) | Not started |  |
 
@@ -315,8 +315,8 @@ Nothing here has been run against a live Supabase project: the app works fully i
 
 | ID | Priority | Feature | Status | Notes |
 | --- | --- | --- | --- | --- |
-| PWA-01 | – | cache application shell and versioned static assets with stale-while-revalidate or cach… | Done | Service worker: cache-first static assets, network-first pages. |
-| PWA-02 | – | never indiscriminately cache private API requests, tokens, signed URLs, or customer art… | Done | Never caches API, auth, cross-origin or non-GET requests. |
+| PWA-01 | – | cache application shell and versioned static assets with stale-while-revalidate or cach… | Done | Service worker: installing caches the main pages, a studio shell that opens any local project and every build file they load, so the app opens offline from the first visit; cache-first static assets, network-first pages and page data, artwork fonts and the model library kept as used. |
+| PWA-02 | – | never indiscriminately cache private API requests, tokens, signed URLs, or customer art… | Done | Never caches API routes (except the public model library), auth, other sites (except font files) or non-GET requests. |
 | PWA-03 | – | store unsynced document draft and command log in IndexedDB, separate from service-worke… | Done | Documents, versions, assets and fonts in IndexedDB, separate from caches. |
 | PWA-04 | – | create stable local draft IDs and map them to server project IDs once authenticated/online | Partial | Stable local IDs; server mapping waits for sync. |
 | PWA-05 | – | explicit offline status, unsynced operation count, available storage warning and retry… | Partial | Offline status and storage usage shown; no unsynced-operation count yet. |
@@ -401,6 +401,6 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | INIT-010 | – | prototype tablet/mobile sheets, gestures and 320px constraint tests immediately, not af… | Done | Tablet drawers, phone sheets and gestures. |
 | INIT-011 | – | implement IndexedDB local snapshot and startup crash recovery | Done | IndexedDB storage, autosave and flush on hide. |
 | INIT-012 | – | implement still image export and print preflight with physically measured fixture | Done | Still images and preflight. |
-| INIT-013 | – | add 3-device E2E project creation/edit/reopen tests and GPU economy fallback | Not started | No end-to-end device tests yet. |
+| INIT-013 | – | add 3-device E2E project creation/edit/reopen tests and GPU economy fallback | Partial | Playwright end-to-end tests (npm run test:e2e) in desktop Chrome: new project, clipping and undo, letter colours, crop and frame, ink count and underbase, ruler guides, vector export with a cut file, scene stages. No tablet or phone runs, reopen test or GPU fallback test yet. |
 | INIT-014 | – | integrate web vitals/editor frame metrics and production error monitoring | Not started |  |
 

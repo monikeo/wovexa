@@ -16,6 +16,7 @@ import { useModelLibrary } from '@/lib/model-library';
 import { saveViewsToLibrary, unsavedViews } from '@/lib/model-views';
 import { ModelThumb } from './ModelThumb';
 import { ColorwayIdeas } from './ColorwayIdeas';
+import { InkCount } from './InkCount';
 import { viewerApi } from './viewer3d/stage';
 import { AssetError, importImageFile, loadAssetImage } from '@/lib/assets';
 import { ColorField, toast } from '@/components/ui/primitives';
@@ -680,6 +681,16 @@ export function GarmentPanel() {
             </option>
           ))}
         </select>
+        {artboard ? (
+          <InkCount
+            zoneId={activeZoneId}
+            stack={artboard}
+            widthMm={spec.printableWidthMm}
+            heightMm={spec.printableHeightMm}
+            garment={partColor(colorway, spec.part === 'torso' ? 'body' : spec.part === 'legLeft' || spec.part === 'legRight' ? 'pants' : 'sleeves')}
+            method={artboard.printMethod}
+          />
+        ) : null}
       </section>
 
       <div className="flex flex-wrap gap-2">

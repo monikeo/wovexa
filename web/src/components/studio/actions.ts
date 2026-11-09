@@ -256,6 +256,46 @@ export function ungroupSelection() {
   select([...selectedLayerIds]);
 }
 
+/** Open the crop, or the photo's frame, for the one selected image (showing the inspector first on small screens). */
+export function openCrop(mode: 'crop' | 'frame') {
+  const { document, selectedLayerIds, activeZoneId } = useStudio.getState();
+  const zone = document ? artboardOf(document, activeZoneId) : undefined;
+  const layer = selectedLayerIds.length === 1 ? zone?.layers[selectedLayerIds[0]] : undefined;
+  if (layer?.content.kind !== 'image') return;
+  window.dispatchEvent(new CustomEvent('wovexa:edit-layer', { detail: { layerId: layer.id } }));
+  setTimeout(() => window.dispatchEvent(new CustomEvent('wovexa:crop', { detail: { layerId: layer.id, mode } })), 150);
+}
+
+/**
+ * Clip to the layer below, like a photo inside lettering, or release the clip (toggles unless told).
+ * One selected layer clips to the layer under it. With several, the lowest is the shape and the
+ * rest clip to it, moving down to sit right above it when other layers are in the way.
+ */
+export function clipSelection(on?: boolean) {
+  const c = context();
+  if (!c?.s.document) return;
+  const zone = artboardOf(c.s.document, c.zoneId);
+  if (!zone) return;
+  const order = zone.orderedLayerIds;
+  const ids = order.filter((id) => c.s.selectedLayerIds.includes(id) && zone.layers[id]);
+  if (!ids.length) return;
+  const targets = ids.length > 1 ? ids.slice(1) : ids;
+  if (ids.length === 1 && order.indexOf(ids[0]) === 0) {
+    toast('Nothing is under this layer to clip it to. Put it above the text or shape it should fill.');
+    return;
+  }
+  const clip = on ?? !targets.every((id) => zone.layers[id].clip);
+  const steps: cmd.Command[] = [];
+  // Grouped layers keep their place: moving one would split its group.
+  if (clip && ids.length > 1 && !ids.some((id) => zone.layers[id].groupId)) {
+    const at = order.indexOf(ids[0]);
+    targets.forEach((id, k) => steps.push(cmd.reorderLayer(c.zoneId, id, at + 1 + k)));
+  }
+  for (const id of targets) steps.push(cmd.updateLayer(c.zoneId, id, { clip }));
+  const label = clip ? (targets.length > 1 ? `Clip ${targets.length} layers` : 'Clip to layer below') : 'Release clipping';
+  c.s.dispatch(cmd.batch(label, steps));
+}
+
 /** Select every visible, unlocked layer in the active zone (Ctrl+A). */
 export function selectAll() {
   const { document, activeZoneId, select } = useStudio.getState();

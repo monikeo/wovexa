@@ -24,6 +24,9 @@ import type {
   Surface,
   TextContent,
 } from '@/domain/schema';
+import { clipRuns } from '@/domain/clipping';
+import { rotatedBounds } from '@/domain/geometry';
+import { graphemes, letterInks } from '@/domain/letter-colors';
 import { getLoadedImage } from '@/lib/assets';
 import { ensureCustomFonts } from '@/lib/font-library';
 import { loadFontStylesheets, scriptFallbacks } from '@/lib/fonts';
@@ -93,13 +96,6 @@ function setLetterSpacing(ctx: Ctx, px: number) {
 }
 
 /** Split into user-perceived characters so combining marks (Khmer, accents) stay on their base letter. */
-function graphemes(text: string): string[] {
-  if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
-    return Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text), (s) => s.segment);
-  }
-  return Array.from(text);
-}
-
 export function hashString(s: string) {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
@@ -663,6 +659,50 @@ function paint(ctx: Ctx, base: string, style: FillStyle | undefined, w: number, 
 // Text and shapes
 // ---------------------------------------------------------------------------
 
+/** How far italic letters lean (tan of about 12°): cuts between letter colours lean with them. */
+const ITALIC_SLANT = Math.tan((12 * Math.PI) / 180);
+
+/**
+ * Draw one line of text in letter colours: the whole line is drawn once per colour run, cut to that
+ * run's letters, so kerning, ligatures and complex scripts keep their shaping. Italic cuts lean
+ * with the letters, pivoting on the baseline, so a letter's top doesn't take its neighbour's colour.
+ */
+function drawLetterRuns(ctx: Ctx, line: string, inks: (string | null)[], x: number, y: number, align: TextContent['align'], italic: boolean, draw: (color: string) => void) {
+  const gs = graphemes(line);
+  const width = ctx.measureText(line).width;
+  const x0 = align === 'left' ? x : align === 'right' ? x - width : x - width / 2;
+  const edge = (i: number) => x0 + ctx.measureText(gs.slice(0, i).join('')).width;
+  // Runs of letters in one colour; a space joins the run before it.
+  const runs: { color: string; from: number; to: number }[] = [];
+  inks.forEach((color, i) => {
+    const last = runs[runs.length - 1];
+    if (last && (color === null || color === last.color)) last.to = i + 1;
+    else if (color !== null) runs.push({ color, from: i, to: i + 1 });
+  });
+  const slant = italic ? ITALIC_SLANT : 0;
+  const baseline = y + ctx.measureText('H').actualBoundingBoxDescent;
+  const top = y - TEXT_REF_PX * 2;
+  const bottom = y + TEXT_REF_PX * 2;
+  // Where a cut at `at` (on the baseline) crosses height `yy`.
+  const cut = (at: number, yy: number) => at + (baseline - yy) * slant;
+  const reach = TEXT_REF_PX * 4;
+  runs.forEach((run, k) => {
+    // The first and last runs reach past the line, for letters that overhang it.
+    const left = k === 0 ? x0 - reach : edge(run.from);
+    const right = k === runs.length - 1 ? x0 + width + reach : edge(run.to);
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(cut(left, top), top);
+    ctx.lineTo(cut(right, top), top);
+    ctx.lineTo(cut(right, bottom), bottom);
+    ctx.lineTo(cut(left, bottom), bottom);
+    ctx.closePath();
+    ctx.clip();
+    draw(run.color);
+    ctx.restore();
+  });
+}
+
 function drawText(ctx: Ctx, c: TextContent, w: number, h: number, pxPerMm: number) {
   const m = layoutText(c);
   const sx = w / m.width;
@@ -681,18 +721,21 @@ function drawText(ctx: Ctx, c: TextContent, w: number, h: number, pxPerMm: numbe
   // An outline is centred on the glyph edge and the fill covers its inner half,
   // so draw it twice as wide to show the requested outline width outside the letter.
   const stroke = !hollow && c.strokeColor && c.strokeWidthMm ? { color: c.strokeColor, width: (c.strokeWidthMm * pxPerMm * 2) / sy } : null;
+  // Letter colours take the place of the fill, letter by letter.
+  const inks = c.letterColors?.length ? letterInks(m.glyphs ? [c.value] : m.lines, c.letterColors) : null;
 
   if (m.glyphs) {
     setLetterSpacing(ctx, 0);
     ctx.textAlign = 'center';
     for (const pass of hollow ? ['line'] : stroke ? ['stroke', 'fill'] : ['fill']) {
-      for (const glyph of m.glyphs) {
+      m.glyphs.forEach((glyph, i) => {
         ctx.save();
         ctx.translate(glyph.x, glyph.y);
         ctx.rotate(glyph.rot);
         // Gradients and patterns paint in the space current at fill time, so map the box into
         // each rotated glyph's space: the fill stays anchored to the layer, not to the letter.
-        const glyphPaint = () => (c.fillStyle ? paint(ctx, c.fill, c.fillStyle, w, h, pxPerMm, new DOMMatrix().rotate((-glyph.rot * 180) / Math.PI).translate(-glyph.x, -glyph.y).multiply(toText)) : c.fill);
+        const glyphPaint = () =>
+          inks ? (inks[0][i] ?? c.fill) : c.fillStyle ? paint(ctx, c.fill, c.fillStyle, w, h, pxPerMm, new DOMMatrix().rotate((-glyph.rot * 180) / Math.PI).translate(-glyph.x, -glyph.y).multiply(toText)) : c.fill;
         if (pass === 'stroke' && stroke) {
           ctx.strokeStyle = stroke.color;
           ctx.lineWidth = stroke.width;
@@ -706,7 +749,7 @@ function drawText(ctx: Ctx, c: TextContent, w: number, h: number, pxPerMm: numbe
           ctx.fillText(glyph.g, 0, 0);
         }
         ctx.restore();
-      }
+      });
     }
   } else {
     setLetterSpacing(ctx, c.letterSpacingEm * TEXT_REF_PX);
@@ -716,9 +759,16 @@ function drawText(ctx: Ctx, c: TextContent, w: number, h: number, pxPerMm: numbe
     m.lines.forEach((line, i) => {
       const y = -m.height / 2 + lineH * (i + 0.5);
       if (hollow) {
-        ctx.strokeStyle = fill;
         ctx.lineWidth = hollow.width;
-        ctx.strokeText(line, x, y);
+        if (inks)
+          drawLetterRuns(ctx, line, inks[i], x, y, c.align, c.italic, (color) => {
+            ctx.strokeStyle = color;
+            ctx.strokeText(line, x, y);
+          });
+        else {
+          ctx.strokeStyle = fill;
+          ctx.strokeText(line, x, y);
+        }
         return;
       }
       if (stroke) {
@@ -726,8 +776,15 @@ function drawText(ctx: Ctx, c: TextContent, w: number, h: number, pxPerMm: numbe
         ctx.lineWidth = stroke.width;
         ctx.strokeText(line, x, y);
       }
-      ctx.fillStyle = fill;
-      ctx.fillText(line, x, y);
+      if (inks)
+        drawLetterRuns(ctx, line, inks[i], x, y, c.align, c.italic, (color) => {
+          ctx.fillStyle = color;
+          ctx.fillText(line, x, y);
+        });
+      else {
+        ctx.fillStyle = fill;
+        ctx.fillText(line, x, y);
+      }
     });
   }
   ctx.restore();
@@ -977,10 +1034,25 @@ export function imageSource(c: ImageContent): CanvasImageSource | undefined {
 
 export const DEFAULT_REPEAT: ImageRepeat = { mode: 'grid', tileWidthMm: 40, spacingMm: 4, rotationDeg: 0, offsetXmm: 0, offsetYmm: 0 };
 
+/** The part of the decoded source an image layer shows (its crop), in the source's own pixels. */
+function cropSource(src: CanvasImageSource, c: ImageContent) {
+  const W = (src as HTMLImageElement).naturalWidth || (src as HTMLCanvasElement).width || c.naturalWidthPx;
+  const H = (src as HTMLImageElement).naturalHeight || (src as HTMLCanvasElement).height || c.naturalHeightPx;
+  const k = c.crop ?? { x: 0, y: 0, w: 1, h: 1 };
+  return { sx: k.x * W, sy: k.y * H, sw: Math.max(1e-3, k.w * W), sh: Math.max(1e-3, k.h * H) };
+}
+
+/** Width ÷ height of what an image layer shows: the crop's proportions, else the image's. */
+export function shownAspect(c: Pick<ImageContent, 'naturalWidthPx' | 'naturalHeightPx' | 'crop'>) {
+  return (c.naturalWidthPx * (c.crop?.w ?? 1)) / (c.naturalHeightPx * (c.crop?.h ?? 1));
+}
+
 /** Tile an image across the layer box: grid, half-drop, brick or mirrored repeats, clipped to the box. */
 function drawRepeat(ctx: Ctx, src: CanvasImageSource, c: ImageContent, rep: ImageRepeat, w: number, h: number, pxPerMm: number) {
   const tileW = Math.max(1, rep.tileWidthMm * pxPerMm);
-  const tileH = (tileW * c.naturalHeightPx) / c.naturalWidthPx;
+  // A cropped image repeats just what it shows.
+  const tileH = tileW / shownAspect(c);
+  const s = cropSource(src, c);
   const gap = rep.spacingMm * pxPerMm;
   const cw = tileW + gap;
   const ch = tileH + gap;
@@ -1005,10 +1077,10 @@ function drawRepeat(ctx: Ctx, src: CanvasImageSource, c: ImageContent, rep: Imag
         ctx.save();
         ctx.translate(x, y);
         ctx.scale(i & 1 ? -1 : 1, j & 1 ? -1 : 1);
-        ctx.drawImage(src, -tileW / 2, -tileH / 2, tileW, tileH);
+        ctx.drawImage(src, s.sx, s.sy, s.sw, s.sh, -tileW / 2, -tileH / 2, tileW, tileH);
         ctx.restore();
       } else {
-        ctx.drawImage(src, x - tileW / 2, y - tileH / 2, tileW, tileH);
+        ctx.drawImage(src, s.sx, s.sy, s.sw, s.sh, x - tileW / 2, y - tileH / 2, tileW, tileH);
       }
     }
   }
@@ -1311,11 +1383,19 @@ export function halftoneCover(r: number, g: number, b: number, a: number, by: 't
   return Math.min(1, alpha * (1 - luma));
 }
 
+/** One halftone mark: its cell's centre on the turned grid (px from the artwork's centre), its ink cover 0–1 and colour. */
+export interface HalftoneMark {
+  x: number;
+  y: number;
+  cover: number;
+  color: string;
+}
+
 /**
- * The artwork as a halftone screen: on a grid turned to the screen angle, each cell becomes a dot,
- * square or line sized by how much ink the artwork puts there. Dots of one colour share one path.
+ * The marks of a halftone screen over `src`: on a grid turned to the screen angle, one per cell that
+ * carries ink. The canvas draws them; the SVG print file writes each as a circle or rectangle.
  */
-function halftoneCanvas(src: HTMLCanvasElement, ht: LayerHalftone, pxPerMm: number): HTMLCanvasElement {
+export function halftoneMarks(src: HTMLCanvasElement, ht: LayerHalftone, pxPerMm: number): { cell: number; marks: HalftoneMark[] } {
   const W = src.width;
   const H = src.height;
   const cell = Math.max(1.5, ht.cellMm * pxPerMm);
@@ -1337,32 +1417,46 @@ function halftoneCanvas(src: HTMLCanvasElement, ht: LayerHalftone, pxPerMm: numb
   sc.setTransform(new DOMMatrix().translate(n / 2, n / 2).scale(1 / cell).rotate(-ht.angleDeg).translate(-W / 2, -H / 2).scale(W / mw, H / mh));
   sc.drawImage(mid, 0, 0);
   const data = sc.getImageData(0, 0, n, n).data;
-  const paths = new Map<string, Path2D>();
+  release(mid);
+  release(sample);
+  const marks: HalftoneMark[] = [];
   for (let j = 0; j < n; j++) {
     for (let i = 0; i < n; i++) {
       const p = (j * n + i) * 4;
       if (data[p + 3] < 3) continue;
       const cover = halftoneCover(data[p], data[p + 1], data[p + 2], data[p + 3], ht.by);
       if (cover < 0.015) continue;
-      // Dots in their own colour share a path per colour, rounded so a photo needs few paths.
+      // Dots in their own colour are rounded to fewer colours, so a photo needs few paths.
       const color = ht.color ?? `#${[data[p], data[p + 1], data[p + 2]].map((x) => ((x >> 3) << 3).toString(16).padStart(2, '0')).join('')}`;
-      let path = paths.get(color);
-      if (!path) paths.set(color, (path = new Path2D()));
-      const x = (i - n / 2 + 0.5) * cell;
-      const y = (j - n / 2 + 0.5) * cell;
-      if (ht.shape === 'dot') {
-        // Area true to the ink: a full cell's dot just overlaps its neighbours into solid.
-        const rad = cell * Math.sqrt(cover / Math.PI);
-        path.moveTo(x + rad, y);
-        path.arc(x, y, rad, 0, Math.PI * 2);
-      } else if (ht.shape === 'square') {
-        const s = cell * Math.sqrt(cover);
-        path.rect(x - s / 2, y - s / 2, s, s);
-      } else {
-        const t = cell * cover;
-        path.rect(x - cell / 2 - 0.25, y - t / 2, cell + 0.5, t);
-      }
+      marks.push({ x: (i - n / 2 + 0.5) * cell, y: (j - n / 2 + 0.5) * cell, cover, color });
     }
+  }
+  return { cell, marks };
+}
+
+/** A halftone mark's size: a dot's radius (area true to the ink), a square's side, a line's thickness. */
+export function halftoneMarkSize(shape: LayerHalftone['shape'], cell: number, cover: number) {
+  return shape === 'dot' ? cell * Math.sqrt(cover / Math.PI) : shape === 'square' ? cell * Math.sqrt(cover) : cell * cover;
+}
+
+/**
+ * The artwork as a halftone screen: each cell a dot, square or line sized by the ink there (a full
+ * cell's dot just overlaps its neighbours into solid). Marks of one colour share one path.
+ */
+function halftoneCanvas(src: HTMLCanvasElement, ht: LayerHalftone, pxPerMm: number): HTMLCanvasElement {
+  const W = src.width;
+  const H = src.height;
+  const { cell, marks } = halftoneMarks(src, ht, pxPerMm);
+  const paths = new Map<string, Path2D>();
+  for (const { x, y, cover, color } of marks) {
+    let path = paths.get(color);
+    if (!path) paths.set(color, (path = new Path2D()));
+    const s = halftoneMarkSize(ht.shape, cell, cover);
+    if (ht.shape === 'dot') {
+      path.moveTo(x + s, y);
+      path.arc(x, y, s, 0, Math.PI * 2);
+    } else if (ht.shape === 'square') path.rect(x - s / 2, y - s / 2, s, s);
+    else path.rect(x - cell / 2 - 0.25, y - s / 2, cell + 0.5, s);
   }
   const out = makeCanvas(W, H);
   const o = out.getContext('2d')!;
@@ -1428,7 +1522,10 @@ function drawRaw(ctx: Ctx, layer: ArtworkLayer, w: number, h: number, pxPerMm: n
       ctx.clip(maskPath(ctx, c.mask, w, h));
     }
     if (c.repeat) drawRepeat(ctx, src, c, c.repeat, w, h, pxPerMm);
-    else ctx.drawImage(src, -w / 2, -h / 2, w, h);
+    else if (c.crop) {
+      const s = cropSource(src, c);
+      ctx.drawImage(src, s.sx, s.sy, s.sw, s.sh, -w / 2, -h / 2, w, h);
+    } else ctx.drawImage(src, -w / 2, -h / 2, w, h);
     if (c.mask) ctx.restore();
     return true;
   }
@@ -1539,24 +1636,122 @@ const BLEND: Record<ArtworkLayer['style']['blendMode'], GlobalCompositeOperation
   overlay: 'overlay',
 };
 
-/** Draw every visible layer of a zone. Returns false if any image was still loading. */
-export function drawZone(ctx: Ctx, zone: LayerStack, opts: DrawZoneOptions): boolean {
-  let complete = true;
-  const { pxPerMm, originX = 0, originY = 0, overrides } = opts;
-  for (const id of zone.orderedLayerIds) {
-    const layer = zone.layers[id];
-    if (!layer || !layer.visible) continue;
-    const t = overrides?.[id] ? { ...layer.transform, ...overrides[id] } : layer.transform;
+/** Move the origin to a layer's centre, turned and mirrored as the layer is. */
+function place(ctx: Ctx, t: LayerTransform, pxPerMm: number, originX: number, originY: number) {
+  ctx.translate(originX + t.centerXmm * pxPerMm, originY + t.centerYmm * pxPerMm);
+  ctx.rotate((t.rotationDeg * Math.PI) / 180);
+  ctx.scale(t.flipX ? -1 : 1, t.flipY ? -1 : 1);
+}
+
+/** The part of the target that can show, in the context's current drawing units, or null if unknown. */
+function visibleArea(ctx: Ctx) {
+  const inverse = ctx.getTransform().inverse();
+  const { width, height } = ctx.canvas;
+  const corners = [
+    [0, 0],
+    [width, 0],
+    [0, height],
+    [width, height],
+  ].map(([x, y]) => inverse.transformPoint(new DOMPoint(x, y)));
+  const xs = corners.map((p) => p.x);
+  const ys = corners.map((p) => p.y);
+  const area = { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+  return Object.values(area).every(Number.isFinite) ? area : null;
+}
+
+/** Largest scratch canvas a clipping run uses (a full 300 dpi chest print fits); past it, it is drawn a little coarser. */
+const MAX_CLIP_AREA = 2.8e7;
+
+type PlacedDraw = (ctx: Ctx, layer: ArtworkLayer, t: LayerTransform, originX: number, originY: number) => boolean;
+type Clipped = { layer: ArtworkLayer; t: LayerTransform };
+
+/**
+ * Draw layers clipped to a base layer: each is drawn alone into a scratch canvas around the base,
+ * cut to the base's ink (`drawMask`), then laid over the target by `composite` with its opacity
+ * times the base's, as a clipping mask does. Returns false if an image was still loading.
+ */
+function drawClipped(ctx: Ctx, base: Clipped, clipped: Clipped[], pxPerMm: number, originX: number, originY: number, drawMask: PlacedDraw, drawLayer: PlacedDraw, composite: (ctx: Ctx, layer: ArtworkLayer) => void): boolean {
+  const bleed = layerBleedMm(base.layer, false);
+  const r = rotatedBounds(base.t);
+  let x0 = originX + (r.x - bleed) * pxPerMm;
+  let y0 = originY + (r.y - bleed) * pxPerMm;
+  let x1 = originX + (r.x + r.width + bleed) * pxPerMm;
+  let y1 = originY + (r.y + r.height + bleed) * pxPerMm;
+  // Only what can show on the target is worth drawing.
+  const view = visibleArea(ctx);
+  if (view) {
+    x0 = Math.max(x0, view.x0);
+    y0 = Math.max(y0, view.y0);
+    x1 = Math.min(x1, view.x1);
+    y1 = Math.min(y1, view.y1);
+  }
+  x0 = Math.floor(x0);
+  y0 = Math.floor(y0);
+  const W = Math.ceil(x1) - x0;
+  const H = Math.ceil(y1) - y0;
+  if (W < 1 || H < 1) return true;
+  const k = Math.min(1, Math.sqrt(MAX_CLIP_AREA / (W * H)));
+  const mask = makeCanvas(W * k, H * k);
+  const m = mask.getContext('2d')!;
+  m.setTransform(k, 0, 0, k, -x0 * k, -y0 * k);
+  let complete = drawMask(m, base.layer, base.t, originX, originY);
+  const piece = makeCanvas(W * k, H * k);
+  const p = piece.getContext('2d')!;
+  for (const { layer, t } of clipped) {
+    p.setTransform(1, 0, 0, 1, 0, 0);
+    p.globalCompositeOperation = 'source-over';
+    p.clearRect(0, 0, piece.width, piece.height);
+    p.setTransform(k, 0, 0, k, -x0 * k, -y0 * k);
+    complete = drawLayer(p, layer, t, originX, originY) && complete;
+    p.setTransform(1, 0, 0, 1, 0, 0);
+    p.globalCompositeOperation = 'destination-in';
+    p.drawImage(mask, 0, 0);
     ctx.save();
-    ctx.globalAlpha = layer.style.opacity;
-    ctx.globalCompositeOperation = BLEND[layer.style.blendMode];
-    ctx.translate(originX + t.centerXmm * pxPerMm, originY + t.centerYmm * pxPerMm);
-    ctx.rotate((t.rotationDeg * Math.PI) / 180);
-    ctx.scale(t.flipX ? -1 : 1, t.flipY ? -1 : 1);
-    complete = drawLayerContent(ctx, layer, t.widthMm * pxPerMm, t.heightMm * pxPerMm, pxPerMm, opts) && complete;
+    composite(ctx, layer);
+    ctx.globalAlpha *= base.layer.style.opacity;
+    ctx.drawImage(piece, x0, y0, W, H);
     ctx.restore();
   }
+  release(mask);
+  release(piece);
   return complete;
+}
+
+/**
+ * Walk a stack bottom to top as clipping runs: each base layer is drawn, then anything clipped to it.
+ * A hidden base hides what is clipped to it, as in other design tools.
+ */
+function drawRuns(ctx: Ctx, zone: LayerStack, pxPerMm: number, originX: number, originY: number, overrides: DrawZoneOptions['overrides'], drawMask: PlacedDraw, drawLayer: PlacedDraw, composite: (ctx: Ctx, layer: ArtworkLayer) => void): boolean {
+  let complete = true;
+  const at = (layer: ArtworkLayer): Clipped => ({ layer, t: overrides?.[layer.id] ? { ...layer.transform, ...overrides[layer.id] } : layer.transform });
+  for (const run of clipRuns(zone)) {
+    const base = zone.layers[run.id];
+    if (!base?.visible) continue;
+    const placed = at(base);
+    ctx.save();
+    composite(ctx, base);
+    complete = drawLayer(ctx, base, placed.t, originX, originY) && complete;
+    ctx.restore();
+    const clipped = run.clipped.map((id) => zone.layers[id]).filter((l): l is ArtworkLayer => !!l?.visible);
+    if (clipped.length) complete = drawClipped(ctx, placed, clipped.map(at), pxPerMm, originX, originY, drawMask, drawLayer, composite) && complete;
+  }
+  return complete;
+}
+
+/** Draw every visible layer of a zone. Returns false if any image was still loading. */
+export function drawZone(ctx: Ctx, zone: LayerStack, opts: DrawZoneOptions): boolean {
+  const { pxPerMm, originX = 0, originY = 0, overrides } = opts;
+  const draw: PlacedDraw = (c, layer, t, ox, oy) => {
+    c.save();
+    place(c, t, pxPerMm, ox, oy);
+    const ok = drawLayerContent(c, layer, t.widthMm * pxPerMm, t.heightMm * pxPerMm, pxPerMm, opts);
+    c.restore();
+    return ok;
+  };
+  return drawRuns(ctx, zone, pxPerMm, originX, originY, overrides, draw, draw, (c, layer) => {
+    c.globalAlpha = layer.style.opacity;
+    c.globalCompositeOperation = BLEND[layer.style.blendMode];
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1638,22 +1833,27 @@ export interface SurfaceDrawOptions {
  * Returns false if any image was still loading.
  */
 export function drawZoneSurface(ctx: CanvasRenderingContext2D, zone: LayerStack, opts: SurfaceDrawOptions): boolean {
-  let complete = true;
   const { pxPerMm, originX = 0, originY = 0, overrides } = opts;
-  for (const id of zone.orderedLayerIds) {
-    const layer = zone.layers[id];
-    if (!layer || !layer.visible) continue;
-    const look = inkLook(opts.method, layer.style.finish);
-    if (!look) continue;
-    const t = overrides?.[id] ? { ...layer.transform, ...overrides[id] } : layer.transform;
+  // Where a layer's ink is, whatever it is made of (what clipped layers are cut to).
+  const drawCoverage: PlacedDraw = (c, layer, t, ox, oy) => {
     const w = t.widthMm * pxPerMm;
     const h = t.heightMm * pxPerMm;
     const cov = coverage(layer, w, h, pxPerMm);
-    if (!cov) {
-      complete = false;
-      continue;
-    }
-    // Tint the coverage with the ink's material values.
+    if (!cov) return false;
+    c.save();
+    place(c, t, pxPerMm, ox, oy);
+    c.drawImage(cov.canvas, -w / 2 - cov.bleed, -h / 2 - cov.bleed);
+    c.restore();
+    return true;
+  };
+  // The ink's material values over its coverage.
+  const drawInk: PlacedDraw = (c, layer, t, ox, oy) => {
+    const look = inkLook(opts.method, layer.style.finish);
+    if (!look) return true;
+    const w = t.widthMm * pxPerMm;
+    const h = t.heightMm * pxPerMm;
+    const cov = coverage(layer, w, h, pxPerMm);
+    if (!cov) return false;
     const tinted = makeCanvas(cov.canvas.width, cov.canvas.height);
     const tc = tinted.getContext('2d')!;
     tc.drawImage(cov.canvas, 0, 0);
@@ -1666,22 +1866,36 @@ export function drawZoneSurface(ctx: CanvasRenderingContext2D, zone: LayerStack,
       tc.fillStyle = `rgb(${byte(look.height)}, ${byte(look.roughness)}, ${byte(look.metal)})`;
     }
     tc.fillRect(0, 0, tinted.width, tinted.height);
-    ctx.save();
-    ctx.globalAlpha = layer.style.opacity;
-    ctx.translate(originX + t.centerXmm * pxPerMm, originY + t.centerYmm * pxPerMm);
-    ctx.rotate((t.rotationDeg * Math.PI) / 180);
-    ctx.scale(t.flipX ? -1 : 1, t.flipY ? -1 : 1);
-    if (look.blurMm) ctx.filter = `blur(${(look.blurMm * pxPerMm).toFixed(2)}px)`;
-    ctx.drawImage(tinted, -w / 2 - cov.bleed, -h / 2 - cov.bleed);
-    ctx.restore();
-  }
-  return complete;
+    c.save();
+    place(c, t, pxPerMm, ox, oy);
+    if (look.blurMm) c.filter = `blur(${(look.blurMm * pxPerMm).toFixed(2)}px)`;
+    c.drawImage(tinted, -w / 2 - cov.bleed, -h / 2 - cov.bleed);
+    c.restore();
+    release(tinted);
+    return true;
+  };
+  return drawRuns(ctx, zone, pxPerMm, originX, originY, overrides, drawCoverage, drawInk, (c, layer) => {
+    c.globalAlpha = layer.style.opacity;
+  });
+}
+
+/**
+ * A layer's own artwork, without effects, centred in a canvas padded by `padPx` on every side: what
+ * sticker outlines are traced round and halftones are screened from. Null while an image loads.
+ */
+export function renderRawLayer(layer: ArtworkLayer, pxPerMm: number, padPx: number): HTMLCanvasElement | null {
+  const w = layer.transform.widthMm * pxPerMm;
+  const h = layer.transform.heightMm * pxPerMm;
+  const canvas = makeCanvas(Math.ceil(w) + 2 * padPx, Math.ceil(h) + 2 * padPx);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+  ctx.translate(padPx + w / 2, padPx + h / 2);
+  return drawRaw(ctx, layer, w, h, pxPerMm) ? canvas : null;
 }
 
 /** Whether the 2D editor must draw an image layer through the renderer rather than show the decoded file. */
 export function imageNeedsBitmap(layer: ArtworkLayer) {
-  // A crop shape, a repeat or any effect is drawn by the renderer; a plain image shows its own pixels.
-  return layer.content.kind === 'image' && (!!layer.content.repeat || !!layer.content.mask || needsEffectPass(layer));
+  // A crop, a crop shape, a repeat or any effect is drawn by the renderer; a plain image shows its own pixels.
+  return layer.content.kind === 'image' && (!!layer.content.repeat || !!layer.content.mask || !!layer.content.crop || needsEffectPass(layer));
 }
 
 /**

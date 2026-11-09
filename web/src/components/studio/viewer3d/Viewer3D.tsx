@@ -16,7 +16,7 @@ import { batch, coalescing, scaleArea, updateArea, updateProjectedLayer, updateT
 import { getGarment, getSize, partColor, zoneSpecOrFirst, type PartId } from '@/domain/garments';
 import { clamp, hitTestLayer, normalizeDeg, rotatedBounds, scaleRotateAbout } from '@/domain/geometry';
 import { projectionsAsZone } from '@/domain/projected';
-import { backdropCss, drapeAmount, motionOf, presetOf, sceneOf, toneOf, type MotionKind, type ToneId } from '@/domain/scene';
+import { backdropCss, drapeAmount, motionOf, presetOf, sceneOf, stageOf, toneOf, type MotionKind, type ToneId } from '@/domain/scene';
 import { emptyProjections, isAreaId, type AreaId, type ArtboardId, type DesignArea, type DesignDocument, type LayerTransform, type ProjectedLayer, type ProjectedTransform, type ProjectorSpec, type Scene, type ZoneId } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
 import { getAsset } from '@/lib/local-db';
@@ -42,7 +42,8 @@ import { areaOutlineImage, effectiveArea, effectiveLayer, projectArea, projectLa
 import { dragProjector, footprintNormal, insideDecal, planeOffset, pointOnTriangle, steadyProjector, surfaceAtUv, tangentUp, toDecal, type DecalFrame, type ProjectedPart, type ProjectionMesh, type Projector, type SurfacePoint } from './projection';
 import { paintMesh, restCloth, restFromGeometry, restShape, SHELL_TRIM_PREFIX, type RestShape } from './rest-shape';
 import { overlayGeometry, overlayTexture } from './area-overlays';
-import { uvInZone, uvToZone, type GarmentPart } from './uv-mapping';
+import { partForZone, uvInZone, uvToZone, zoneToUv, type GarmentPart } from './uv-mapping';
+import { closeUp, distanceToFit, pathPose, type CameraKey } from '@/lib/camera-path';
 
 export { VIEW_PRESETS, viewerApi, type ViewPreset } from './stage';
 
@@ -1583,8 +1584,88 @@ function Garment({ geo, ownRest, quality, mode, guides, hanger, onOwnZone }: { g
 // Scene: lights, reflections, exposure, floor shadow (spec ED3-09, ED3-10, MED-02)
 // ---------------------------------------------------------------------------
 
+/** The podium sits this far below the hem, so the display form's pole shows; its plinth is this tall. */
+const PODIUM_GAP = 0.09;
+const PODIUM_HEIGHT = 0.24;
+
+/** An oak table top, drawn once: long grain lines and soft rings in the table colour. */
+function woodTexture(base: string): THREE.CanvasTexture {
+  const size = 1024;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, size, size);
+  // Planks a quarter of the texture wide, each with its own grain.
+  for (let plank = 0; plank < 4; plank++) {
+    const x0 = (plank * size) / 4;
+    const seed = plank * 17.3;
+    for (let i = 0; i < 90; i++) {
+      const x = x0 + ((i * 37.1 + seed * 13) % (size / 4));
+      const dark = (Math.sin(i * 12.9898 + seed) * 43758.5453) % 1;
+      ctx.strokeStyle = `rgba(${dark > 0 ? '60,35,15' : '255,240,220'},${0.03 + Math.abs(dark) * 0.07})`;
+      ctx.lineWidth = 1 + Math.abs(dark) * 3;
+      ctx.beginPath();
+      for (let y = 0; y <= size; y += 16) {
+        const wobble = Math.sin(y / 90 + i * 0.7 + seed) * 4 + Math.sin(y / 23 + i) * 1.2;
+        if (y === 0) ctx.moveTo(x + wobble, y);
+        else ctx.lineTo(x + wobble, y);
+      }
+      ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(40,25,10,0.35)';
+    ctx.fillRect(x0, 0, 2, size);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(2.5, 2.5);
+  texture.anisotropy = 8;
+  return texture;
+}
+
+/**
+ * What the garment is shown on (spec MED-02): a display form's pole over a round plinth that takes
+ * the garment's shadow, or a table right behind it, so the front view reads as a flat lay from above.
+ */
+function SceneStage({ scene, floorY, backZ }: { scene: Scene; floorY: number; backZ: number }) {
+  const stage = stageOf(scene);
+  const base = scene.backdrop.kind === 'gradient' ? scene.backdrop.color2 : scene.backdrop.color;
+  const wood = useMemo(() => (stage === 'table' ? woodTexture(base) : null), [stage, base]);
+  useEffect(() => () => wood?.dispose(), [wood]);
+  if (stage === 'podium') {
+    const top = floorY - PODIUM_GAP;
+    const plinth = shade(base, 0.93);
+    return (
+      <group>
+        <mesh position={[0, top - PODIUM_HEIGHT / 2, 0]} castShadow receiveShadow>
+          <cylinderGeometry args={[0.36, 0.37, PODIUM_HEIGHT, 96]} />
+          <meshStandardMaterial color={plinth} roughness={0.62} />
+        </mesh>
+        {/* The form's pole, from the plinth up inside the garment. */}
+        <mesh position={[0, top + 0.2, 0]} castShadow>
+          <cylinderGeometry args={[0.007, 0.007, 0.4, 24]} />
+          <meshStandardMaterial color="#c9ccd1" roughness={0.22} metalness={0.95} />
+        </mesh>
+      </group>
+    );
+  }
+  if (stage === 'table' && wood) {
+    return (
+      <mesh position={[0, 0, backZ - 0.012]} receiveShadow>
+        <planeGeometry args={[8, 8]} />
+        <meshStandardMaterial map={wood} roughness={0.78} />
+      </mesh>
+    );
+  }
+  return null;
+}
+
 function SceneLights({ scene, floorY, shadowKey }: { scene: Scene; floorY: number; shadowKey: string }) {
   const preset = presetOf(scene);
+  const stage = stageOf(scene);
+  // On a podium the soft floor shadow sits under the plinth; on a table the light casts real shadows onto it instead.
+  const shadowY = stage === 'podium' ? floorY - PODIUM_GAP - PODIUM_HEIGHT : floorY;
   const rig = preset.rig;
   const gl = useThree((s) => s.gl);
   const invalidate = useThree((s) => s.invalidate);
@@ -1631,9 +1712,9 @@ function SceneLights({ scene, floorY, shadowKey }: { scene: Scene; floorY: numbe
         <Lightformer form="rect" intensity={1.1} position={[3.5, 0.8, 0]} rotation-y={-Math.PI / 2} scale={[4, 3, 1]} />
       </Environment>
       {/* The garment's shape never moves, so its floor shadow is rendered once per garment, not every frame. */}
-      {scene.shadows ? (
+      {scene.shadows && stage !== 'table' ? (
         <group ref={registerShadow}>
-          <ContactShadows key={shadowKey} frames={1} position={[0, floorY, 0]} opacity={preset.id === 'dark' || preset.id === 'neon' ? 0.55 : 0.32} scale={1.8} blur={2.4} far={1.2} resolution={512} />
+          <ContactShadows key={`${shadowKey}:${stage}`} frames={1} position={[0, shadowY, 0]} opacity={preset.id === 'dark' || preset.id === 'neon' ? 0.55 : 0.32} scale={1.8} blur={2.4} far={1.2} resolution={512} />
         </group>
       ) : null}
     </>
@@ -1676,6 +1757,7 @@ function CameraRig({
   backdrop,
   fitH,
   fitW,
+  centerY = 0,
 }: {
   request: ViewRequest;
   turntable: boolean;
@@ -1686,6 +1768,8 @@ function CameraRig({
   /** Garment height and width relative to a classic tee: a full uniform or a wide cut frames from further back. */
   fitH: number;
   fitW: number;
+  /** Height (m) the preset views aim at: lower when a podium is in the shot. */
+  centerY?: number;
 }) {
   const controls = useRef<CameraControlsImpl>(null);
   const gl = useThree((s) => s.gl);
@@ -1699,14 +1783,14 @@ function CameraRig({
   const lens = Math.tan((BASE_FOV * Math.PI) / 360) / Math.tan((fov * Math.PI) / 360);
   const lensRef = useRef(lens);
   const fovRef = useRef(fov);
-  const frameRef = useRef({ h: fitH, w: fitW });
+  const frameRef = useRef({ h: fitH, w: fitW, y: centerY });
   const backdropRef = useRef(backdrop);
   useEffect(() => {
     backdropRef.current = backdrop;
   }, [backdrop]);
   useEffect(() => {
-    frameRef.current = { h: fitH, w: fitW };
-  }, [fitH, fitW]);
+    frameRef.current = { h: fitH, w: fitW, y: centerY };
+  }, [fitH, fitW, centerY]);
 
   /** Where a shot puts the camera, for an output of the given aspect. */
   const poseOf = useCallback((shot: ShotSpec, aspect: number) => {
@@ -1718,7 +1802,8 @@ function CameraRig({
     // Back the camera off until the garment's height and its width (sleeves included) both fit.
     const k = fitDistance(frameRef.current.h, frameRef.current.w, aspect) * lensRef.current;
     const p = VIEW_PRESETS[view].position;
-    return { position: [p[0] * k, p[1] * k, p[2] * k] as [number, number, number], target: [0, 0, 0] as [number, number, number], fov: fovRef.current };
+    const y = frameRef.current.y;
+    return { position: [p[0] * k, p[1] * k + y, p[2] * k] as [number, number, number], target: [0, y, 0] as [number, number, number], fov: fovRef.current };
   }, [camera]);
 
   useEffect(() => {
@@ -1746,7 +1831,7 @@ function CameraRig({
     const pose = poseOf(request.shot, width / Math.max(1, height));
     setLens(camera, pose.fov);
     void c.setLookAt(pose.position[0], pose.position[1], pose.position[2], pose.target[0], pose.target[1], pose.target[2], true);
-  }, [request, width, height, poseOf, camera, fitH, fitW]);
+  }, [request, width, height, poseOf, camera, fitH, fitW, centerY]);
 
   // Inspect vs edit (spec ED3-03, MOB-06): Place hands the primary pointer to artwork.
   useEffect(() => {
@@ -1961,7 +2046,7 @@ function CameraRig({
       );
     };
 
-    viewerApi.turntable = async ({ width: w, height: h, frames, degrees, from = { kind: 'current' }, background = 'scene', frameCurrent = false, fps, onFrame, signal }) => {
+    viewerApi.turntable = async ({ width: w, height: h, frames, degrees, from = { kind: 'current' }, background = 'scene', frameCurrent = false, fps, move, onFrame, signal }) => {
       const { W, H } = fit(w, h);
       const liveFov = camera.fov;
       const framedStage = frameCurrent ? gl.getSize(new THREE.Vector2()) : null;
@@ -1970,15 +2055,31 @@ function CameraRig({
         await place(from, W / H, liveFov, framedStage);
         const az0 = c.azimuthAngle;
         const polar = c.polarAngle;
+        // A camera move glides through its keys instead of turning: from the start view in to the print, or through saved views.
+        let keys: CameraKey[] | null = null;
+        if (move?.kind === 'path') keys = move.keys;
+        else if (move?.kind === 'fly-in') {
+          const start: CameraKey = { position: c.getPosition(new THREE.Vector3()).toArray(), target: c.getTarget(new THREE.Vector3()).toArray(), fovDeg: camera.fov };
+          const end = viewerApi.printCloseUp?.(move.artboard, camera.fov);
+          if (!end) throw new Error('The print could not be found on the garment for a close-up. Add artwork to it first.');
+          keys = [start, end];
+        }
         const out = document.createElement('canvas');
         out.width = W;
         out.height = H;
         const o = out.getContext('2d')!;
         for (let i = 0; i < frames; i++) {
           if (signal?.aborted) throw new DOMException('Render cancelled', 'AbortError');
-          // A full turn loops seamlessly; a partial sweep ends exactly on its last angle.
-          const t = degrees >= 360 ? i / frames : i / Math.max(1, frames - 1);
-          await c.rotateTo(az0 + ((degrees * Math.PI) / 180) * t, polar, false);
+          if (keys) {
+            const pose = pathPose(keys, frames > 1 ? i / (frames - 1) : 1);
+            camera.fov = pose.fovDeg;
+            camera.updateProjectionMatrix();
+            await c.setLookAt(pose.position[0], pose.position[1], pose.position[2], pose.target[0], pose.target[1], pose.target[2], false);
+          } else {
+            // A full turn loops seamlessly; a partial sweep ends exactly on its last angle.
+            const t = degrees >= 360 ? i / frames : i / Math.max(1, frames - 1);
+            await c.rotateTo(az0 + ((degrees * Math.PI) / 180) * t, polar, false);
+          }
           c.update(0);
           // The scene's motion plays on the video's own clock, so every frame is exact.
           if (fps && motionState.kind !== 'still') applyMotion(motionState.kind, motionState.speed, i / fps, motionState.group);
@@ -2331,9 +2432,50 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
   const motion = motionOf(scene);
   const motionGroup = useRef<THREE.Group>(null);
   const backdropImage = useBackdropImage(scene.backdrop.kind === 'image' ? scene.backdrop.assetId : undefined);
-  const fitH = geo.layout.heightMm / TEE_FIT.heightMm;
+  // A podium joins the shot: frame the garment and its plinth together.
+  const podiumDrop = stageOf(scene) === 'podium' ? PODIUM_GAP + PODIUM_HEIGHT : 0;
+  const fitH = (geo.layout.heightMm + podiumDrop * 1000) / TEE_FIT.heightMm;
+  const centerY = -podiumDrop / 2;
   const fitW = geo.layout.widthMm / TEE_FIT.widthMm;
   const floorY = -(geo.layout.heightMm / 2) * 0.001 - 0.015;
+  // A close-up of a print for video fly-ins: the middle of its artwork, found on the cloth and seen square on.
+  useEffect(() => {
+    viewerApi.printCloseUp = (id, fovDeg) => {
+      const d = useStudio.getState().document;
+      if (!d) return null;
+      const lift = -(geo.layout.bottomMm + geo.layout.heightMm / 2);
+      const toStage = (p: readonly number[]): [number, number, number] => [p[0] / 1000, (p[1] + lift) / 1000, p[2] / 1000];
+      if (isAreaId(id)) {
+        const area = d.areas?.items[id];
+        if (!area) return null;
+        return closeUp(toStage(area.projector.point), [...area.projector.normal], distanceToFit(Math.max(area.widthMm, area.heightMm) / 1000, fovDeg), fovDeg);
+      }
+      const spec = getGarment(d.garment.modelId).zones[id];
+      const zone = d.zones[id];
+      const part = geo.parts.find((p) => p.id === partForZone(id));
+      if (!spec || !zone || !part?.geometry.index) return null;
+      const shown = zone.orderedLayerIds.map((l) => zone.layers[l]).filter((l) => l?.visible);
+      const box = shown.length ? unionBounds(shown.map((l) => rotatedBounds(l.transform))) : { x: 0, y: 0, width: spec.printableWidthMm, height: spec.printableHeightMm };
+      const { u, v } = zoneToUv(getGarment(d.garment.modelId), geo.layout, id, box.x + box.width / 2, box.y + box.height / 2);
+      const g = part.geometry;
+      const hit = surfaceAtUv({ position: g.attributes.position.array, uv: g.attributes.uv.array, index: g.index!.array, normal: g.attributes.normal?.array }, u, v);
+      if (!hit) return null;
+      return closeUp(toStage(hit.point), [...hit.normal], distanceToFit(Math.max(box.width, box.height, 80) / 1000, fovDeg), fovDeg);
+    };
+    return () => {
+      viewerApi.printCloseUp = undefined;
+    };
+  }, [geo]);
+
+  // The garment's back, in metres: a flat lay's table sits just behind it.
+  const backZ = useMemo(() => {
+    let z = 0;
+    for (const p of geo.parts) {
+      if (!p.geometry.boundingBox) p.geometry.computeBoundingBox();
+      z = Math.min(z, p.geometry.boundingBox!.min.z);
+    }
+    return z * 0.001;
+  }, [geo]);
   // The floor shadow is drawn once per shape: the built-in parts, a template shape or a fitted shell.
   const shapeKey = shellGeo ? shellKey : shapeAssetId && loadedShape?.assetId === shapeAssetId ? shapeAssetId : 'built-in';
   const shadowKey = `${modelId}:${sizeCode}:${quality}:${drapeId}:${shapeKey}`;
@@ -2520,6 +2662,7 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
         >
           <PerformanceMonitor flipflops={3} onDecline={() => setDpr(1)} onIncline={() => setDpr(maxDpr)} onFallback={() => setDpr(1)} />
           <SceneLights scene={scene} floorY={floorY} shadowKey={shadowKey} />
+          <SceneStage scene={scene} floorY={floorY} backZ={backZ} />
           <group ref={motionGroup}>
             <Garment geo={geo} ownRest={!!shellGeo} quality={quality} mode={mode} guides={guides} hanger={motion.kind === 'hanger'} onOwnZone={setOwnZone} />
           </group>
@@ -2532,7 +2675,7 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
             hpsMm={geo.layout.torsoHeightMm}
             limbPivots={geo.limbPivots}
           />
-          <CameraRig request={request} turntable={turntable} mode={mode} hasSelection={hasSelection} fov={scene.fovDeg} backdrop={scene.backdrop} fitH={fitH} fitW={fitW} />
+          <CameraRig request={request} turntable={turntable} mode={mode} hasSelection={hasSelection} fov={scene.fovDeg} backdrop={scene.backdrop} fitH={fitH} fitW={fitW} centerY={centerY} />
           <PhotorealView enabled={photoreal && !turntable} overlay={shadowOverlay} onStatus={setLiveStatus} />
         </Canvas>
         <RenderFrame />

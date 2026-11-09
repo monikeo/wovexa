@@ -16,8 +16,15 @@ export interface RulerState {
   /** Selection extent in mm along this axis. */
   selection: [number, number] | null;
   pointer: number | null;
+  /** Guides across this axis, in mm: marked on the ruler, where they can be dragged or double-clicked away. */
+  guides?: number[];
   colors: { bg: string; fg: string; line: string; accent: string };
 }
+
+/** Guide colour: a cyan that reads on light and dark fabric alike. */
+export const GUIDE_COLOR = '#00A3FF';
+/** How near (CSS px) a press on the ruler must be to a guide's mark to pick it up. */
+export const GUIDE_GRAB_PX = 6;
 
 function label(value: number, units: 'mm' | 'in') {
   if (units === 'mm') return String(Math.round(value));
@@ -74,6 +81,18 @@ export function drawRuler(canvas: HTMLCanvasElement, axis: 'x' | 'y', s: RulerSt
     if (isMajor) ctx.fillText(label(t, s.units), x + 3, 2);
   }
   ctx.stroke();
+
+  // Guide marks: small triangles pointing into the artboard.
+  ctx.fillStyle = GUIDE_COLOR;
+  for (const g of s.guides ?? []) {
+    const x = toPx(g / unitMm);
+    ctx.beginPath();
+    ctx.moveTo(x - 5, RULER_SIZE - 7);
+    ctx.lineTo(x + 5, RULER_SIZE - 7);
+    ctx.lineTo(x, RULER_SIZE);
+    ctx.closePath();
+    ctx.fill();
+  }
 
   if (s.pointer !== null) {
     const x = Math.round(toPx(s.pointer / unitMm)) + 0.5;

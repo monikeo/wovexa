@@ -6,20 +6,21 @@
  * World units are millimetres from the top-left of the active print zone.
  */
 import { ActiveSelection, Canvas as FabricCanvas, FabricImage, Group, Point, type FabricObject, type TPointerEventInfo } from 'fabric';
-import { Focus, Maximize, Minus, PenTool, Plus } from 'lucide-react';
+import { Focus, Maximize, Minus, PenTool, Plus, Shirt } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { expandToGroups, unionBounds } from '@/domain/arrange';
 import { EditorContextMenu } from './ContextMenu';
-import { updateTransforms } from '@/domain/commands';
+import { setGuides as updateGuides, updateTransforms } from '@/domain/commands';
 import { getGarment, getSize, partColor } from '@/domain/garments';
-import { rotatedBounds, type Rect } from '@/domain/geometry';
+import { formatLength, rotatedBounds, type Rect } from '@/domain/geometry';
 import { artboardOf } from '@/domain/areas';
-import type { ArtboardId, ArtworkLayer, LayerStack, LayerTransform } from '@/domain/schema';
+import { clipBases } from '@/domain/clipping';
+import type { ArtboardId, ArtworkLayer, DesignDocument, LayerStack, LayerTransform } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
-import { usePreference } from '@/lib/preferences';
+import { setPreference, usePreference } from '@/lib/preferences';
 import { ensureFonts, imageNeedsBitmap, imageSource, renderLayerBitmap } from '@/lib/render/zone-renderer';
 import { useActiveColorway, useActiveZoneSpec, useLive, useStudio } from '@/stores/studio-store';
-import { drawRuler, RULER_SIZE } from './rulers';
+import { drawRuler, GUIDE_COLOR, GUIDE_GRAB_PX, RULER_SIZE } from './rulers';
 import { drawSketch, sketchForZone } from './flat-sketch';
 import { PenOverlay } from './PenOverlay';
 import { penShape } from '@/domain/pen';
@@ -41,8 +42,46 @@ class LayerImage extends FabricImage {
     const b = this.bleed;
     ctx.drawImage(el, -this.width / 2 - b, -this.height / 2 - b, this.width + 2 * b, this.height + 2 * b);
   }
+  // A clipped layer is drawn through Fabric's cache: leave room there for what reaches past the box.
+  _getCacheCanvasDimensions() {
+    const dims = super._getCacheCanvasDimensions();
+    if (!this.bleed) return dims;
+    const ex = 2 * this.bleed * dims.zoomX;
+    const ey = 2 * this.bleed * dims.zoomY;
+    return { ...dims, width: Math.ceil(dims.width + ex), height: Math.ceil(dims.height + ey), x: dims.x + ex, y: dims.y + ey };
+  }
 }
 type LayerObject = LayerImage;
+
+/**
+ * Cut a layer's object to its base: the base's own pixels, placed where it is, mask it, and the
+ * base's opacity and visibility carry over, as a clipping mask's do. With no base, the mask goes.
+ * Fabric objects are mutable by design, so this stays out of React's render analysis.
+ */
+function applyClip(obj: LayerImage, layer: ArtworkLayer, base: ArtworkLayer | undefined, baseObj: LayerImage | undefined) {
+  if (!base || !baseObj) {
+    if (obj.clipPath) {
+      obj.clipPath = undefined;
+      obj.set({ opacity: layer.style.opacity, visible: layer.visible });
+      obj.dirty = true;
+    }
+    return;
+  }
+  const clip = obj.clipPath instanceof LayerImage ? obj.clipPath : new LayerImage(baseObj.getElement(), { originX: 'center', originY: 'center', absolutePositioned: true, objectCaching: false });
+  placeClip(clip, baseObj);
+  obj.clipPath = clip;
+  obj.set({ opacity: layer.style.opacity * base.style.opacity, visible: layer.visible && base.visible });
+  obj.dirty = true;
+}
+
+/** Place a clipping mask where its base layer is drawn now (also mid-drag, inside groups and selections). */
+function placeClip(clip: LayerImage, base: LayerImage) {
+  const el = base.getElement();
+  if (clip.getElement() !== el) clip.setElement(el, { width: base.width, height: base.height });
+  clip.bleed = base.bleed;
+  const t = transformOf(base);
+  clip.set({ width: base.width, height: base.height, left: t.centerXmm, top: t.centerYmm, angle: t.rotationDeg, flipX: t.flipX, flipY: t.flipY, scaleX: t.widthMm / base.width, scaleY: t.heightMm / base.height });
+}
 type GroupObject = Group & { groupKey: string; signature?: string };
 
 const PAD = 44;
@@ -85,6 +124,29 @@ function transformOf(obj: FabricObject): LayerTransform {
   };
 }
 
+/** A ruler guide being dragged: a new one (no index) or an existing one, and whether it is over a ruler (to be removed). */
+interface GuideDrag {
+  axis: 'x' | 'y';
+  index: number | null;
+  mm: number;
+  remove: boolean;
+}
+
+/** A print area's guides as they show now: its own, with the one being dragged in its new place (or gone). */
+function currentGuides(doc: DesignDocument | null | undefined, zoneId: ArtboardId, drag: GuideDrag | null) {
+  const zone = doc ? artboardOf(doc, zoneId) : undefined;
+  const g = { x: [...(zone?.guides?.x ?? [])], y: [...(zone?.guides?.y ?? [])] };
+  if (drag) {
+    const list = g[drag.axis];
+    if (drag.index !== null) list.splice(drag.index, 1);
+    if (!drag.remove) list.push(drag.mm);
+  }
+  return g;
+}
+
+/** How far into the garment from a seam or edge a print should stay clear, in mm. */
+const SEAM_CLEARANCE_MM = 20;
+
 /** Document order split into display items: single layers, or contiguous group blocks. */
 function displayItems(zone: LayerStack) {
   const items: { key: string; ids: string[] }[] = [];
@@ -118,6 +180,8 @@ export function Editor2D() {
   const fabricRef = useRef<FabricCanvas | null>(null);
   const objectsRef = useRef(new Map<string, LayerObject>());
   const groupsRef = useRef(new Map<string, GroupObject>());
+  // Clipped layer id → the layer it is clipped to, so masks can follow a base being dragged.
+  const clipBasesRef = useRef<Record<string, string>>({});
   const zoneRef = useRef<ArtboardId>('front');
   const syncingSelection = useRef(false);
   const snapLines = useRef<{ x?: number; y?: number }>({});
@@ -151,11 +215,13 @@ export function Editor2D() {
   const zone = doc ? artboardOf(doc, zoneId) : undefined;
 
   // Latest values for event handlers registered once; refreshed after every render.
-  const latest = useRef({ zoneSpec, colorway, doc, zoneId, units, selected });
+  const seams = usePreference('seamGuides');
+  const latest = useRef({ zoneSpec, colorway, doc, zoneId, units, selected, seams });
   useEffect(() => {
-    latest.current = { zoneSpec, colorway, doc, zoneId, units, selected };
+    latest.current = { zoneSpec, colorway, doc, zoneId, units, selected, seams };
     fabricRef.current?.requestRenderAll();
   });
+  const guideDragRef = useRef<GuideDrag | null>(null);
 
   const reportZoom = useCallback(() => {
     const c = fabricRef.current;
@@ -267,6 +333,7 @@ export function Editor2D() {
     });
     fabricRef.current = canvas;
     const accent = cssVar('--accent', '#2b59ff');
+    const guidesNow = () => currentGuides(latest.current.doc, zoneRef.current, guideDragRef.current);
 
     // Garment flat sketch behind the artwork.
     canvas.on('before:render', ({ ctx }) => {
@@ -290,6 +357,24 @@ export function Editor2D() {
         const model = getGarment(d.garment.modelId);
         const sketch = sketchForZone(model, spec, getSize(model, d.garment.sizeCode).scale);
         drawSketch(ctx, sketch, cw, v[0] * (window.devicePixelRatio || 1));
+        // Seam clearance: a band along every seam, edge and trim, over the print area, where a print should not go.
+        if (latest.current.seams === 'on') {
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(0, 0, spec.printableWidthMm, spec.printableHeightMm);
+          ctx.clip();
+          ctx.strokeStyle = 'rgba(232, 51, 109, 0.2)';
+          ctx.lineWidth = 2 * SEAM_CLEARANCE_MM;
+          ctx.lineJoin = 'round';
+          ctx.lineCap = 'round';
+          const edges = [sketch.body, ...sketch.shapes.filter((s) => s.part !== 'body' && s.part !== 'inside').map((s) => s.points), ...sketch.bands.map((b) => b.points), ...sketch.seams];
+          for (const pts of edges) {
+            ctx.beginPath();
+            pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
       }
       ctx.restore();
     });
@@ -306,6 +391,17 @@ export function Editor2D() {
       const W = spec.printableWidthMm;
       const H = spec.printableHeightMm;
       const inset = spec.safeInsetMm;
+      // One screen shown alone (the ink count's preview): what it prints, on the garment, over the print area.
+      const plate = useLive.getState().platePreview;
+      if (plate && plate.zoneId === zoneRef.current) {
+        ctx.save();
+        ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
+        ctx.fillStyle = plate.garment;
+        ctx.fillRect(0, 0, W, H);
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(plate.canvas, 0, 0, W, H);
+        ctx.restore();
+      }
       ctx.save();
       ctx.lineWidth = 1;
       ctx.setLineDash([6, 4]);
@@ -318,7 +414,30 @@ export function Editor2D() {
       ctx.font = '600 11px var(--font-archivo), system-ui, sans-serif';
       ctx.fillStyle = accent;
       ctx.textBaseline = 'bottom';
-      ctx.fillText(`${spec.label} print area, ${W} × ${H} mm`, X(0), Y(0) - 6);
+      ctx.fillText(plate && plate.zoneId === zoneRef.current ? `${spec.label}: ${plate.label} only` : `${spec.label} print area, ${W} × ${H} mm`, X(0), Y(0) - 6);
+      // Ruler guides, across the whole view; the one being dragged shows where it lands.
+      const guides = guidesNow();
+      ctx.strokeStyle = GUIDE_COLOR;
+      for (const gx of guides.x) {
+        ctx.beginPath();
+        ctx.moveTo(X(gx), 0);
+        ctx.lineTo(X(gx), canvas.getHeight());
+        ctx.stroke();
+      }
+      for (const gy of guides.y) {
+        ctx.beginPath();
+        ctx.moveTo(0, Y(gy));
+        ctx.lineTo(canvas.getWidth(), Y(gy));
+        ctx.stroke();
+      }
+      const dragging = guideDragRef.current;
+      if (dragging && !dragging.remove) {
+        ctx.fillStyle = GUIDE_COLOR;
+        ctx.textBaseline = 'top';
+        const at = `${formatLength(dragging.mm, latest.current.units)}`;
+        if (dragging.axis === 'x') ctx.fillText(at, X(dragging.mm) + 5, RULER_SIZE + 6);
+        else ctx.fillText(at, RULER_SIZE + 6, Y(dragging.mm) + 4);
+      }
       const snap = snapLines.current;
       ctx.strokeStyle = '#e8336d';
       if (snap.x !== undefined) {
@@ -351,8 +470,9 @@ export function Editor2D() {
       const sel = rects.length ? unionBounds(rects) : null;
       const colors = { bg: cssVar('--surface-panel', '#fff'), fg: cssVar('--text-muted', '#8c909b'), line: cssVar('--border', '#dcdee4'), accent };
       const p = pointerRef.current;
-      if (rulerTopRef.current) drawRuler(rulerTopRef.current, 'x', { zoom: v[0], offset: v[4], units: u, selection: sel ? [sel.x, sel.x + sel.width] : null, pointer: p?.x ?? null, colors });
-      if (rulerLeftRef.current) drawRuler(rulerLeftRef.current, 'y', { zoom: v[0], offset: v[5], units: u, selection: sel ? [sel.y, sel.y + sel.height] : null, pointer: p?.y ?? null, colors });
+      const guides = guidesNow();
+      if (rulerTopRef.current) drawRuler(rulerTopRef.current, 'x', { zoom: v[0], offset: v[4], units: u, selection: sel ? [sel.x, sel.x + sel.width] : null, pointer: p?.x ?? null, guides: guides.x, colors });
+      if (rulerLeftRef.current) drawRuler(rulerLeftRef.current, 'y', { zoom: v[0], offset: v[5], units: u, selection: sel ? [sel.y, sel.y + sel.height] : null, pointer: p?.y ?? null, guides: guides.y, colors });
     };
     let rulerFrame = 0;
     renderRulersRef.current = () => {
@@ -368,6 +488,14 @@ export function Editor2D() {
         const overrides: Record<string, Partial<LayerTransform>> = {};
         for (const o of leaves(target)) overrides[o.layerId] = transformOf(o);
         useLive.getState().setOverrides(zoneRef.current, overrides);
+        // What is clipped to a moving layer stays cut to it.
+        const objs = objectsRef.current;
+        for (const [id, baseId] of Object.entries(clipBasesRef.current)) {
+          const clip = objs.get(id)?.clipPath;
+          const base = objs.get(baseId);
+          if (clip instanceof LayerImage && base && overrides[baseId]) placeClip(clip, base);
+        }
+        canvas.requestRenderAll();
       });
     };
 
@@ -392,6 +520,9 @@ export function Editor2D() {
           xs.push(r.x, r.x + r.width / 2, r.x + r.width);
           ys.push(r.y, r.y + r.height / 2, r.y + r.height);
         }
+        // Ruler guides are snapped to as well.
+        xs.push(...(zn.guides?.x ?? []));
+        ys.push(...(zn.guides?.y ?? []));
         const tol = SNAP_PX / canvas.getZoom();
         const best = (edges: number[], lines: number[]) => {
           let pick: { delta: number; line: number } | null = null;
@@ -867,6 +998,14 @@ export function Editor2D() {
       if (canvas.getObjects().indexOf(obj) !== index) canvas.moveObjectTo(obj, index);
     });
 
+    // Clipped layers show only where their base has ink.
+    const bases = clipBases(zone);
+    clipBasesRef.current = bases;
+    for (const [id, obj] of objects) {
+      const layer = zone.layers[id];
+      if (layer) applyClip(obj, layer, bases[id] ? zone.layers[bases[id]] : undefined, bases[id] ? objects.get(bases[id]) : undefined);
+    }
+
     if (reselect) quietly(() => restoreSelection(canvas, zone, latest.current.selected));
 
     // Images decode asynchronously; redraw once they're ready.
@@ -892,6 +1031,77 @@ export function Editor2D() {
       cancelled = true;
     };
   }, [zone, zoneId, ready, zoomPct, fit, colorway, refreshTick, restoreSelection]);
+
+  /**
+   * Ruler guides (spec ED2-08): press a ruler and drag onto the artboard for a new guide (the top
+   * ruler makes a horizontal one, the left a vertical one). A guide's mark on the ruler drags it;
+   * dropped back on a ruler, or double-clicked, it goes.
+   */
+  const guideAt = (e: React.PointerEvent | React.MouseEvent, ruler: 'top' | 'left') => {
+    const canvas = fabricRef.current;
+    const host = hostRef.current;
+    if (!canvas || !host) return null;
+    const rect = host.getBoundingClientRect();
+    const v = canvas.viewportTransform;
+    const markAxis = ruler === 'top' ? 'x' : 'y';
+    const along = ruler === 'top' ? e.clientX - rect.left : e.clientY - rect.top;
+    const offset = ruler === 'top' ? v[4] : v[5];
+    const index = currentGuides(latest.current.doc, zoneRef.current, null)[markAxis].findIndex((g) => Math.abs(offset + g * v[0] - along) <= GUIDE_GRAB_PX);
+    return { canvas, rect, v, markAxis: markAxis as 'x' | 'y', index };
+  };
+
+  const startGuide = (e: React.PointerEvent<HTMLCanvasElement>, ruler: 'top' | 'left') => {
+    const at = guideAt(e, ruler);
+    if (!at || e.button !== 0) return;
+    e.preventDefault();
+    const { canvas, rect, v, markAxis, index } = at;
+    const axis: 'x' | 'y' = index >= 0 ? markAxis : ruler === 'top' ? 'y' : 'x';
+    const picked = index >= 0 ? index : null;
+    const spec = latest.current.zoneSpec;
+    const toMm = (clientX: number, clientY: number) => (axis === 'x' ? (clientX - rect.left - v[4]) / v[0] : (clientY - rect.top - v[5]) / v[0]);
+    // A guide lands on whole half-millimetres, and clicks onto the print area's edges and middle when near them.
+    const place = (mm: number) => {
+      const size = axis === 'x' ? (spec?.printableWidthMm ?? 0) : (spec?.printableHeightMm ?? 0);
+      const near = [0, size / 2, size].find((s) => Math.abs(s - mm) * v[0] <= 6);
+      return near ?? Math.round(mm * 2) / 2;
+    };
+    guideDragRef.current = { axis, index: picked, mm: place(toMm(e.clientX, e.clientY)), remove: picked === null };
+    const move = (ev: PointerEvent) => {
+      const overRuler = ev.clientX - rect.left < RULER_SIZE || ev.clientY - rect.top < RULER_SIZE;
+      guideDragRef.current = { axis, index: picked, mm: place(toMm(ev.clientX, ev.clientY)), remove: overRuler };
+      canvas.requestRenderAll();
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      const drag = guideDragRef.current;
+      guideDragRef.current = null;
+      canvas.requestRenderAll();
+      // A new guide that never left the ruler is nothing.
+      if (!drag || (drag.index === null && drag.remove)) return;
+      const label = drag.index === null ? 'Add guide' : drag.remove ? 'Remove guide' : 'Move guide';
+      useStudio.getState().dispatch(updateGuides(zoneRef.current, currentGuides(latest.current.doc, zoneRef.current, drag), label));
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  };
+
+  const removeGuide = (e: React.MouseEvent<HTMLCanvasElement>, ruler: 'top' | 'left') => {
+    const at = guideAt(e, ruler);
+    if (!at || at.index < 0) return;
+    useStudio.getState().dispatch(updateGuides(zoneRef.current, currentGuides(latest.current.doc, zoneRef.current, { axis: at.markAxis, index: at.index, mm: 0, remove: true }), 'Remove guide'));
+  };
+
+  // A screen previewed from the ink count is drawn over the artwork: redraw when it changes.
+  useEffect(
+    () =>
+      useLive.subscribe((s, prev) => {
+        if (s.platePreview !== prev.platePreview) fabricRef.current?.requestRenderAll();
+      }),
+    [],
+  );
 
   // ---- Selection sync: store → canvas ----
   useEffect(() => {
@@ -941,8 +1151,22 @@ export function Editor2D() {
         Choose layers in the Layers panel or press Ctrl+A. Arrow keys move the selection by 1 mm, with Shift by 10 mm. Shift+F10 opens actions. Plus and minus zoom, Shift+1 fits the print area.
       </p>
       {menu ? <EditorContextMenu x={menu.x} y={menu.y} onClose={closeMenu} /> : null}
-      <canvas ref={rulerTopRef} className="pointer-events-none absolute left-0 top-0 h-5 w-full" aria-hidden />
-      <canvas ref={rulerLeftRef} className="pointer-events-none absolute left-0 top-0 h-full w-5" aria-hidden />
+      <canvas
+        ref={rulerTopRef}
+        className="absolute left-0 top-0 h-5 w-full cursor-row-resize touch-none"
+        onPointerDown={(e) => startGuide(e, 'top')}
+        onDoubleClick={(e) => removeGuide(e, 'top')}
+        title="Drag down for a horizontal guide. Drag a guide's mark to move it, or back onto the ruler (or double-click it) to remove it."
+        aria-hidden
+      />
+      <canvas
+        ref={rulerLeftRef}
+        className="absolute left-0 top-0 h-full w-5 cursor-col-resize touch-none"
+        onPointerDown={(e) => startGuide(e, 'left')}
+        onDoubleClick={(e) => removeGuide(e, 'left')}
+        title="Drag right for a vertical guide. Drag a guide's mark to move it, or back onto the ruler (or double-click it) to remove it."
+        aria-hidden
+      />
       <div className="pointer-events-none absolute left-0 top-0 grid h-5 w-5 place-items-center border-b border-r border-line bg-panel text-[9px] font-semibold text-fg-3" aria-hidden>
         {units}
       </div>
@@ -965,6 +1189,17 @@ export function Editor2D() {
         <button className="icon-btn" onClick={() => setPenOn((on) => !on)} aria-pressed={penOn} aria-label="Pen: draw a shape" title="Pen: draw your own shape (P)">
           <PenTool size={15} />
         </button>
+        {zoneSpec?.areaId ? null : (
+          <button
+            className="icon-btn"
+            onClick={() => setPreference('seamGuides', seams === 'on' ? 'off' : 'on')}
+            aria-pressed={seams === 'on'}
+            aria-label="Seam clearance"
+            title={`Seam clearance: show a ${SEAM_CLEARANCE_MM} mm band along seams, edges and trims, where a print should not go`}
+          >
+            <Shirt size={15} />
+          </button>
+        )}
       </div>
       {penOn && zone ? (
         <PenOverlay

@@ -9,6 +9,8 @@ import {
   ArrowUpToLine,
   BringToFront,
   Copy,
+  CornerLeftDown,
+  Crop,
   Eye,
   Focus,
   Group,
@@ -35,10 +37,12 @@ import {
   addShape,
   addText,
   alignSelection,
+  clipSelection,
   deleteSelection,
   duplicateSelection,
   groupSelection,
   moveSelectionInStack,
+  openCrop,
   selectAll,
   ungroupSelection,
   zoomToSelection,
@@ -83,6 +87,10 @@ export function EditorContextMenu({ x, y, onClose }: { x: number; y: number; onC
   const oneGroup = groups.size === 1 && layers.length > 1 && layers.every((l) => l.groupId);
   const allLocked = layers.length > 0 && layers.every((l) => l.locked);
   const single = layers.length === 1 ? layers[0] : null;
+  // One layer clips to the one under it; several clip to the lowest of them.
+  const clipTargets = layers.length > 1 && zone ? layers.filter((l) => l.id !== zone.orderedLayerIds.find((id) => selected.includes(id))) : layers;
+  const clipped = clipTargets.length > 0 && clipTargets.every((l) => l.clip);
+  const canClip = clipped || (single ? !!zone && zone.orderedLayerIds.indexOf(single.id) > 0 : layers.length > 1);
 
   const sections: Item[][] = layers.length
     ? [
@@ -90,6 +98,7 @@ export function EditorContextMenu({ x, y, onClose }: { x: number; y: number; onC
           ...(single?.content.kind === 'text'
             ? [{ label: 'Edit text', icon: <Pencil size={15} />, shortcut: 'Enter', run: () => window.dispatchEvent(new CustomEvent('wovexa:edit-layer', { detail: { layerId: single.id } })) }]
             : []),
+          ...(single?.content.kind === 'image' ? [{ label: 'Crop…', icon: <Crop size={15} />, run: () => openCrop('crop') }] : []),
           { label: 'Duplicate', icon: <Copy size={15} />, shortcut: 'Ctrl+D', run: duplicateSelection },
           { label: 'Delete', icon: <Trash2 size={15} />, shortcut: 'Del', run: deleteSelection },
         ],
@@ -105,6 +114,7 @@ export function EditorContextMenu({ x, y, onClose }: { x: number; y: number; onC
             : layers.length > 1
               ? [{ label: 'Group', icon: <Group size={15} />, shortcut: 'Ctrl+G', run: groupSelection }]
               : []),
+          ...(canClip ? [{ label: clipped ? 'Release clipping' : layers.length > 1 ? 'Clip into lowest layer' : 'Clip to layer below', icon: <CornerLeftDown size={15} />, shortcut: 'Ctrl+Alt+G', run: () => clipSelection(!clipped) }] : []),
           { label: 'Centre on print area', icon: <AlignCenter size={15} />, run: () => (alignSelection('hcenter'), alignSelection('vcenter')) },
           {
             label: allLocked ? 'Unlock' : 'Lock',

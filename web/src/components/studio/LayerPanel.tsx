@@ -1,6 +1,7 @@
 'use client';
-import { ArrowDown, ArrowUp, Eye, EyeOff, Image as ImageIcon, Lock, Shapes, Type, Unlock } from 'lucide-react';
+import { ArrowDown, ArrowUp, CornerLeftDown, Eye, EyeOff, Image as ImageIcon, Lock, Shapes, Type, Unlock } from 'lucide-react';
 import { useState } from 'react';
+import { clipBases } from '@/domain/clipping';
 import * as cmd from '@/domain/commands';
 import { projectedLayers } from '@/domain/projected';
 import type { ArtworkLayer, ProjectedLayer } from '@/domain/schema';
@@ -93,7 +94,7 @@ function ProjectedLayers() {
   );
 }
 
-function LayerRow({ layer, index, count, groupEdge }: { layer: ArtworkLayer; index: number; count: number; groupEdge: 'top' | 'middle' | 'bottom' | 'single' | null }) {
+function LayerRow({ layer, index, count, groupEdge, clippedTo }: { layer: ArtworkLayer; index: number; count: number; groupEdge: 'top' | 'middle' | 'bottom' | 'single' | null; clippedTo?: string }) {
   const zoneId = useStudio((s) => s.activeZoneId);
   const selected = useStudio((s) => s.selectedLayerIds.includes(layer.id));
   const dispatch = useStudio((s) => s.dispatch);
@@ -116,8 +117,14 @@ function LayerRow({ layer, index, count, groupEdge }: { layer: ArtworkLayer; ind
 
   return (
     <li
-      className={`group flex min-h-11 items-center gap-1 rounded-lg pl-2 pr-1 ${bracket} ${selected ? 'bg-selected' : 'hover:bg-hover'} ${layer.visible ? '' : 'opacity-55'}`}
+      className={`group flex min-h-11 items-center gap-1 rounded-lg pr-1 ${clippedTo ? 'pl-3' : 'pl-2'} ${bracket} ${selected ? 'bg-selected' : 'hover:bg-hover'} ${layer.visible ? '' : 'opacity-55'}`}
     >
+      {clippedTo && (
+        <span title={`Clipped to ${clippedTo}: shows only inside it`} className="flex">
+          <CornerLeftDown size={13} className="text-accent" aria-hidden />
+          <span className="sr-only">Clipped to {clippedTo}.</span>
+        </span>
+      )}
       <Icon size={15} className={selected ? 'text-accent' : 'text-fg-2'} aria-hidden />
       {renaming ? (
         <input
@@ -153,6 +160,17 @@ function LayerRow({ layer, index, count, groupEdge }: { layer: ArtworkLayer; ind
         <button className="icon-btn h-8 w-8" disabled={index === 0} onClick={() => dispatch(cmd.moveLayerBy(zoneId, layer.id, -1))} aria-label={`Move ${layer.name} down`} title="Send backward ([)">
           <ArrowDown size={14} />
         </button>
+        {index > 0 && (
+          <button
+            className="icon-btn h-8 w-8"
+            onClick={() => dispatch(cmd.updateLayer(zoneId, layer.id, { clip: !layer.clip }, layer.clip ? 'Release clipping' : 'Clip to layer below'))}
+            aria-label={layer.clip ? `Release ${layer.name} from the layer below` : `Clip ${layer.name} to the layer below`}
+            aria-pressed={!!layer.clip}
+            title={layer.clip ? 'Release clipping (Ctrl+Alt+G)' : 'Clip to the layer below: show it only inside that layer (Ctrl+Alt+G)'}
+          >
+            <CornerLeftDown size={14} className={layer.clip ? 'text-accent' : ''} />
+          </button>
+        )}
       </div>
       <button
         className="icon-btn h-8 w-8"
@@ -178,6 +196,7 @@ export function LayerPanel() {
   const spec = useActiveZoneSpec();
   if (!zone) return null;
   const layers = zone.orderedLayerIds.map((id) => zone.layers[id]).filter(Boolean);
+  const bases = clipBases(zone);
 
   return (
     <div className="flex h-full flex-col">
@@ -206,7 +225,7 @@ export function LayerPanel() {
             const prev = list[i - 1]?.groupId;
             const next = list[i + 1]?.groupId;
             const edge = !g ? null : prev !== g && next !== g ? 'single' : prev !== g ? 'top' : next !== g ? 'bottom' : 'middle';
-            return <LayerRow key={layer.id} layer={layer} index={zone.orderedLayerIds.indexOf(layer.id)} count={layers.length} groupEdge={edge} />;
+            return <LayerRow key={layer.id} layer={layer} index={zone.orderedLayerIds.indexOf(layer.id)} count={layers.length} groupEdge={edge} clippedTo={bases[layer.id] ? zone.layers[bases[layer.id]]?.name : undefined} />;
           })}
         </ul>
       )}

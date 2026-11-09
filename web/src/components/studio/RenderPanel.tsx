@@ -7,8 +7,11 @@
  */
 import { Clapperboard, Download, Images, Loader2, Sparkles, Square } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { artboardSpec } from '@/domain/areas';
 import * as cmd from '@/domain/commands';
+import { getGarment } from '@/domain/garments';
 import { MOTIONS, motionOf, SCENE_PRESETS, sceneOf } from '@/domain/scene';
+import type { ArtboardId, DesignDocument } from '@/domain/schema';
 import { canvasToBlob, downloadBlob, slugify } from '@/lib/download';
 import { canEncodeAvif, encodePdf, encodeTiff } from '@/lib/export/image-formats';
 import { planVideo, recordTurntable, type VideoPlan } from '@/lib/video';
@@ -58,6 +61,9 @@ type Backdrop = 'scene' | 'transparent' | 'white';
 /** The largest contact sheet a browser canvas holds safely: per side and in all. */
 const SHEET_MAX_SIDE = 16384;
 const SHEET_MAX_PIXELS = 200_000_000;
+
+/** A print zone's or design area's name, for menus and file names. */
+const artboardLabel = (doc: DesignDocument, id: ArtboardId) => artboardSpec(getGarment(doc.garment.modelId), doc, id).label;
 
 function dims(aspect: AspectId, tier: (typeof TIERS)[number] | number, opts: { photoreal?: boolean } = {}) {
   const a = ASPECTS.find((x) => x.id === aspect)!;
@@ -120,8 +126,11 @@ export function RenderPanel() {
   const [denoise, setDenoise] = useState(true);
   const [traceProgress, setTraceProgress] = useState<number | null>(null);
 
+  const activeZoneId = useStudio((s) => s.activeZoneId);
   const [seconds, setSeconds] = useState(6);
   const [degrees, setDegrees] = useState(360);
+  /** How the camera moves: turning round the garment, flying in to the print, or gliding through saved views. */
+  const [cameraMove, setCameraMove] = useState<'turn' | 'fly-in' | 'views'>('turn');
   const [fps, setFps] = useState(30);
   const [videoShort, setVideoShort] = useState(1080);
   const [videoFrom, setVideoFrom] = useState('front');
@@ -270,20 +279,29 @@ export function RenderPanel() {
     setVideoProgress(0);
     try {
       await useStudio.getState().saveNow();
+      const active = useStudio.getState().activeZoneId;
+      const move =
+        cameraMove === 'fly-in'
+          ? { kind: 'fly-in' as const, artboard: active }
+          : cameraMove === 'views'
+            ? { kind: 'path' as const, keys: bookmarks.map((b) => ({ position: b.position, target: b.target, fovDeg: b.fovDeg })) }
+            : undefined;
       const result = await recordTurntable({
         width: video.w,
         height: video.h,
         fps,
         seconds,
-        degrees,
+        degrees: cameraMove === 'turn' ? degrees : 0,
         from,
+        move,
         background,
         signal: controller.signal,
         onProgress: (f) => setVideoProgress(f),
       });
-      const kind = degrees ? `turntable_${degrees}deg` : `${motion.kind}_clip`;
+      const kind = cameraMove === 'fly-in' ? `flyin_${slugify(artboardLabel(doc, active).toLowerCase())}` : cameraMove === 'views' ? 'camera-path' : degrees ? `turntable_${degrees}deg` : `${motion.kind}_clip`;
+      const what = cameraMove === 'fly-in' ? 'fly-in' : cameraMove === 'views' ? 'camera move' : degrees ? 'turntable' : `${motion.kind} clip`;
       downloadBlob(result.blob, `${base}_${kind}_${seconds}s_${result.width}x${result.height}_r${doc.revision}.${result.plan.extension}`);
-      toast(`Rendered a ${seconds}-second ${result.plan.label} ${degrees ? 'turntable' : `${motion.kind} clip`}, ${(result.blob.size / 1048576).toFixed(1)} MB.`, 'success');
+      toast(`Rendered a ${seconds}-second ${result.plan.label} ${what}, ${(result.blob.size / 1048576).toFixed(1)} MB.`, 'success');
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') toast('Video render cancelled.');
       else toast(error instanceof Error ? error.message : 'The video could not be rendered.', 'error');
@@ -478,9 +496,19 @@ export function RenderPanel() {
 
       <section className="space-y-3">
         <h3 className="panel-title flex items-center gap-2">
-          <Clapperboard size={15} /> Turntable video
+          <Clapperboard size={15} /> Video
         </h3>
         <div className="grid grid-cols-2 gap-2">
+          <label className="col-span-2 grid gap-1">
+            <span className="label">Camera</span>
+            <select className="field" value={cameraMove} onChange={(e) => setCameraMove(e.target.value as typeof cameraMove)}>
+              <option value="turn">Turntable: turn round the garment</option>
+              <option value="fly-in">Fly in to the print, {artboardLabel(doc, activeZoneId).toLowerCase()}</option>
+              <option value="views" disabled={bookmarks.length < 2}>
+                Glide through saved views{bookmarks.length < 2 ? ' (save two or more)' : ` (${bookmarks.length})`}
+              </option>
+            </select>
+          </label>
           <label className="grid gap-1">
             <span className="label">Length</span>
             <select className="field" value={seconds} onChange={(e) => setSeconds(Number(e.target.value))}>
@@ -491,15 +519,19 @@ export function RenderPanel() {
               ))}
             </select>
           </label>
-          <label className="grid gap-1">
-            <span className="label">Turn</span>
-            <select className="field" value={degrees} onChange={(e) => setDegrees(Number(e.target.value))}>
-              <option value={360}>Full turn</option>
-              <option value={180}>Half turn</option>
-              <option value={90}>Quarter turn</option>
-              <option value={0}>No turn (still camera)</option>
-            </select>
-          </label>
+          {cameraMove === 'turn' ? (
+            <label className="grid gap-1">
+              <span className="label">Turn</span>
+              <select className="field" value={degrees} onChange={(e) => setDegrees(Number(e.target.value))}>
+                <option value={360}>Full turn</option>
+                <option value={180}>Half turn</option>
+                <option value={90}>Quarter turn</option>
+                <option value={0}>No turn (still camera)</option>
+              </select>
+            </label>
+          ) : (
+            <p className="self-end pb-2 text-[11px] text-fg-3">{cameraMove === 'fly-in' ? 'From the start view in to the artwork, easing in and out.' : 'Through your saved views in order, without stopping.'}</p>
+          )}
           <label className="col-span-2 grid gap-1">
             <span className="label">Garment motion</span>
             <select
@@ -556,7 +588,7 @@ export function RenderPanel() {
           </select>
         </label>
         <p className="text-[11px] text-fg-3">{MOTIONS.find((m) => m.id === motion.kind)?.description} It plays in the 3D view too.</p>
-        {!degrees && motion.kind === 'still' ? <p className="text-[11px] text-warning">With no turn and no motion the video stands still. Pick a motion, or a turn.</p> : null}
+        {cameraMove === 'turn' && !degrees && motion.kind === 'still' ? <p className="text-[11px] text-warning">With no turn and no motion the video stands still. Pick a motion, or a turn.</p> : null}
         <p className="text-[11px] text-fg-3">
           {plan === undefined
             ? 'Checking video support…'

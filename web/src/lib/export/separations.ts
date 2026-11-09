@@ -107,6 +107,35 @@ export function plateData(data: Uint8ClampedArray, index: Uint8Array, ink: numbe
   return out;
 }
 
+/** True when the artwork has many more shades than inks: photos and wide gradients, which print flat unless halftoned. */
+export function isTonal(data: Uint8ClampedArray, inks: Ink[]) {
+  let distinct = 0;
+  const seen = new Set<number>();
+  for (let i = 0; i < data.length && distinct < 400; i += 4 * 7) {
+    if (data[i + 3] < 200) continue;
+    const bin = ((data[i] >> 3) << 10) | ((data[i + 1] >> 3) << 5) | (data[i + 2] >> 3);
+    if (!seen.has(bin)) {
+      seen.add(bin);
+      distinct++;
+    }
+  }
+  return distinct > inks.length * 24;
+}
+
+/** Relative luminance (0 black – 1 white) of a garment colour. */
+export function relativeLuminance(hex: string) {
+  const h = hex.replace('#', '');
+  const [r, g, b] = [0, 2, 4].map((i) => {
+    const c = parseInt(h.slice(i, i + 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** Below this luminance a garment reads as dark: inks need a white underbase to show true. */
+export const DARK_GARMENT = 0.42;
+export const needsUnderbase = (garmentHex: string) => relativeLuminance(garmentHex) < DARK_GARMENT;
+
 export interface SeparationSet {
   inks: Ink[];
   plates: { label: string; file: string; canvas: HTMLCanvasElement }[];
@@ -133,16 +162,6 @@ export function buildSeparations(art: HTMLCanvasElement, dpi: number, opts: { la
   const { data } = ctx.getImageData(0, 0, art.width, art.height);
   const inks = findInks(data, { maxInks: opts.maxInks ?? 8 });
   const index = assignInks(data, inks);
-  let distinct = 0;
-  const seen = new Set<number>();
-  for (let i = 0; i < data.length && distinct < 400; i += 4 * 7) {
-    if (data[i + 3] < 200) continue;
-    const bin = ((data[i] >> 3) << 10) | ((data[i + 1] >> 3) << 5) | (data[i + 2] >> 3);
-    if (!seen.has(bin)) {
-      seen.add(bin);
-      distinct++;
-    }
-  }
   const pxPerMm = dpi / 25.4;
   const margin = Math.round(15 * pxPerMm);
   const plateBuffer = new Uint8ClampedArray(data.length);
@@ -176,5 +195,5 @@ export function buildSeparations(art: HTMLCanvasElement, dpi: number, opts: { la
   const plates: SeparationSet['plates'] = [];
   if (opts.underbase && inks.length) plates.push(make('any', 'White underbase (dark garments)', '00-underbase-white'));
   inks.forEach((ink, k) => plates.push(make(k, `Ink ${k + 1} of ${inks.length}, ${ink.hex}`, `${String(k + 1).padStart(2, '0')}-ink-${ink.hex.slice(1).toLowerCase()}`)));
-  return { inks, plates, tonal: distinct > inks.length * 24 };
+  return { inks, plates, tonal: isTonal(data, inks) };
 }

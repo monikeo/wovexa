@@ -21,8 +21,8 @@ export interface ScenePreset {
   label: string;
   description: string;
   rig: LightRig;
-  /** Starting values applied when the preset is chosen. */
-  defaults: Pick<Scene, 'exposure' | 'backdrop' | 'shadows'> & { tone: ToneId };
+  /** Starting values applied when the preset is chosen; a set (podium, flat lay) also brings its stage, drape and motion. */
+  defaults: Pick<Scene, 'exposure' | 'backdrop' | 'shadows'> & { tone: ToneId } & Partial<Pick<Scene, 'drape' | 'stage' | 'motion'>>;
 }
 
 /** How light becomes screen colour. Everything a render shows passes through one of these. */
@@ -48,6 +48,19 @@ export const DRAPES: { id: DrapeId; label: string; description: string; amount: 
 
 export function drapeOf(scene: Scene): DrapeId {
   return scene.drape ?? 'natural';
+}
+
+export type StageId = NonNullable<Scene['stage']>;
+
+/** What the garment is shown on (spec MED-02 scene presets). */
+export const STAGES: { id: StageId; label: string; description: string }[] = [
+  { id: 'none', label: 'None', description: 'The garment on its own, over a soft floor shadow.' },
+  { id: 'podium', label: 'Podium', description: 'On a display form over a round plinth, the garment casting its shadow on top: a gallery or drop shot.' },
+  { id: 'table', label: 'Flat lay', description: 'Laid on a table and shot from above, its shadow on the surface. Best with the front view and a pressed drape.' },
+];
+
+export function stageOf(scene: Scene): StageId {
+  return scene.stage ?? 'none';
 }
 
 /** Fold depth for a drape: 0 pressed flat, 1 natural. */
@@ -104,6 +117,27 @@ export const SCENE_PRESETS: ScenePreset[] = [
     description: 'Shadowless, even light that shows true colour with the least modelling.',
     rig: { ambient: 0.9, key: { intensity: 0.5, color: '#ffffff', position: [0, 2, 3] }, fill: { intensity: 0.5, color: '#ffffff' }, rim: { intensity: 0, color: '#ffffff' }, environment: 0.6 },
     defaults: { exposure: 1, shadows: false, backdrop: { kind: 'solid', color: '#F5F6F8', color2: '#F5F6F8' }, tone: 'neutral' },
+  },
+  {
+    id: 'ghost',
+    label: 'Ghost mannequin',
+    description: 'The invisible-mannequin catalogue shot: pressed and standing on its own on white, the inside of the collar showing.',
+    rig: { ambient: 0.48, key: { intensity: 1.0, color: '#ffffff', position: [0.4, 2.5, 2.8] }, fill: { intensity: 1.05, color: '#ffffff' }, rim: { intensity: 0.25, color: '#ffffff' }, environment: 1.15 },
+    defaults: { exposure: 1.12, shadows: true, backdrop: { kind: 'solid', color: '#FFFFFF', color2: '#FFFFFF' }, tone: 'neutral', drape: 'pressed', stage: 'none', motion: { kind: 'still', speed: 1 } },
+  },
+  {
+    id: 'podium',
+    label: 'Podium',
+    description: 'On a display form over a stone plinth, lit like a gallery piece. For drops and launches.',
+    rig: { ambient: 0.22, key: { intensity: 1.5, color: '#fff6ea', position: [1.6, 2.6, 1.8] }, fill: { intensity: 0.5, color: '#e6ecff' }, rim: { intensity: 0.8, color: '#ffffff' }, environment: 0.8 },
+    defaults: { exposure: 1.05, shadows: true, backdrop: { kind: 'gradient', color: '#E9E4DC', color2: '#BDB4A7' }, tone: 'agx', drape: 'natural', stage: 'podium' },
+  },
+  {
+    id: 'flatlay',
+    label: 'Flat lay',
+    description: 'Laid flat on an oak table and shot from above, in soft window light. For shop listings and social.',
+    rig: { ambient: 0.4, key: { intensity: 1.2, color: '#fff3e2', position: [-1.2, 2.2, 2.4] }, fill: { intensity: 0.65, color: '#eef2ff' }, rim: { intensity: 0.1, color: '#ffffff' }, environment: 0.9 },
+    defaults: { exposure: 1.08, shadows: false, backdrop: { kind: 'solid', color: '#B98A5E', color2: '#8E6440' }, tone: 'agx', drape: 'pressed', stage: 'table', motion: { kind: 'still', speed: 1 } },
   },
 ];
 

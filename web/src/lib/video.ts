@@ -4,7 +4,7 @@
  * device and never drops frames. MP4 (H.264) where the browser can encode it, else WebM.
  */
 import { BufferTarget, CanvasSource, getFirstEncodableVideoCodec, Mp4OutputFormat, Output, QUALITY_HIGH, WebMOutputFormat, type VideoCodec } from 'mediabunny';
-import type { RenderBackground, ShotSpec } from '@/components/studio/viewer3d/stage';
+import type { RenderBackground, ShotSpec, TurntableOptions } from '@/components/studio/viewer3d/stage';
 import { viewerApi } from '@/components/studio/viewer3d/stage';
 
 export interface VideoPlan {
@@ -32,6 +32,8 @@ export interface TurntableVideoOptions {
   seconds: number;
   degrees: number;
   from?: ShotSpec;
+  /** A camera move instead of a turn (a fly-in to the print, or a path through saved views). */
+  move?: TurntableOptions['move'];
   /** Video has no alpha channel, so a transparent backdrop is filled with white. */
   background: RenderBackground;
   onProgress?: (fraction: number) => void;
@@ -69,6 +71,7 @@ export async function recordTurntable(opts: TurntableVideoOptions): Promise<{ bl
       frames,
       degrees: opts.degrees,
       from: opts.from,
+      move: opts.move,
       background,
       frameCurrent: true,
       fps: opts.fps,

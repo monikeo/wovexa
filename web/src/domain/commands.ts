@@ -170,6 +170,8 @@ export interface LayerPatch {
   name?: string;
   visible?: boolean;
   locked?: boolean;
+  /** Clip to the layer below, or release the clip. */
+  clip?: boolean;
   style?: Partial<LayerStyle>;
   /** Fields of the existing content kind. Changing the kind is not allowed. */
   content?: Partial<LayerContent>;
@@ -185,6 +187,8 @@ export function updateLayer(zoneId: ArtboardId, layerId: string, patch: LayerPat
       if (patch.name !== undefined) layer.name = patch.name;
       if (patch.visible !== undefined) layer.visible = patch.visible;
       if (patch.locked !== undefined) layer.locked = patch.locked;
+      if (patch.clip === true) layer.clip = true;
+      else if (patch.clip === false) delete layer.clip;
       if (patch.style) {
         // An explicit undefined removes an optional style field (e.g. switching distress off).
         for (const [k, v] of Object.entries(patch.style)) {
@@ -273,6 +277,19 @@ export function ungroupLayers(zoneId: ArtboardId, layerIds: string[]): Command {
       if (!zone) return;
       const groups = new Set(layerIds.map((id) => zone.layers[id]?.groupId).filter(Boolean));
       for (const layer of Object.values(zone.layers)) if (layer.groupId && groups.has(layer.groupId)) delete layer.groupId;
+    },
+  };
+}
+
+/** Replace a print area's ruler guides (none removes them). */
+export function setGuides(zoneId: ArtboardId, guides: { x: number[]; y: number[] } | undefined, label = 'Move guide'): Command {
+  return {
+    label,
+    recipe: (d) => {
+      const zone = stackOf(d, zoneId);
+      if (!zone) return;
+      if (guides && (guides.x.length || guides.y.length)) zone.guides = { x: [...guides.x], y: [...guides.y] };
+      else delete zone.guides;
     },
   };
 }

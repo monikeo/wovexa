@@ -8,7 +8,7 @@ import { Bookmark, ImagePlus, Plus, Trash2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import * as cmd from '@/domain/commands';
 import { newId } from '@/domain/factory';
-import { DRAPES, drapeOf, MOTIONS, motionOf, SCENE_PRESETS, sceneOf, toneOf, TONES } from '@/domain/scene';
+import { DRAPES, drapeOf, MOTIONS, motionOf, SCENE_PRESETS, sceneOf, STAGES, stageOf, toneOf, TONES } from '@/domain/scene';
 import type { Scene } from '@/domain/schema';
 import { AssetError, importImageFile, loadAssetImage } from '@/lib/assets';
 import { deleteScene, listScenes, saveScene, type StoredScene } from '@/lib/local-db';
@@ -154,6 +154,18 @@ export function ScenePanel({ onClose, compact }: { onClose: () => void; compact?
             <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]" checked={scene.shadows} onChange={(e) => set({ shadows: e.target.checked }, e.target.checked ? 'Show floor shadow' : 'Hide floor shadow')} />
             Floor shadow
           </label>
+        </section>
+
+        <section className="space-y-2">
+          <h3 className="label font-semibold text-fg">Stage</h3>
+          <div className="seg" role="group" aria-label="What the garment is shown on">
+            {STAGES.map((s) => (
+              <button key={s.id} aria-pressed={stageOf(scene) === s.id} onClick={() => set({ stage: s.id === 'none' ? undefined : s.id }, `Stage: ${s.label.toLowerCase()}`)} title={s.description}>
+                {s.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-fg-3">{STAGES.find((s) => s.id === stageOf(scene))?.description}</p>
         </section>
 
         <section className="space-y-2">

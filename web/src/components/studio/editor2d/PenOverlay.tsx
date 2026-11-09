@@ -82,7 +82,11 @@ export function PenOverlay({ fabric, onFinish, onCancel }: { fabric: () => Fabri
     const p = toMm(e);
     setPoints([...points, { x: p.x, y: p.y }]);
     setDragging({ id: e.pointerId, index: points.length, x: px, y: py });
-    ref.current?.setPointerCapture(e.pointerId);
+    try {
+      ref.current?.setPointerCapture(e.pointerId);
+    } catch {
+      // A pointer already released (or a synthetic one) can't be captured; the point is still placed.
+    }
   };
   const onPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const p = toMm(e);

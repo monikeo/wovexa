@@ -1,6 +1,8 @@
 'use client';
 /** Small inspector controls shared by text, shape, image and appearance sections. */
+import { Minus, Plus } from 'lucide-react';
 import { useId } from 'react';
+import { LETTER_PALETTES } from '@/domain/letter-colors';
 import type { FillStyle } from '@/domain/schema';
 import { ColorField } from '@/components/ui/primitives';
 
@@ -87,42 +89,96 @@ function without(g: Gradient, key: 'via' | 'radial'): Gradient {
   return copy;
 }
 
+type FillPatch = { fill?: string; fillStyle?: FillStyle | undefined; letterColors?: string[] | undefined };
+
+/** The colours that run across the letters: edit, add or remove one, or start from a ready-made run. */
+function LetterColors({ colors, swatches, onChange }: { colors: string[]; swatches?: { name: string; hex: string }[]; onChange: (colors: string[], label: string) => void }) {
+  const palettes = swatches && swatches.length > 1 ? [{ name: 'Brand', colors: swatches.map((s) => s.hex.toUpperCase()) }, ...LETTER_PALETTES] : LETTER_PALETTES;
+  const chip = (list: string[]) => `linear-gradient(90deg, ${list.map((c, i) => `${c} ${(i / list.length) * 100}% ${((i + 1) / list.length) * 100}%`).join(', ')})`;
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-1" role="group" aria-label="Letter colour sets">
+        {palettes.map((p) => (
+          <button key={p.name} className="h-6 w-6 rounded-full border border-line shadow-sm transition-transform hover:scale-110" style={{ background: chip(p.colors) }} title={p.name} aria-label={`${p.name} letter colours`} onClick={() => onChange(p.colors.slice(0, 40), `Letter colours: ${p.name.toLowerCase()}`)} />
+        ))}
+      </div>
+      <div className="grid grid-cols-[52px_1fr] items-center gap-2">
+        <span className="label">Letters</span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {colors.map((c, i) => (
+            <input
+              key={i}
+              type="color"
+              className="h-7 w-7 cursor-pointer rounded-md border border-line bg-transparent p-0.5"
+              value={c.toLowerCase()}
+              aria-label={`Letter colour ${i + 1} of ${colors.length}`}
+              title={`Colour ${i + 1}: letters ${i + 1}, ${i + 1 + colors.length}, ${i + 1 + 2 * colors.length}…`}
+              onChange={(e) => onChange(colors.map((x, k) => (k === i ? e.target.value.toUpperCase() : x)), 'Letter colour')}
+            />
+          ))}
+          <button className="icon-btn h-7 w-7 border border-line" disabled={colors.length >= 12} onClick={() => onChange([...colors, colors[colors.length % 2 ? 0 : 1] ?? '#FFFFFF'], 'Add letter colour')} aria-label="Add a letter colour">
+            <Plus size={13} />
+          </button>
+          <button className="icon-btn h-7 w-7 border border-line" disabled={colors.length <= 2} onClick={() => onChange(colors.slice(0, -1), 'Remove letter colour')} aria-label="Remove the last letter colour">
+            <Minus size={13} />
+          </button>
+        </div>
+      </div>
+      <p className="text-[11px] text-fg-3">The colours run across the letters in turn and repeat; spaces are skipped.</p>
+    </div>
+  );
+}
+
 /**
- * Fill: a flat colour, a gradient (two or three colours, across at an angle or out from the centre)
- * or a repeating pattern (spec ED2-09/11, TYP-03).
+ * Fill: a flat colour, a gradient (two or three colours, across at an angle or out from the centre),
+ * a repeating pattern (spec ED2-09/11, TYP-03), or for text, a colour for each letter.
  * `onChange` receives the content fields to patch; `gesture` names slider drags so they merge into one undo step.
  */
 export function FillControls({
   fill,
   fillStyle,
+  letterColors,
+  allowLetters = false,
   swatches,
   onChange,
 }: {
   fill: string;
   fillStyle?: FillStyle;
+  /** Text only: each letter in its own colour. */
+  letterColors?: string[];
+  allowLetters?: boolean;
   swatches?: { name: string; hex: string }[];
-  onChange: (patch: { fill?: string; fillStyle?: FillStyle | undefined }, label: string, gesture?: string) => void;
+  onChange: (patch: FillPatch, label: string, gesture?: string) => void;
 }) {
-  const kind = fillStyle?.kind ?? 'solid';
+  const kind = allowLetters && letterColors?.length ? 'letters' : (fillStyle?.kind ?? 'solid');
+  // Switching away from letter colours drops them.
+  const noLetters: FillPatch = allowLetters && letterColors ? { letterColors: undefined } : {};
   return (
     <div className="space-y-2">
       <div className="grid grid-cols-[52px_1fr] items-center gap-2">
         <span className="label">Fill</span>
-        <div className="seg w-fit" role="group" aria-label="Fill type">
-          <button aria-pressed={kind === 'solid'} onClick={() => onChange({ fillStyle: undefined }, 'Solid fill')}>
+        {/* Four choices share the row evenly so the panel never scrolls sideways. */}
+        <div className={`seg w-full min-w-0 [&>button]:flex-1 ${allowLetters ? '[&>button]:px-1' : ''}`} role="group" aria-label="Fill type">
+          <button aria-pressed={kind === 'solid'} onClick={() => kind !== 'solid' && onChange({ fillStyle: undefined, ...noLetters }, 'Solid fill')}>
             Solid
           </button>
-          <button aria-pressed={kind === 'gradient'} onClick={() => kind !== 'gradient' && onChange({ fillStyle: { kind: 'gradient', to: '#2B59FF', angleDeg: 90 } }, 'Gradient fill')}>
+          <button aria-pressed={kind === 'gradient'} onClick={() => kind !== 'gradient' && onChange({ fillStyle: { kind: 'gradient', to: '#2B59FF', angleDeg: 90 }, ...noLetters }, 'Gradient fill')}>
             Gradient
           </button>
           <button
             aria-pressed={kind === 'pattern'}
-            onClick={() => kind !== 'pattern' && onChange({ fillStyle: { kind: 'pattern', pattern: 'stripes', color2: '#FFFFFF', scaleMm: 8, angleDeg: 45 } }, 'Pattern fill')}
+            onClick={() => kind !== 'pattern' && onChange({ fillStyle: { kind: 'pattern', pattern: 'stripes', color2: '#FFFFFF', scaleMm: 8, angleDeg: 45 }, ...noLetters }, 'Pattern fill')}
           >
             Pattern
           </button>
+          {allowLetters ? (
+            <button aria-pressed={kind === 'letters'} title="A colour for each letter" onClick={() => kind !== 'letters' && onChange({ fillStyle: undefined, letterColors: [fill.toUpperCase(), '#FFD100', '#2B59FF'] }, 'Letter colours')}>
+              Letters
+            </button>
+          ) : null}
         </div>
       </div>
+      {kind === 'letters' && letterColors ? <LetterColors colors={letterColors} swatches={swatches} onChange={(colors, label) => onChange({ letterColors: colors, fill: colors[0] }, label)} /> : null}
       {fillStyle?.kind === 'gradient' ? (
         <div className="flex flex-wrap gap-1" role="group" aria-label="Gradient presets">
           {GRADIENTS.map((g) => (
@@ -137,7 +193,7 @@ export function FillControls({
           ))}
         </div>
       ) : null}
-      <ColorField label={kind === 'gradient' ? 'From' : kind === 'pattern' ? 'Colour 1' : 'Colour'} value={fill} onChange={(v) => onChange({ fill: v }, 'Fill colour')} swatches={swatches} />
+      {kind === 'letters' ? null : <ColorField label={kind === 'gradient' ? 'From' : kind === 'pattern' ? 'Colour 1' : 'Colour'} value={fill} onChange={(v) => onChange({ fill: v }, 'Fill colour')} swatches={swatches} />}
       {fillStyle?.kind === 'gradient' ? (
         <>
           {fillStyle.via ? <ColorField label="Middle" value={fillStyle.via} onChange={(via) => onChange({ fillStyle: { ...fillStyle, via } }, 'Gradient middle colour')} swatches={swatches} /> : null}

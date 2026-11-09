@@ -6,7 +6,7 @@ import { areaSpec, designAreas } from './areas';
 import { getGarment, PRINT_METHOD_LABELS, type ZoneSpec } from './garments';
 import { mmToInch, overflow, rotatedBounds, roundMm } from './geometry';
 import { projectedAsArtwork, projectedLayers } from './projected';
-import { ZONE_IDS, type AreaId, type ArtboardId, type ArtworkLayer, type DesignDocument, type PrintMethod, type ProjectedLayer } from './schema';
+import { ZONE_IDS, type AreaId, type ArtboardId, type ArtworkLayer, type DesignDocument, type ImageContent, type PrintMethod, type ProjectedLayer } from './schema';
 
 export type Severity = 'error' | 'warning' | 'info';
 
@@ -58,19 +58,27 @@ export function effectiveDpi(layer: ArtworkLayer): { x: number; y: number; min: 
   const c = layer.content;
   if (c.kind !== 'image') return null;
   if (c.mime === 'image/svg+xml') return null; // vector source: resolution independent
+  // A crop prints only its own pixels, spread over the whole box.
+  const { w: pw, h: ph } = shownPixels(c);
   const widthMm = c.repeat ? c.repeat.tileWidthMm : layer.transform.widthMm;
-  const heightMm = c.repeat ? (c.repeat.tileWidthMm * c.naturalHeightPx) / c.naturalWidthPx : layer.transform.heightMm;
-  const x = c.naturalWidthPx / mmToInch(widthMm);
-  const y = c.naturalHeightPx / mmToInch(heightMm);
+  const heightMm = c.repeat ? (c.repeat.tileWidthMm * ph) / pw : layer.transform.heightMm;
+  const x = pw / mmToInch(widthMm);
+  const y = ph / mmToInch(heightMm);
   return { x, y, min: Math.min(x, y) };
+}
+
+/** The pixels an image layer shows: its crop's, else the whole image's. */
+export function shownPixels(c: Pick<ImageContent, 'naturalWidthPx' | 'naturalHeightPx' | 'crop'>) {
+  return { w: c.naturalWidthPx * (c.crop?.w ?? 1), h: c.naturalHeightPx * (c.crop?.h ?? 1) };
 }
 
 /** Largest width (mm) an image (or one repeat tile) can be printed at while staying at `dpi`. */
 export function maxWidthAtDpi(layer: ArtworkLayer, dpi: number): number | null {
   if (layer.content.kind !== 'image') return null;
-  if (layer.content.repeat) return (layer.content.naturalWidthPx / dpi) * 25.4;
-  const byWidth = (layer.content.naturalWidthPx / dpi) * 25.4;
-  const byHeight = (layer.content.naturalHeightPx / dpi) * 25.4 * (layer.transform.widthMm / layer.transform.heightMm);
+  const { w: pw, h: ph } = shownPixels(layer.content);
+  if (layer.content.repeat) return (pw / dpi) * 25.4;
+  const byWidth = (pw / dpi) * 25.4;
+  const byHeight = (ph / dpi) * 25.4 * (layer.transform.widthMm / layer.transform.heightMm);
   return Math.min(byWidth, byHeight);
 }
 
