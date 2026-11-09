@@ -9,6 +9,7 @@ import { Clapperboard, Download, Images, Loader2, Sparkles, Square } from 'lucid
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { sceneOf } from '@/domain/scene';
 import { canvasToBlob, downloadBlob, slugify } from '@/lib/download';
+import { canEncodeAvif, encodePdf, encodeTiff } from '@/lib/export/image-formats';
 import { planVideo, recordTurntable, type VideoPlan } from '@/lib/video';
 import { toast } from '@/components/ui/primitives';
 import { useLive, useStudio } from '@/stores/studio-store';
@@ -27,17 +28,51 @@ const ASPECTS = [
 ] as const;
 type AspectId = (typeof ASPECTS)[number]['id'];
 
-const SIZES = [1080, 1600, 2160];
+/**
+ * Still image quality, low to 6K: the lower tiers set the short side (1080 is the social standard),
+ * the K tiers the long side (6K is 6144 px). Real-time renders past the GPU's single-pass limit
+ * are drawn in tiles and joined; photoreal renders stop at that limit.
+ */
+const TIERS = [
+  { id: 'low', label: 'Low', short: 720 },
+  { id: 'social', label: 'Social', short: 1080 },
+  { id: 'high', label: 'High', short: 1600 },
+  { id: '2k', label: '2K', long: 2560 },
+  { id: '4k', label: '4K', long: 3840 },
+  { id: '5k', label: '5K', long: 5120 },
+  { id: '6k', label: '6K', long: 6144 },
+] as const;
+type TierId = (typeof TIERS)[number]['id'];
 const VIDEO_SIZES = [720, 1080];
-type Format = 'png' | 'jpeg' | 'webp';
-const MIME: Record<Format, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' };
+type Format = 'png' | 'jpeg' | 'webp' | 'avif' | 'tiff' | 'pdf';
+const FORMATS: { id: Format; label: string; ext: string; mime?: string; lossy: boolean; alpha: boolean }[] = [
+  { id: 'png', label: 'PNG', ext: 'png', mime: 'image/png', lossy: false, alpha: true },
+  { id: 'jpeg', label: 'JPEG', ext: 'jpg', mime: 'image/jpeg', lossy: true, alpha: false },
+  { id: 'webp', label: 'WebP', ext: 'webp', mime: 'image/webp', lossy: true, alpha: true },
+  { id: 'avif', label: 'AVIF', ext: 'avif', mime: 'image/avif', lossy: true, alpha: true },
+  { id: 'tiff', label: 'TIFF (print, 300 dpi)', ext: 'tif', lossy: false, alpha: true },
+  { id: 'pdf', label: 'PDF (300 dpi page)', ext: 'pdf', lossy: true, alpha: false },
+];
 type Backdrop = 'scene' | 'transparent' | 'white';
+/** The largest contact sheet a browser canvas holds safely: per side and in all. */
+const SHEET_MAX_SIDE = 16384;
+const SHEET_MAX_PIXELS = 200_000_000;
 
-function dims(aspect: AspectId, short: number) {
+function dims(aspect: AspectId, tier: (typeof TIERS)[number] | number, opts: { photoreal?: boolean } = {}) {
   const a = ASPECTS.find((x) => x.id === aspect)!;
-  const w = a.w >= a.h ? Math.round((short * a.w) / a.h) : short;
-  const h = a.w >= a.h ? short : Math.round((short * a.h) / a.w);
-  const max = viewerApi.maxOutputSize?.() ?? 4096;
+  const landscape = a.w >= a.h;
+  let w: number;
+  let h: number;
+  if (typeof tier === 'number' || 'short' in tier) {
+    const short = typeof tier === 'number' ? tier : tier.short;
+    w = landscape ? Math.round((short * a.w) / a.h) : short;
+    h = landscape ? short : Math.round((short * a.h) / a.w);
+  } else {
+    w = landscape ? tier.long : Math.round((tier.long * a.w) / a.h);
+    h = landscape ? Math.round((tier.long * a.h) / a.w) : tier.long;
+  }
+  // Photoreal output stops at this device's largest render size; the rasteriser tiles past it.
+  const max = opts.photoreal ? (viewerApi.maxOutputSize?.() ?? 4096) : Infinity;
   const k = Math.min(1, max / Math.max(w, h));
   return { w: Math.round((w * k) / 2) * 2, h: Math.round((h * k) / 2) * 2, capped: k < 1 };
 }
@@ -69,8 +104,9 @@ export function RenderPanel() {
   const setViewMode = useStudio((s) => s.setViewMode);
   const [shots, setShots] = useState<string[]>(['front', 'back', 'three_quarter']);
   const [aspect, setAspect] = useState<AspectId>('4:5');
-  const [short, setShort] = useState(1600);
+  const [tierId, setTierId] = useState<TierId>('high');
   const [format, setFormat] = useState<Format>('png');
+  const [avif] = useState(canEncodeAvif);
   const [quality, setQuality] = useState(0.92);
   const [backdrop, setBackdrop] = useState<Backdrop>('scene');
   const [everyColorway, setEveryColorway] = useState(false);
@@ -120,7 +156,9 @@ export function RenderPanel() {
     return bookmark ? { kind: 'bookmark', bookmark } : null;
   };
   const specs = shots.map(specOf).filter((s): s is ShotSpec => !!s);
-  const still = dims(aspect, short);
+  const tier = TIERS.find((t) => t.id === tierId)!;
+  const still = dims(aspect, tier, { photoreal: engine === 'photoreal' });
+  const fmt = FORMATS.find((f) => f.id === format)!;
   const background: RenderBackground = backdrop === 'scene' ? 'scene' : backdrop === 'transparent' ? 'transparent' : { color: '#FFFFFF' };
   const base = slugify(doc.title);
   const toggle = (key: string) => setShots((s) => (s.includes(key) ? s.filter((x) => x !== key) : [...s, key]));
@@ -129,9 +167,11 @@ export function RenderPanel() {
   const busy = stillProgress !== null || videoProgress !== null;
 
   const encode = async (canvas: HTMLCanvasElement) => {
-    // JPEG has no transparency; flatten it on white rather than let the browser fill black.
-    const source = format === 'jpeg' && backdrop === 'transparent' ? flatten(canvas, '#FFFFFF') : canvas;
-    return canvasToBlob(source, MIME[format], format === 'png' ? undefined : quality);
+    // JPEG and PDF have no transparency; flatten on white rather than let the encoder fill black.
+    const source = !fmt.alpha && backdrop === 'transparent' ? flatten(canvas, '#FFFFFF') : canvas;
+    if (format === 'tiff') return encodeTiff(source, 300);
+    if (format === 'pdf') return encodePdf(source, { quality, title: doc.title });
+    return canvasToBlob(source, fmt.mime!, fmt.lossy ? quality : undefined);
   };
 
   const renderStills = async () => {
@@ -169,7 +209,7 @@ export function RenderPanel() {
       setTraceProgress(null);
       if (abortRef.current === controller) abortRef.current = null;
     }
-    const ext = format === 'jpeg' ? 'jpg' : format;
+    const ext = fmt.ext;
     if (layout === 'separate' || total === 1) {
       for (const row of rows) {
         for (const shot of row.shots) {
@@ -177,16 +217,23 @@ export function RenderPanel() {
         }
       }
     } else {
-      const w = rows[0].shots[0].canvas.width;
-      const h = rows[0].shots[0].canvas.height;
-      const labelH = rows.length > 1 ? Math.round(h * 0.06) : 0;
+      const w0 = rows[0].shots[0].canvas.width;
+      const h0 = rows[0].shots[0].canvas.height;
       const cols = rows.length > 1 ? specs.length : Math.min(specs.length, 3);
       const perRow = rows.length > 1 ? 1 : Math.ceil(specs.length / cols);
+      // A sheet of 6K shots would pass what a browser canvas holds: scale each shot down to fit.
+      const label0 = rows.length > 1 ? Math.round(h0 * 0.06) : 0;
+      const fullW = w0 * cols;
+      const fullH = (h0 + label0) * rows.length * perRow;
+      const k = Math.min(1, SHEET_MAX_SIDE / Math.max(fullW, fullH), Math.sqrt(SHEET_MAX_PIXELS / (fullW * fullH)));
+      const w = Math.floor(w0 * k);
+      const h = Math.floor(h0 * k);
+      const labelH = Math.floor(label0 * k);
       const sheet = document.createElement('canvas');
       sheet.width = w * cols;
       sheet.height = (h + labelH) * rows.length * perRow;
       const ctx = sheet.getContext('2d')!;
-      if (backdrop !== 'transparent' || format === 'jpeg') {
+      if (backdrop !== 'transparent' || !fmt.alpha) {
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(0, 0, sheet.width, sheet.height);
       }
@@ -198,7 +245,7 @@ export function RenderPanel() {
           ctx.textBaseline = 'middle';
           ctx.fillText(row.name, Math.round(labelH * 0.6), y0 + labelH / 2);
         }
-        row.shots.forEach((shot, i) => ctx.drawImage(shot.canvas, (i % cols) * w, y0 + labelH + Math.floor(i / cols) * h));
+        row.shots.forEach((shot, i) => ctx.drawImage(shot.canvas, (i % cols) * w, y0 + labelH + Math.floor(i / cols) * h, w, h));
       });
       downloadBlob(await encode(sheet), `${base}_${rows.length > 1 ? 'all-colourways' : 'views'}_${sheet.width}x${sheet.height}_r${doc.revision}.${ext}`);
     }
@@ -344,13 +391,13 @@ export function RenderPanel() {
         </fieldset>
         <div className="grid grid-cols-2 gap-2">
           <label className="grid gap-1">
-            <span className="label">Size</span>
-            <select className="field" value={short} onChange={(e) => setShort(Number(e.target.value))}>
-              {SIZES.map((s) => {
-                const d = dims(aspect, s);
+            <span className="label">Quality</span>
+            <select className="field" value={tierId} onChange={(e) => setTierId(e.target.value as TierId)}>
+              {TIERS.map((t) => {
+                const d = dims(aspect, t, { photoreal: engine === 'photoreal' });
                 return (
-                  <option key={s} value={s}>
-                    {d.w} × {d.h}
+                  <option key={t.id} value={t.id}>
+                    {t.label}, {d.w} × {d.h}
                   </option>
                 );
               })}
@@ -359,21 +406,25 @@ export function RenderPanel() {
           <label className="grid gap-1">
             <span className="label">Format</span>
             <select className="field" value={format} onChange={(e) => setFormat(e.target.value as Format)}>
-              <option value="png">PNG</option>
-              <option value="jpeg">JPEG</option>
-              <option value="webp">WebP</option>
+              {FORMATS.filter((f) => f.id !== 'avif' || avif).map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.label}
+                </option>
+              ))}
             </select>
           </label>
         </div>
-        {format !== 'png' ? (
+        {fmt.lossy ? (
           <label className="grid grid-cols-[72px_1fr_40px] items-center gap-2">
             <span className="label">Quality</span>
             <input type="range" min={0.6} max={1} step={0.02} value={quality} onChange={(e) => setQuality(Number(e.target.value))} className="accent-[var(--accent)]" />
             <span className="num text-right text-xs">{Math.round(quality * 100)}</span>
           </label>
         ) : null}
-        {still.capped ? <p className="text-[11px] text-warning">Reduced to {still.w} × {still.h} px, the largest this device’s GPU renders in one pass.</p> : null}
-        {format === 'jpeg' && backdrop === 'transparent' ? <p className="text-[11px] text-fg-3">JPEG has no transparency, so the background will be white.</p> : null}
+        {still.capped ? <p className="text-[11px] text-warning">Photoreal stops at {still.w} × {still.h} px on this device. Real time goes up to 6K.</p> : null}
+        {Math.max(still.w, still.h) > (viewerApi.maxOutputSize?.() ?? 4096) ? <p className="text-[11px] text-fg-3">Larger than this GPU draws at once, so it renders in tiles and joins them. Takes a little longer.</p> : null}
+        {!fmt.alpha && backdrop === 'transparent' ? <p className="text-[11px] text-fg-3">{fmt.label.split(' ')[0]} has no transparency, so the background will be white.</p> : null}
+        {format === 'tiff' ? <p className="text-[11px] text-fg-3">TIFF keeps every pixel (lossless, with transparency) for print and retouching; large files.</p> : null}
         {doc.colorways.length > 1 ? (
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]" checked={everyColorway} onChange={(e) => setEveryColorway(e.target.checked)} />

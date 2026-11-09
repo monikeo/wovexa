@@ -14,10 +14,15 @@
  *      render exactly as before.
  *   3  Leg print zones (uniform pants), pants and belt colours, all-over fabric prints per
  *      garment part, graphic (path) shapes and image masks. Upgrading adds empty leg zones.
+ *   4  Projected layers: artwork placed straight onto the 3D garment that runs across seams
+ *      (over the shoulder, round the side seams), printed by sublimation or cut-and-sew.
+ *      Upgrading adds an empty list. Optional, additive fields within version 4: design areas
+ *      (print areas the person places anywhere on the 3D garment) and 3D shapes from the app's
+ *      model library.
  */
 import { z } from 'zod';
 
-export const SCHEMA_VERSION = 3 as const;
+export const SCHEMA_VERSION = 4 as const;
 
 export const ZONE_IDS = ['front', 'back', 'left_sleeve', 'right_sleeve', 'left_leg', 'right_leg'] as const;
 export const zoneIdSchema = z.enum(ZONE_IDS);
@@ -218,6 +223,93 @@ export const zoneDesignSchema = z.object({
 });
 export type ZoneDesign = z.infer<typeof zoneDesignSchema>;
 
+const coordinate = finite.min(-5000).max(5000);
+const vec3 = z.tuple([coordinate, coordinate, coordinate]);
+const direction = vec3.refine((v) => Math.hypot(v[0], v[1], v[2]) > 1e-6, 'Expected a direction');
+
+/**
+ * Where projected artwork sits on the 3D garment, in garment millimetres with the cloth at rest
+ * (+y up, +z toward the front, the wearer's left at +x, torso hem at y = 0): a point on the
+ * surface, the surface's outward normal there (the artwork is projected along it), and the
+ * direction its top edge points.
+ */
+export const projectorSchema = z.object({
+  point: vec3,
+  normal: direction,
+  up: direction,
+});
+export type ProjectorSpec = z.infer<typeof projectorSchema>;
+
+/** Size, rotation and mirroring of projected artwork, in millimetres on the cloth at its centre. */
+export const projectedTransformSchema = transformSchema.omit({ centerXmm: true, centerYmm: true });
+export type ProjectedTransform = z.infer<typeof projectedTransformSchema>;
+
+/**
+ * Artwork projected onto the garment across its seams (format 4). Zone print files can't carry
+ * it: it is printed on the fabric before sewing, by sublimation or as cut-and-sew panels.
+ */
+export const projectedLayerSchema = z.object({
+  id,
+  name: z.string().min(1).max(120),
+  visible: z.boolean(),
+  locked: z.boolean(),
+  projector: projectorSchema,
+  transform: projectedTransformSchema,
+  style: layerStyleSchema,
+  content: layerContentSchema,
+});
+export type ProjectedLayer = z.infer<typeof projectedLayerSchema>;
+
+/** Projected layers in stacking order, bottom first. */
+export const projectionsSchema = z.object({
+  orderedLayerIds: z.array(id).max(50),
+  layers: z.record(id, projectedLayerSchema),
+});
+export type Projections = z.infer<typeof projectionsSchema>;
+
+/** Design area ids start with `area_`, so they never collide with a zone's name. */
+export const AREA_ID_PREFIX = 'area_';
+export const areaIdSchema = z.string().regex(/^area_[A-Za-z0-9_-]{1,48}$/, 'Expected a design area id');
+export type AreaId = `area_${string}`;
+/** Where artwork is designed: one of the garment's print zones, or a design area the person placed. */
+export type ArtboardId = ZoneId | AreaId;
+
+export function isAreaId(id: string | null | undefined): id is AreaId {
+  return typeof id === 'string' && id.startsWith(AREA_ID_PREFIX);
+}
+
+/**
+ * A design area: a print area the person makes, of any size, placed anywhere on the 3D garment
+ * (a hood, a side panel, across a seam). Its artwork is designed in 2D like a zone's, with every
+ * tool, and projected onto the garment from the area's projector, so the whole area moves, turns
+ * and resizes as one. Optional and additive within format 4.
+ */
+export const designAreaSchema = z.object({
+  id: areaIdSchema,
+  name: z.string().min(1).max(60),
+  visible: z.boolean(),
+  locked: z.boolean(),
+  projector: projectorSchema,
+  widthMm: finite.min(10).max(1500),
+  heightMm: finite.min(10).max(1500),
+  /** Clockwise as seen from outside, like a layer's rotation. */
+  rotationDeg: finite.min(-360).max(360),
+  printMethod: printMethodSchema,
+  orderedLayerIds: z.array(id).max(200),
+  layers: z.record(id, artworkLayerSchema),
+});
+export type DesignArea = z.infer<typeof designAreaSchema>;
+
+/** Design areas in tab order. */
+export const designAreasSchema = z.object({
+  orderedIds: z.array(areaIdSchema).max(24),
+  items: z.record(areaIdSchema, designAreaSchema),
+});
+export type DesignAreas = z.infer<typeof designAreasSchema>;
+
+/** What a zone and a design area share: layers in stacking order, bottom first. */
+export type LayerStack = Pick<ZoneDesign, 'orderedLayerIds' | 'layers'>;
+
 export const colorwaySchema = z.object({
   id,
   name: z.string().min(1).max(60),
@@ -292,8 +384,28 @@ export const designDocumentSchema = z.object({
     assetVersion: z.string().max(32),
     sizeCode: z.string().max(8),
     fabricPresetId: z.string().max(32),
-    /** A 3D shape made from this style's template (GLB) in Blender, Clo3D or Marvelous Designer, used instead of the built-in shape. */
-    shape: z.object({ assetId: id, name: z.string().min(1).max(120), modelId: z.string().max(64), sizeCode: z.string().max(8) }).optional(),
+    /**
+     * A 3D shape used instead of the built-in one. A template shape was made from this style's
+     * template GLB in Blender, Clo3D or Marvelous Designer and keeps its print layout; a shell is
+     * any garment GLB, fitted over the style's pattern (prints wrap onto it; production files
+     * still come from the pattern). Documents from before shells have no `kind`: templates.
+     */
+    shape: z
+      .object({
+        /** An uploaded file kept on this device. */
+        assetId: id.optional(),
+        /** Or a model from the app's 3D model library, by file name (any device has it). */
+        library: z.string().min(5).max(372).optional(),
+        name: z.string().min(1).max(120),
+        modelId: z.string().max(64),
+        sizeCode: z.string().max(8),
+        kind: z.enum(['template', 'shell']).optional(),
+        /** Shells: turned round from the way WOVEXA read the file's front. */
+        turn: z.boolean().optional(),
+        /** Shells: the model's own credit, shown wherever it is used (CC BY and similar licences require it). */
+        credit: z.object({ title: z.string().max(200).optional(), author: z.string().max(200).optional(), license: z.string().max(200).optional(), source: z.string().max(500).optional() }).optional(),
+      })
+      .optional(),
   }),
   activeColorwayId: id,
   colorways: z.array(colorwaySchema).min(1).max(24),
@@ -308,8 +420,17 @@ export const designDocumentSchema = z.object({
   brandKitId: id.optional(),
   production: productionSchema,
   scene: sceneSchema.optional(),
+  /** Artwork placed on the 3D garment across seams (format 4). */
+  projections: projectionsSchema,
+  /** Design areas the person placed anywhere on the 3D garment, beyond the style's zones (optional in format 4). */
+  areas: designAreasSchema.optional(),
 });
 export type DesignDocument = z.infer<typeof designDocumentSchema>;
+
+/** An empty set of projected layers, as new documents and upgraded ones start. */
+export function emptyProjections(): Projections {
+  return { orderedLayerIds: [], layers: {} };
+}
 
 /** Cross-field invariants Zod can't express structurally. Returns problems, empty when valid. */
 export function checkDocumentInvariants(doc: DesignDocument): string[] {
@@ -327,6 +448,32 @@ export function checkDocumentInvariants(doc: DesignDocument): string[] {
     }
     for (const layerId of Object.keys(zone.layers)) {
       if (!listed.has(layerId)) problems.push(`zone ${zoneId} has unordered layer ${layerId}`);
+    }
+  }
+  const projected = doc.projections;
+  const listed = new Set(projected.orderedLayerIds);
+  if (listed.size !== projected.orderedLayerIds.length) problems.push('projections list a layer twice');
+  for (const layerId of projected.orderedLayerIds) {
+    if (!projected.layers[layerId]) problems.push(`projections order missing layer ${layerId}`);
+  }
+  for (const [layerId, layer] of Object.entries(projected.layers)) {
+    if (!listed.has(layerId)) problems.push(`projections have unordered layer ${layerId}`);
+    if (layer.id !== layerId) problems.push(`projected layer ${layerId} has mismatched id ${layer.id}`);
+  }
+  const shape = doc.garment.shape;
+  if (shape && !shape.assetId && !shape.library) problems.push('3D shape names no file');
+  const areas = doc.areas;
+  if (areas) {
+    const ids = new Set(areas.orderedIds);
+    if (ids.size !== areas.orderedIds.length) problems.push('design areas list an area twice');
+    for (const areaId of areas.orderedIds) if (!areas.items[areaId]) problems.push(`design areas order missing area ${areaId}`);
+    for (const [areaId, area] of Object.entries(areas.items)) {
+      if (!ids.has(areaId)) problems.push(`design areas have unordered area ${areaId}`);
+      if (area.id !== areaId) problems.push(`design area ${areaId} has mismatched id ${area.id}`);
+      const layers = new Set(area.orderedLayerIds);
+      if (layers.size !== area.orderedLayerIds.length) problems.push(`design area ${areaId} lists a layer twice`);
+      for (const layerId of area.orderedLayerIds) if (!area.layers[layerId]) problems.push(`design area ${areaId} orders missing layer ${layerId}`);
+      for (const layerId of Object.keys(area.layers)) if (!layers.has(layerId)) problems.push(`design area ${areaId} has unordered layer ${layerId}`);
     }
   }
   return problems;
@@ -406,7 +553,15 @@ export function migrateV2toV3(v2: Json): Json {
   return doc;
 }
 
-const MIGRATIONS: Record<number, (doc: Json) => Json> = { 1: migrateV1toV2, 2: migrateV2toV3 };
+/** Format 4 adds projected (cross-seam) layers, none yet. Nothing else changes. */
+export function migrateV3toV4(v3: Json): Json {
+  const doc = structuredClone(v3);
+  doc.projections ??= emptyProjections();
+  doc.schemaVersion = 4;
+  return doc;
+}
+
+const MIGRATIONS: Record<number, (doc: Json) => Json> = { 1: migrateV1toV2, 2: migrateV2toV3, 3: migrateV3toV4 };
 
 /** Upgrade a stored document of any known version to the current one, then validate it. */
 export function migrateDesignDocument(input: unknown): ParseResult {

@@ -25,13 +25,14 @@ const HASH_FORMAT = 2;
 
 /**
  * A format upgrade must not change the hash of unchanged content: the format version is
- * fixed, and zones added by an upgrade are left out while they hold no artwork. So a design
- * approved before an upgrade is still approved after it.
+ * fixed, and zones and projected layers added by an upgrade are left out while they hold no
+ * artwork. So a design approved before an upgrade is still approved after it.
  */
 function hashable(doc: DesignDocument) {
   const zones: Record<string, unknown> = { ...doc.zones };
   for (const zoneId of V3_ZONES) if (!doc.zones[zoneId]?.orderedLayerIds.length) delete zones[zoneId];
-  return { ...doc, revision: 0, schemaVersion: HASH_FORMAT, zones };
+  const { projections, ...rest } = doc;
+  return { ...rest, revision: 0, schemaVersion: HASH_FORMAT, zones, ...(projections?.orderedLayerIds.length ? { projections } : {}) };
 }
 
 export function documentHash(doc: DesignDocument): Promise<string> {

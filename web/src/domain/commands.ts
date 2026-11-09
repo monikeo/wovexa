@@ -4,23 +4,29 @@
  * history panel; the history module turns it into undoable patches.
  * Commands must be deterministic: generate ids before building the command, never inside it.
  */
-import type {
-  ArtworkLayer,
-  BomItem,
-  CameraBookmark,
-  Colorway,
-  DesignDocument,
-  GarmentPart,
-  LayerContent,
-  LayerStyle,
-  LayerTransform,
-  PrintMethod,
-  ProductionData,
-  QaItem,
-  Scene,
-  Surface,
-  ZoneDesign,
-  ZoneId,
+import {
+  isAreaId,
+  type ArtboardId,
+  type ArtworkLayer,
+  type BomItem,
+  type CameraBookmark,
+  type Colorway,
+  type DesignArea,
+  type DesignDocument,
+  type GarmentPart,
+  type LayerContent,
+  type LayerStack,
+  type LayerStyle,
+  type LayerTransform,
+  type PrintMethod,
+  type ProductionData,
+  type ProjectedLayer,
+  type ProjectorSpec,
+  type QaItem,
+  type Scene,
+  type Surface,
+  type ZoneDesign,
+  type ZoneId,
 } from './schema';
 import type { GarmentModel } from './garments';
 
@@ -46,9 +52,14 @@ export function batch(label: string, commands: Command[]): Command {
   };
 }
 
+/** The layers of a print zone or a design area, in the draft being edited. */
+function stackOf(d: DesignDocument, id: ArtboardId): (LayerStack & { printMethod: PrintMethod }) | undefined {
+  return isAreaId(id) ? d.areas?.items[id] : d.zones[id];
+}
+
 // ---- Stacking helpers: grouped layers always move as one contiguous block ----
 
-function blockOf(zone: ZoneDesign, layerId: string): string[] {
+function blockOf(zone: LayerStack, layerId: string): string[] {
   const group = zone.layers[layerId]?.groupId;
   return group ? zone.orderedLayerIds.filter((id) => zone.layers[id]?.groupId === group) : [layerId];
 }
@@ -57,11 +68,12 @@ function removeBlock(order: string[], block: string[]) {
   for (const id of block) order.splice(order.indexOf(id), 1);
 }
 
-export function addLayer(zoneId: ZoneId, layer: ArtworkLayer, index?: number): Command {
+export function addLayer(zoneId: ArtboardId, layer: ArtworkLayer, index?: number): Command {
   return {
     label: `Add ${layer.name}`,
     recipe: (d) => {
-      const zone = d.zones[zoneId];
+      const zone = stackOf(d, zoneId);
+      if (!zone) return;
       zone.layers[layer.id] = layer;
       const at = index === undefined ? zone.orderedLayerIds.length : Math.max(0, Math.min(index, zone.orderedLayerIds.length));
       zone.orderedLayerIds.splice(at, 0, layer.id);
@@ -69,11 +81,27 @@ export function addLayer(zoneId: ZoneId, layer: ArtworkLayer, index?: number): C
   };
 }
 
-export function removeLayers(zoneId: ZoneId, layerIds: string[]): Command {
+/** Add ready-made layers (pasted, say) on top of a zone or design area, in their order, as one step. */
+export function addLayers(zoneId: ArtboardId, layers: ArtworkLayer[], label: string): Command {
+  return {
+    label,
+    recipe: (d) => {
+      const zone = stackOf(d, zoneId);
+      if (!zone) return;
+      for (const layer of layers) {
+        zone.layers[layer.id] = layer;
+        zone.orderedLayerIds.push(layer.id);
+      }
+    },
+  };
+}
+
+export function removeLayers(zoneId: ArtboardId, layerIds: string[]): Command {
   return {
     label: layerIds.length === 1 ? 'Delete layer' : `Delete ${layerIds.length} layers`,
     recipe: (d) => {
-      const zone = d.zones[zoneId];
+      const zone = stackOf(d, zoneId);
+      if (!zone) return;
       for (const id of layerIds) delete zone.layers[id];
       zone.orderedLayerIds = zone.orderedLayerIds.filter((id) => !layerIds.includes(id));
     },
@@ -85,11 +113,12 @@ export function removeLayers(zoneId: ZoneId, layerIds: string[]): Command {
  * Copies land together above the highest source. A whole group duplicated becomes a new
  * group; a single member duplicated on its own becomes an ungrouped layer.
  */
-export function duplicateLayers(zoneId: ZoneId, newIds: Record<string, string>, offsetMm = 6): Command {
+export function duplicateLayers(zoneId: ArtboardId, newIds: Record<string, string>, offsetMm = 6): Command {
   return {
     label: Object.keys(newIds).length === 1 ? 'Duplicate layer' : 'Duplicate layers',
     recipe: (d) => {
-      const zone = d.zones[zoneId];
+      const zone = stackOf(d, zoneId);
+      if (!zone) return;
       const sources = zone.orderedLayerIds.filter((id) => newIds[id] && zone.layers[id]);
       if (!sources.length) return;
       const groupCopies = new Map<string, string>();
@@ -123,11 +152,12 @@ export function duplicateLayers(zoneId: ZoneId, newIds: Record<string, string>, 
   };
 }
 
-export function updateTransforms(zoneId: ZoneId, changes: Record<string, Partial<LayerTransform>>, label = 'Move'): Command {
+export function updateTransforms(zoneId: ArtboardId, changes: Record<string, Partial<LayerTransform>>, label = 'Move'): Command {
   return {
     label,
     recipe: (d) => {
-      const zone = d.zones[zoneId];
+      const zone = stackOf(d, zoneId);
+      if (!zone) return;
       for (const [id, patch] of Object.entries(changes)) {
         const layer = zone.layers[id];
         if (layer) Object.assign(layer.transform, patch);
@@ -146,11 +176,11 @@ export interface LayerPatch {
   transform?: Partial<LayerTransform>;
 }
 
-export function updateLayer(zoneId: ZoneId, layerId: string, patch: LayerPatch, label = 'Edit layer'): Command {
+export function updateLayer(zoneId: ArtboardId, layerId: string, patch: LayerPatch, label = 'Edit layer'): Command {
   return {
     label,
     recipe: (d) => {
-      const layer = d.zones[zoneId].layers[layerId];
+      const layer = stackOf(d, zoneId)?.layers[layerId];
       if (!layer) return;
       if (patch.name !== undefined) layer.name = patch.name;
       if (patch.visible !== undefined) layer.visible = patch.visible;
@@ -177,11 +207,12 @@ export function updateLayer(zoneId: ZoneId, layerId: string, patch: LayerPatch, 
 }
 
 /** Move a layer (or its whole group) to the bottom (0) or top (any index ≥ length − 1) of the stack. */
-export function reorderLayer(zoneId: ZoneId, layerId: string, toIndex: number): Command {
+export function reorderLayer(zoneId: ArtboardId, layerId: string, toIndex: number): Command {
   return {
     label: 'Reorder layers',
     recipe: (d) => {
-      const zone = d.zones[zoneId];
+      const zone = stackOf(d, zoneId);
+      if (!zone) return;
       if (!zone.layers[layerId]) return;
       const block = blockOf(zone, layerId);
       removeBlock(zone.orderedLayerIds, block);
@@ -192,11 +223,12 @@ export function reorderLayer(zoneId: ZoneId, layerId: string, toIndex: number): 
 }
 
 /** Move a layer (or its group) one step up (+1) or down (−1), past the neighbouring layer or group. */
-export function moveLayerBy(zoneId: ZoneId, layerId: string, delta: 1 | -1): Command {
+export function moveLayerBy(zoneId: ArtboardId, layerId: string, delta: 1 | -1): Command {
   return {
     label: delta > 0 ? 'Bring forward' : 'Send backward',
     recipe: (d) => {
-      const zone = d.zones[zoneId];
+      const zone = stackOf(d, zoneId);
+      if (!zone) return;
       const order = zone.orderedLayerIds;
       if (!zone.layers[layerId]) return;
       const block = blockOf(zone, layerId);
@@ -216,11 +248,12 @@ export function moveLayerBy(zoneId: ZoneId, layerId: string, delta: 1 | -1): Com
 }
 
 /** Group layers. Members are gathered into one block at the position of the topmost member. */
-export function groupLayers(zoneId: ZoneId, layerIds: string[], groupId: string): Command {
+export function groupLayers(zoneId: ArtboardId, layerIds: string[], groupId: string): Command {
   return {
     label: 'Group',
     recipe: (d) => {
-      const zone = d.zones[zoneId];
+      const zone = stackOf(d, zoneId);
+      if (!zone) return;
       const members = zone.orderedLayerIds.filter((id) => layerIds.includes(id) || (zone.layers[id]?.groupId && layerIds.some((x) => zone.layers[x]?.groupId === zone.layers[id].groupId)));
       if (members.length < 2) return;
       const topIndex = Math.max(...members.map((id) => zone.orderedLayerIds.indexOf(id)));
@@ -232,19 +265,26 @@ export function groupLayers(zoneId: ZoneId, layerIds: string[], groupId: string)
   };
 }
 
-export function ungroupLayers(zoneId: ZoneId, layerIds: string[]): Command {
+export function ungroupLayers(zoneId: ArtboardId, layerIds: string[]): Command {
   return {
     label: 'Ungroup',
     recipe: (d) => {
-      const zone = d.zones[zoneId];
+      const zone = stackOf(d, zoneId);
+      if (!zone) return;
       const groups = new Set(layerIds.map((id) => zone.layers[id]?.groupId).filter(Boolean));
       for (const layer of Object.values(zone.layers)) if (layer.groupId && groups.has(layer.groupId)) delete layer.groupId;
     },
   };
 }
 
-export function setPrintMethod(zoneId: ZoneId, method: PrintMethod): Command {
-  return { label: 'Change print method', recipe: (d) => void (d.zones[zoneId].printMethod = method) };
+export function setPrintMethod(zoneId: ArtboardId, method: PrintMethod): Command {
+  return {
+    label: 'Change print method',
+    recipe: (d) => {
+      const zone = stackOf(d, zoneId);
+      if (zone) zone.printMethod = method;
+    },
+  };
 }
 
 export function setColorwayPart(colorwayId: string, part: GarmentPart, hex: string): Command {
@@ -296,13 +336,41 @@ export function setGarmentSize(sizeCode: string): Command {
   return { label: `Size ${sizeCode}`, recipe: (d) => void (d.garment.sizeCode = sizeCode) };
 }
 
-/** Use a custom 3D shape (from this style's GLB template) instead of the built-in one, or go back with null. */
+/** Use a custom 3D shape (from this style's GLB template, or any garment GLB as a shell) instead of the built-in one, or go back with null. */
 export function setGarmentShape(shape: NonNullable<DesignDocument['garment']['shape']> | null): Command {
   return {
-    label: shape ? `3D shape: ${shape.name}` : 'Built-in 3D shape',
+    label: shape ? `${shape.kind === 'shell' ? '3D model' : '3D shape'}: ${shape.name}` : 'Built-in 3D shape',
     recipe: (d) => {
       if (shape) d.garment.shape = shape;
       else delete d.garment.shape;
+    },
+  };
+}
+
+/**
+ * Wear a model from the 3D model library: switch to the style it is (or fits) and put the model
+ * on it, as one undo step.
+ */
+export function wearLibraryModel(model: Parameters<typeof setGarmentModel>[0], shape: NonNullable<DesignDocument['garment']['shape']>): Command {
+  const style = setGarmentModel(model);
+  return {
+    label: `3D model: ${shape.name}`,
+    recipe: (d) => {
+      style.recipe(d);
+      d.garment.shape = structuredClone(shape);
+    },
+  };
+}
+
+/** Turn a shell (any garment GLB) round, for a file whose back WOVEXA read as its front. */
+export function turnGarmentShell(): Command {
+  return {
+    label: 'Turn 3D model round',
+    recipe: (d) => {
+      const shape = d.garment.shape;
+      if (shape?.kind !== 'shell') return;
+      if (shape.turn) delete shape.turn;
+      else shape.turn = true;
     },
   };
 }
@@ -460,6 +528,267 @@ export function restoreSnapshot(snapshot: DesignDocument, label = 'Restore versi
       else delete d.brandKitId;
       if (snapshot.scene) d.scene = structuredClone(snapshot.scene);
       else delete d.scene;
+      d.projections = structuredClone(snapshot.projections);
+    },
+  };
+}
+
+// ---- Projected layers: artwork across seams on the 3D garment ----
+
+export function addProjectedLayer(layer: ProjectedLayer, index?: number, label = `Add ${layer.name} across seams`): Command {
+  return {
+    label,
+    recipe: (d) => {
+      const p = d.projections;
+      p.layers[layer.id] = structuredClone(layer);
+      const at = index === undefined ? p.orderedLayerIds.length : Math.max(0, Math.min(index, p.orderedLayerIds.length));
+      p.orderedLayerIds.splice(at, 0, layer.id);
+    },
+  };
+}
+
+export function removeProjectedLayers(layerIds: string[]): Command {
+  return {
+    label: layerIds.length === 1 ? 'Delete layer' : `Delete ${layerIds.length} layers`,
+    recipe: (d) => {
+      const p = d.projections;
+      for (const id of layerIds) delete p.layers[id];
+      p.orderedLayerIds = p.orderedLayerIds.filter((id) => !layerIds.includes(id));
+    },
+  };
+}
+
+export interface ProjectedLayerPatch {
+  name?: string;
+  visible?: boolean;
+  locked?: boolean;
+  style?: Partial<LayerStyle>;
+  /** Fields of the existing content kind. Changing the kind is not allowed. */
+  content?: Partial<LayerContent>;
+  /** Size, rotation and flips. Zone positions (centerXmm, centerYmm) don't apply and are ignored. */
+  transform?: Partial<LayerTransform>;
+  projector?: ProjectorSpec;
+}
+
+/** Edit a projected layer: the same patch semantics as updateLayer, plus where it is projected from. */
+export function updateProjectedLayer(layerId: string, patch: ProjectedLayerPatch, label = 'Edit layer'): Command {
+  return {
+    label,
+    recipe: (d) => {
+      const layer = d.projections.layers[layerId];
+      if (!layer) return;
+      if (patch.name !== undefined) layer.name = patch.name;
+      if (patch.visible !== undefined) layer.visible = patch.visible;
+      if (patch.locked !== undefined) layer.locked = patch.locked;
+      if (patch.style) {
+        for (const [k, v] of Object.entries(patch.style)) {
+          if (v === undefined) delete (layer.style as Record<string, unknown>)[k];
+          else (layer.style as Record<string, unknown>)[k] = v;
+        }
+      }
+      if (patch.transform) {
+        const { widthMm, heightMm, rotationDeg, flipX, flipY } = patch.transform;
+        const t = Object.fromEntries(Object.entries({ widthMm, heightMm, rotationDeg, flipX, flipY }).filter(([, v]) => v !== undefined));
+        Object.assign(layer.transform, t);
+      }
+      if (patch.projector) layer.projector = structuredClone(patch.projector);
+      if (patch.content) {
+        const { kind, ...rest } = patch.content as Partial<LayerContent> & { kind?: string };
+        if (kind === undefined || kind === layer.content.kind) {
+          for (const [k, v] of Object.entries(rest)) {
+            if (v === undefined) delete (layer.content as Record<string, unknown>)[k];
+            else (layer.content as Record<string, unknown>)[k] = v;
+          }
+        }
+      }
+    },
+  };
+}
+
+/** Move a projected layer to `toIndex` in the stack (0 is the bottom). */
+export function reorderProjectedLayer(layerId: string, toIndex: number): Command {
+  return {
+    label: 'Reorder layers',
+    recipe: (d) => {
+      const order = d.projections.orderedLayerIds;
+      const from = order.indexOf(layerId);
+      if (from < 0) return;
+      order.splice(from, 1);
+      order.splice(Math.max(0, Math.min(toIndex, order.length)), 0, layerId);
+    },
+  };
+}
+
+/** A copy of a projected layer just above it, with an id generated by the caller. */
+export function duplicateProjectedLayer(layerId: string, newId: string): Command {
+  return {
+    label: 'Duplicate layer',
+    recipe: (d) => {
+      const p = d.projections;
+      const source = p.layers[layerId];
+      if (!source) return;
+      const copy: ProjectedLayer = JSON.parse(JSON.stringify(source));
+      copy.id = newId;
+      copy.name = `${source.name} copy`.slice(0, 120);
+      copy.locked = false;
+      p.layers[newId] = copy;
+      p.orderedLayerIds.splice(p.orderedLayerIds.indexOf(layerId) + 1, 0, newId);
+    },
+  };
+}
+
+/**
+ * Lift a zone layer off its print zone and project it onto the garment where it was, so it can
+ * run across seams. One undo step. `projected` is built by the caller from the 3D garment.
+ */
+export function wrapAcrossSeams(zoneId: ArtboardId, layerId: string, projected: ProjectedLayer): Command {
+  return {
+    label: 'Wrap across seams',
+    recipe: (d) => {
+      const zone = stackOf(d, zoneId);
+      if (!zone) return;
+      if (!zone.layers[layerId]) return;
+      delete zone.layers[layerId];
+      zone.orderedLayerIds = zone.orderedLayerIds.filter((id) => id !== layerId);
+      d.projections.layers[projected.id] = structuredClone(projected);
+      d.projections.orderedLayerIds.push(projected.id);
+    },
+  };
+}
+
+/** Put projected artwork back on a print zone (e.g. for DTG or screen printing). One undo step. */
+export function returnToZone(layerId: string, zoneId: ArtboardId, layer: ArtworkLayer): Command {
+  return {
+    label: 'Back to print zone',
+    recipe: (d) => {
+      const p = d.projections;
+      const zone = stackOf(d, zoneId);
+      if (!p.layers[layerId] || !zone) return;
+      delete p.layers[layerId];
+      p.orderedLayerIds = p.orderedLayerIds.filter((id) => id !== layerId);
+      zone.layers[layer.id] = structuredClone(layer);
+      zone.orderedLayerIds.push(layer.id);
+    },
+  };
+}
+
+// ---- Design areas: print areas placed anywhere on the 3D garment ----
+
+/** Add a design area (built by the caller, ids included) after the others. */
+export function addArea(area: DesignArea): Command {
+  return {
+    label: `Add ${area.name}`,
+    recipe: (d) => {
+      d.areas ??= { orderedIds: [], items: {} };
+      d.areas.items[area.id] = structuredClone(area);
+      if (!d.areas.orderedIds.includes(area.id)) d.areas.orderedIds.push(area.id);
+    },
+  };
+}
+
+export interface AreaPatch {
+  name?: string;
+  visible?: boolean;
+  locked?: boolean;
+  /** Where on the garment it sits. */
+  projector?: ProjectorSpec;
+  /** The print area's size; its artwork keeps its place and size. */
+  widthMm?: number;
+  heightMm?: number;
+  rotationDeg?: number;
+  printMethod?: PrintMethod;
+}
+
+/** Rename, show, lock, move, resize or turn a design area. */
+export function updateArea(areaId: string, patch: AreaPatch, label = 'Edit area'): Command {
+  return {
+    label,
+    recipe: (d) => {
+      const area = d.areas?.items[areaId];
+      if (!area) return;
+      if (patch.name !== undefined) area.name = patch.name;
+      if (patch.visible !== undefined) area.visible = patch.visible;
+      if (patch.locked !== undefined) area.locked = patch.locked;
+      if (patch.projector) area.projector = structuredClone(patch.projector);
+      if (patch.widthMm !== undefined) area.widthMm = patch.widthMm;
+      if (patch.heightMm !== undefined) area.heightMm = patch.heightMm;
+      if (patch.rotationDeg !== undefined) area.rotationDeg = patch.rotationDeg;
+      if (patch.printMethod !== undefined) area.printMethod = patch.printMethod;
+    },
+  };
+}
+
+/** Grow or shrink a design area with everything in it, about its centre: the whole design scales as one. */
+export function scaleArea(areaId: string, factor: number, label = 'Resize area'): Command {
+  return {
+    label,
+    recipe: (d) => {
+      const area = d.areas?.items[areaId];
+      if (!area || !(factor > 0)) return;
+      const k = Math.min(1500 / area.widthMm, 1500 / area.heightMm, Math.max(10 / area.widthMm, 10 / area.heightMm, factor));
+      area.widthMm *= k;
+      area.heightMm *= k;
+      for (const layer of Object.values(area.layers)) {
+        const t = layer.transform;
+        t.centerXmm *= k;
+        t.centerYmm *= k;
+        t.widthMm = Math.max(0.5, t.widthMm * k);
+        t.heightMm = Math.max(0.5, t.heightMm * k);
+      }
+    },
+  };
+}
+
+/** Delete a design area and its artwork. */
+export function removeArea(areaId: string, name = 'area'): Command {
+  return {
+    label: `Delete ${name}`,
+    recipe: (d) => {
+      if (!d.areas?.items[areaId]) return;
+      delete d.areas.items[areaId];
+      d.areas.orderedIds = d.areas.orderedIds.filter((id) => id !== areaId);
+    },
+  };
+}
+
+/** Move a design area's tab to `toIndex`. */
+export function reorderArea(areaId: string, toIndex: number): Command {
+  return {
+    label: 'Reorder areas',
+    recipe: (d) => {
+      const order = d.areas?.orderedIds;
+      if (!order) return;
+      const from = order.indexOf(areaId);
+      if (from < 0) return;
+      order.splice(from, 1);
+      order.splice(Math.max(0, Math.min(toIndex, order.length)), 0, areaId);
+    },
+  };
+}
+
+/** A copy of a design area just after it, with its artwork; the caller makes the ids and picks where it goes. */
+export function duplicateArea(areaId: string, copyId: string, layerIds: Record<string, string>, projector: ProjectorSpec, name: string): Command {
+  return {
+    label: 'Duplicate area',
+    recipe: (d) => {
+      const source = d.areas?.items[areaId];
+      if (!d.areas || !source) return;
+      const copy: DesignArea = JSON.parse(JSON.stringify(source));
+      copy.id = copyId;
+      copy.name = name;
+      copy.locked = false;
+      copy.projector = structuredClone(projector);
+      copy.layers = {};
+      copy.orderedLayerIds = source.orderedLayerIds.filter((id) => layerIds[id]).map((id) => layerIds[id]);
+      for (const id of source.orderedLayerIds) {
+        if (!layerIds[id]) continue;
+        const layer: ArtworkLayer = JSON.parse(JSON.stringify(source.layers[id]));
+        layer.id = layerIds[id];
+        if (layer.groupId) layer.groupId = `g-${copyId}-${layer.groupId}`.slice(0, 64);
+        copy.layers[layer.id] = layer;
+      }
+      d.areas.items[copyId] = copy;
+      d.areas.orderedIds.splice(d.areas.orderedIds.indexOf(areaId) + 1, 0, copyId);
     },
   };
 }

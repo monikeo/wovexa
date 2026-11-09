@@ -4,7 +4,7 @@
  * updateTransforms command.
  */
 import { rotatedBounds, type Rect } from './geometry';
-import type { ArtworkLayer, LayerTransform, ZoneDesign } from './schema';
+import type { ArtworkLayer, LayerStack, LayerTransform } from './schema';
 
 export type AlignMode = 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom';
 export type DistributeAxis = 'horizontal' | 'vertical';
@@ -19,7 +19,7 @@ export function unionBounds(rects: Rect[]): Rect {
 }
 
 /** Selected layers gathered into movable units: one unit per group, one per ungrouped layer. Locked layers are skipped. */
-export function selectionUnits(zone: ZoneDesign, ids: string[]): ArtworkLayer[][] {
+export function selectionUnits(zone: LayerStack, ids: string[]): ArtworkLayer[][] {
   const units = new Map<string, ArtworkLayer[]>();
   for (const id of zone.orderedLayerIds) {
     const layer = zone.layers[id];
@@ -83,7 +83,7 @@ export function distributeUnits(units: ArtworkLayer[][], axis: DistributeAxis): 
 }
 
 /** All ids in the same group as any of `ids`, so selecting one member selects the group. */
-export function expandToGroups(zone: ZoneDesign, ids: string[]): string[] {
+export function expandToGroups(zone: LayerStack, ids: string[]): string[] {
   const groups = new Set(ids.map((id) => zone.layers[id]?.groupId).filter(Boolean));
   if (!groups.size) return ids;
   const expanded = new Set(ids);

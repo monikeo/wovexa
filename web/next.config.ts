@@ -5,6 +5,12 @@ const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
   poweredByHeader: false,
+  // The 3D model library (models, their 2D views, subfolders) ships with the server that lists
+  // and serves it (src/app/api/models).
+  outputFileTracingIncludes: {
+    '/api/models': ['./3d_models/**/*'],
+    '/api/models/\\[...path\\]': ['./3d_models/**/*'],
+  },
   turbopack: {
     // Pin the workspace root so stray lockfiles in parent folders are ignored.
     root: path.join(__dirname),

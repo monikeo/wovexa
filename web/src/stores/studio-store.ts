@@ -4,11 +4,13 @@
  * transient UI state lives beside it but is never saved into the document.
  * High-frequency drag previews use the separate live store so they don't re-render panels.
  */
+import { useMemo } from 'react';
 import { create } from 'zustand';
+import { artboardOf, artboardSpec, hasArtboard } from '@/domain/areas';
 import type { Command } from '@/domain/commands';
-import { getGarment, hasZone, zoneSpecOrFirst } from '@/domain/garments';
+import { getGarment } from '@/domain/garments';
 import { applyCommand, emptyHistory, redo as redoHistory, undo as undoHistory, type History } from '@/domain/history';
-import type { DesignDocument, LayerTransform, ZoneId } from '@/domain/schema';
+import { isAreaId, type ArtboardId, type DesignDocument, type LayerTransform, type ProjectedTransform, type ProjectorSpec } from '@/domain/schema';
 import { getProject, loadDocument, saveDocument, type ProjectMeta } from '@/lib/local-db';
 import { renderThumbnail } from '@/lib/thumbnail';
 
@@ -31,8 +33,11 @@ interface StudioState {
   upgradedFrom: number | null;
   panel: StudioPanel;
 
-  activeZoneId: ZoneId;
+  /** The zone or design area being designed on. */
+  activeZoneId: ArtboardId;
   selectedLayerIds: string[];
+  /** A projected (cross-seam) layer being edited. Selecting zone layers clears it, and the other way round. */
+  selectedProjectionId: string | null;
   viewMode: ViewMode;
   mobileSheet: MobileSheet;
   exportOpen: boolean;
@@ -46,8 +51,9 @@ interface StudioState {
   undo: () => void;
   redo: () => void;
   saveNow: () => Promise<void>;
-  setActiveZone: (zoneId: ZoneId) => void;
+  setActiveZone: (zoneId: ArtboardId) => void;
   select: (ids: string[]) => void;
+  selectProjection: (id: string | null) => void;
   setViewMode: (mode: ViewMode) => void;
   setMobileSheet: (sheet: MobileSheet) => void;
   setExportOpen: (open: boolean) => void;
@@ -69,12 +75,15 @@ export const useStudio = create<StudioState>((set, get) => {
   }
 
   function afterChange(document: DesignDocument, history: History) {
-    // A garment switch can remove the zone being edited (a tank has no sleeves): fall back to its first zone.
+    // A garment switch can remove the zone being edited (a tank has no sleeves), and an undo can
+    // remove a design area: fall back to the garment's first zone.
     const model = getGarment(document.garment.modelId);
-    const activeZoneId = hasZone(model, get().activeZoneId) ? get().activeZoneId : model.zoneOrder[0];
-    const zone = document.zones[activeZoneId];
-    const selected = activeZoneId === get().activeZoneId ? get().selectedLayerIds.filter((id) => zone.layers[id]) : [];
-    set({ document, history, saveState: 'unsaved', selectedLayerIds: selected, activeZoneId });
+    const activeZoneId = hasArtboard(model, document, get().activeZoneId) ? get().activeZoneId : model.zoneOrder[0];
+    const zone = artboardOf(document, activeZoneId);
+    const selected = activeZoneId === get().activeZoneId ? get().selectedLayerIds.filter((id) => zone?.layers[id]) : [];
+    const projection = get().selectedProjectionId;
+    const selectedProjectionId = projection && document.projections.layers[projection] ? projection : null;
+    set({ document, history, saveState: 'unsaved', selectedLayerIds: selected, selectedProjectionId, activeZoneId });
     scheduleSave();
   }
 
@@ -93,6 +102,7 @@ export const useStudio = create<StudioState>((set, get) => {
 
     activeZoneId: 'front',
     selectedLayerIds: [],
+    selectedProjectionId: null,
     viewMode: 'split',
     mobileSheet: null,
     exportOpen: false,
@@ -101,7 +111,7 @@ export const useStudio = create<StudioState>((set, get) => {
 
     async load(projectId) {
       if (get().projectId === projectId && (get().status === 'ready' || get().status === 'loading')) return;
-      set({ status: 'loading', projectId, document: null, history: emptyHistory(), selectedLayerIds: [], loadErrors: [] });
+      set({ status: 'loading', projectId, document: null, history: emptyHistory(), selectedLayerIds: [], selectedProjectionId: null, loadErrors: [] });
       try {
         const result = await loadDocument(projectId);
         if (get().projectId !== projectId) return;
@@ -185,12 +195,17 @@ export const useStudio = create<StudioState>((set, get) => {
 
     setActiveZone(zoneId) {
       const doc = get().document;
-      if (doc && !hasZone(getGarment(doc.garment.modelId), zoneId)) return;
-      set({ activeZoneId: zoneId, selectedLayerIds: [] });
+      if (doc && !hasArtboard(getGarment(doc.garment.modelId), doc, zoneId)) return;
+      if (zoneId === get().activeZoneId && !get().selectedLayerIds.length && !get().selectedProjectionId) return;
+      set({ activeZoneId: zoneId, selectedLayerIds: [], selectedProjectionId: null });
     },
     select(ids) {
       const same = ids.length === get().selectedLayerIds.length && ids.every((id, i) => id === get().selectedLayerIds[i]);
-      if (!same) set({ selectedLayerIds: ids });
+      if (!same || get().selectedProjectionId) set({ selectedLayerIds: ids, selectedProjectionId: null });
+    },
+    selectProjection(id) {
+      if (id === get().selectedProjectionId && (!id || !get().selectedLayerIds.length)) return;
+      set({ selectedProjectionId: id, selectedLayerIds: id ? [] : get().selectedLayerIds });
     },
     setViewMode(viewMode) {
       set({ viewMode });
@@ -210,11 +225,20 @@ export const useStudio = create<StudioState>((set, get) => {
   };
 });
 
-/** Zone spec for the active zone of the open document (the garment's first zone if it lacks the active one). */
+/**
+ * Print-area spec for the active zone or design area of the open document (the garment's first
+ * zone if it lacks the active one). Stable while the zone or area is unchanged.
+ */
 export function useActiveZoneSpec() {
   const modelId = useStudio((s) => s.document?.garment.modelId);
   const zoneId = useStudio((s) => s.activeZoneId);
-  return zoneSpecOrFirst(getGarment(modelId ?? 'tee-classic'), zoneId);
+  const area = useStudio((s) => (isAreaId(s.activeZoneId) ? s.document?.areas?.items[s.activeZoneId] : undefined));
+  return useMemo(() => artboardSpec(getGarment(modelId ?? 'tee-classic'), area ? { areas: { orderedIds: [area.id], items: { [area.id]: area } } } : null, zoneId), [modelId, zoneId, area]);
+}
+
+/** The layers of the active zone or design area. */
+export function useActiveArtboard() {
+  return useStudio((s) => (s.document ? artboardOf(s.document, s.activeZoneId) : undefined));
 }
 
 export function useActiveColorway() {
@@ -223,16 +247,25 @@ export function useActiveColorway() {
 
 // ---- Live drag previews (not saved, not in history) ----
 
+/** A projected layer while it is dragged, resized or turned on the garment, before the command commits. */
+export interface LiveProjection {
+  id: string;
+  projector?: ProjectorSpec;
+  transform?: Partial<ProjectedTransform>;
+}
+
 interface LiveState {
-  zoneId: ZoneId | null;
+  zoneId: ArtboardId | null;
   overrides: Record<string, Partial<LayerTransform>>;
+  projection: LiveProjection | null;
   /** Which view is dragging, so the other one can follow without echoing it back. */
   source: '2d' | '3d' | null;
   /** Shown instead of the active colourway while batch-rendering every colourway. */
   colorwayOverride: string | null;
   /** Output aspect (width / height) the render studio is set to; the 3D view frames it. */
   renderAspect: number | null;
-  setOverrides: (zoneId: ZoneId, overrides: Record<string, Partial<LayerTransform>>, source?: '2d' | '3d') => void;
+  setOverrides: (zoneId: ArtboardId, overrides: Record<string, Partial<LayerTransform>>, source?: '2d' | '3d') => void;
+  setProjection: (projection: LiveProjection | null) => void;
   setColorwayOverride: (id: string | null) => void;
   setRenderAspect: (aspect: number | null) => void;
   clear: () => void;
@@ -241,13 +274,15 @@ interface LiveState {
 export const useLive = create<LiveState>((set) => ({
   zoneId: null,
   overrides: {},
+  projection: null,
   source: null,
   colorwayOverride: null,
   renderAspect: null,
   setOverrides: (zoneId, overrides, source = '2d') => set({ zoneId, overrides, source }),
+  setProjection: (projection) => set({ projection, source: projection ? '3d' : null }),
   setColorwayOverride: (colorwayOverride) => set({ colorwayOverride }),
   setRenderAspect: (renderAspect) => set({ renderAspect }),
-  clear: () => set({ zoneId: null, overrides: {}, source: null }),
+  clear: () => set({ zoneId: null, overrides: {}, projection: null, source: null }),
 }));
 
 /** The colourway the 3D view should show: a batch-export override, else the active one. */

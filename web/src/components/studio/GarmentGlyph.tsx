@@ -17,9 +17,9 @@ export function GarmentGlyph({ model, className, fill = 'var(--surface-panel)', 
     const pad = 14;
     return {
       viewBox: `${(b.minX - pad).toFixed(1)} ${(b.minY - pad).toFixed(1)} ${(b.maxX - b.minX + pad * 2).toFixed(1)} ${(b.maxY - b.minY + pad * 2).toFixed(1)}`,
-      shapes: sketch.shapes.filter((s) => s.part !== 'stitching').map((s) => ({ d: toPath(s.points), part: s.part })),
+      shapes: [...sketch.shapes, ...(sketch.top ?? [])].filter((s) => s.part !== 'stitching').map((s) => ({ d: toPath(s.points), part: s.part })),
       bands: sketch.bands.map((band) => ({ d: toPath(band.points, false), width: band.width })),
-      seams: sketch.seams.map((seam) => toPath(seam, false)),
+      seams: [...sketch.seams, ...(sketch.lines ?? [])].map((seam) => toPath(seam, false)),
       area: { x: 0, y: 0, w: front.printableWidthMm, h: front.printableHeightMm },
     };
   }, [model]);

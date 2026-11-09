@@ -8,14 +8,15 @@
  * thread, metallic sheen) is preview-only (spec TYP-06): callers opt in with `simulateFinish`,
  * and print files never do.
  */
-import type { ArtworkLayer, FillStyle, ImageAdjust, ImageContent, ImageRepeat, LayerStyle, LayerTransform, PrintMethod, ShapeContent, Surface, TextContent, ZoneDesign } from '@/domain/schema';
+import type { ArtworkLayer, FillStyle, ImageAdjust, ImageContent, ImageRepeat, LayerStack, LayerStyle, LayerTransform, PrintMethod, ShapeContent, Surface, TextContent } from '@/domain/schema';
 import { getLoadedImage } from '@/lib/assets';
 import { ensureCustomFonts } from '@/lib/font-library';
 import { loadFontStylesheets, scriptFallbacks } from '@/lib/fonts';
 
 type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
-const TEXT_REF_PX = 200;
+/** Text is laid out at this font size, then scaled to fill its box (vector exports use the same layout). */
+export const TEXT_REF_PX = 200;
 
 export function fontString(c: Pick<TextContent, 'italic' | 'fontWeight' | 'fontFamily'>, px: number) {
   return `${c.italic ? 'italic ' : ''}${c.fontWeight} ${px}px "${c.fontFamily}", "Noto Sans Khmer", "Noto Sans KR", "Noto Sans SC", sans-serif`;
@@ -204,10 +205,17 @@ export function layoutText(c: TextContent): TextLayout {
   return layout;
 }
 
+let textEpoch = 0;
+/** Changes whenever text may render differently (a web font loaded): part of any cached artwork's key. */
+export function textRenderEpoch() {
+  return textEpoch;
+}
+
 /** Forget measured layouts and cached renders, e.g. after a web font loads and metrics change. */
 export function clearTextLayoutCache() {
   layoutCache.clear();
   fxCache.clear();
+  textEpoch++;
 }
 
 /** Box aspect (width / height) that shows the text undistorted, straight or warped. */
@@ -222,7 +230,8 @@ export function textAspect(c: TextContent) {
 
 const tileCache = new Map<string, HTMLCanvasElement>();
 
-function patternTile(style: Extract<FillStyle, { kind: 'pattern' }>, color: string, size: number) {
+/** One repeat of a pattern fill, `size` px square (vector exports place it as an SVG pattern tile). */
+export function patternTile(style: Extract<FillStyle, { kind: 'pattern' }>, color: string, size: number) {
   const key = [style.pattern, color, style.color2, size].join('|');
   const hit = tileCache.get(key);
   if (hit) return hit;
@@ -1286,7 +1295,7 @@ const BLEND: Record<ArtworkLayer['style']['blendMode'], GlobalCompositeOperation
 };
 
 /** Draw every visible layer of a zone. Returns false if any image was still loading. */
-export function drawZone(ctx: Ctx, zone: ZoneDesign, opts: DrawZoneOptions): boolean {
+export function drawZone(ctx: Ctx, zone: LayerStack, opts: DrawZoneOptions): boolean {
   let complete = true;
   const { pxPerMm, originX = 0, originY = 0, overrides } = opts;
   for (const id of zone.orderedLayerIds) {
@@ -1383,7 +1392,7 @@ export interface SurfaceDrawOptions {
  * roughness, blue is metalness, all linear 0–1. The canvas should already hold the bare fabric.
  * Returns false if any image was still loading.
  */
-export function drawZoneSurface(ctx: CanvasRenderingContext2D, zone: ZoneDesign, opts: SurfaceDrawOptions): boolean {
+export function drawZoneSurface(ctx: CanvasRenderingContext2D, zone: LayerStack, opts: SurfaceDrawOptions): boolean {
   let complete = true;
   const { pxPerMm, originX = 0, originY = 0, overrides } = opts;
   for (const id of zone.orderedLayerIds) {
@@ -1447,7 +1456,7 @@ export function renderLayerBitmap(layer: ArtworkLayer, pxPerMm: number, opts: La
 export const MAX_EXPORT_SIDE = 8192;
 
 /** Isolated print artwork for one zone: transparent background, true physical size. */
-export function renderZoneArtwork(zone: ZoneDesign, widthMm: number, heightMm: number, dpi: number) {
+export function renderZoneArtwork(zone: LayerStack, widthMm: number, heightMm: number, dpi: number) {
   let pxPerMm = dpi / 25.4;
   const longest = Math.max(widthMm, heightMm) * pxPerMm;
   let effectiveDpi = dpi;
@@ -1468,7 +1477,7 @@ export function renderZoneArtwork(zone: ZoneDesign, widthMm: number, heightMm: n
  * device's font library, catalogue fonts load their stylesheet, and each face loads the glyphs
  * the text actually uses (so Khmer and Chinese subsets arrive). Returns true if anything loaded.
  */
-export async function ensureFonts(zones: ZoneDesign[]): Promise<boolean> {
+export async function ensureFonts(zones: LayerStack[]): Promise<boolean> {
   if (typeof document === 'undefined' || !document.fonts) return false;
   const families = new Set<string>();
   const uploaded = new Set<string>();

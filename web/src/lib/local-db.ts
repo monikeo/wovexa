@@ -7,6 +7,7 @@
  * 3 adds the font library (uploaded fonts) and saved scene looks. 4 to 6 add the export history.
  */
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
+import { allStacks } from '@/domain/areas';
 import { createDocument, newId } from '@/domain/factory';
 import { documentHash } from '@/domain/hash';
 import { migrateDesignDocument, type DesignDocument, type Scene } from '@/domain/schema';
@@ -196,7 +197,7 @@ export function db() {
 
 function metaFromDocument(doc: DesignDocument, hash: string, previous?: ProjectMeta): ProjectMeta {
   const colorway = doc.colorways.find((c) => c.id === doc.activeColorwayId) ?? doc.colorways[0];
-  const layerCount = Object.values(doc.zones).reduce((n, z) => n + z.orderedLayerIds.length, 0);
+  const layerCount = allStacks(doc).reduce((n, z) => n + z.orderedLayerIds.length, 0) + (doc.projections?.orderedLayerIds.length ?? 0);
   const now = Date.now();
   return {
     ...previous,
@@ -222,9 +223,11 @@ export async function getProject(id: string) {
   return (await db()).get('projects', id);
 }
 
-export async function createProject(title: string, colorwayIndex = 0, modelId?: string): Promise<ProjectMeta> {
+export async function createProject(title: string, colorwayIndex = 0, modelId?: string, shape?: DesignDocument['garment']['shape']): Promise<ProjectMeta> {
   const projectId = newId();
   const document = createDocument({ projectId, title, colorwayIndex, modelId });
+  // A model from the 3D model library, worn from the start.
+  if (shape) document.garment.shape = shape;
   return saveDocument(document);
 }
 

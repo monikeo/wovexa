@@ -17,7 +17,9 @@
 import { getGarment, getSize, partColor, PRINT_METHOD_LABELS, zoneSpecOrFirst, type ZoneSpec } from '@/domain/garments';
 import { documentHash } from '@/domain/hash';
 import { runPreflight } from '@/domain/preflight';
-import type { Colorway, DesignDocument, ZoneId } from '@/domain/schema';
+import { describeAreaPlacement, designAreas } from '@/domain/areas';
+import { projectionsAsZone } from '@/domain/projected';
+import type { Colorway, DesignArea, DesignDocument, ZoneId } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
 import { canvasToBlob, sha256Hex } from '@/lib/download';
 import { findFont } from '@/lib/fonts';
@@ -30,9 +32,10 @@ import { renderCutAndSew } from './cut-and-sew';
 import { buildMarker, type MarkerSummary } from './marker';
 import { DEFAULT_MARKER, type MarkerSettings } from './marker-layout';
 import { buildProofPdf, placementText, type ProofInput } from './proof';
-import { personalise, personalisedZones, sizeBreakdown, toCsv, type Roster } from './roster';
+import { personalise, personalisedAreas, personalisedZones, sizeBreakdown, toCsv, type Roster } from './roster';
 import { buildSeparations, type Ink } from './separations';
 import { approxCmyk, buildTechSheet, hexToRgb, type TechSheetInput } from './tech-sheet';
+import { zoneSvg } from './svg-artwork';
 import { ZipWriter } from './zip';
 
 export interface PackageOptions {
@@ -52,6 +55,8 @@ export interface PackageOptions {
     marker?: boolean;
     /** The garment as a GLB 3D model (main colourway). */
     model?: boolean;
+    /** Each print file again as SVG: text and shapes as vector, photos and raster effects as placed images. */
+    vector?: boolean;
   };
   colorways: 'active' | 'all';
   /** The order: one garment per row in its size; names and numbers personalise prints. */
@@ -104,7 +109,7 @@ const MARKER_STEPS = 8;
 /** Fonts the print files use and where they come from, so the factory can check licensing (spec AST-07). */
 export async function fontsUsed(doc: DesignDocument) {
   const seen = new Map<string, { family: string; weights: number[]; source: string; licence: string; file?: string }>();
-  for (const zone of Object.values(doc.zones)) {
+  for (const zone of [...Object.values(doc.zones), projectionsAsZone(doc), ...designAreas(doc)]) {
     for (const layer of Object.values(zone.layers)) {
       const c = layer.content;
       if (c.kind !== 'text' || !layer.visible) continue;
@@ -128,18 +133,25 @@ export async function fontsUsed(doc: DesignDocument) {
   return [...seen.values()];
 }
 
-/** Images and fonts every zone and colourway needs, loaded before anything is drawn. */
+/** Images and fonts every zone, projected layer and colourway needs, loaded before anything is drawn. */
 export async function prepareDocument(doc: DesignDocument, zones: ZoneId[]) {
   const ids = new Set<string>();
-  for (const z of zones) for (const l of Object.values(doc.zones[z].layers)) if (l.content.kind === 'image') ids.add(l.content.assetId);
+  const projected = projectionsAsZone(doc);
+  const stacks = [...zones.map((z) => doc.zones[z]), projected, ...designAreas(doc)];
+  for (const zone of stacks) for (const l of Object.values(zone.layers)) if (l.content.kind === 'image') ids.add(l.content.assetId);
   for (const c of doc.colorways) for (const s of Object.values(c.surfaces ?? {})) if (s?.kind === 'image') ids.add(s.assetId);
   await Promise.all([...ids].filter((id) => !getLoadedImage(id)).map((id) => loadAssetImage(id).catch(() => null)));
-  await ensureFonts(zones.map((z) => doc.zones[z]));
+  await ensureFonts(stacks);
 }
 
 export function zonesWithArtwork(doc: DesignDocument): ZoneId[] {
   const model = getGarment(doc.garment.modelId);
   return model.zoneOrder.filter((z) => doc.zones[z].orderedLayerIds.some((id) => doc.zones[z].layers[id]?.visible));
+}
+
+/** Design areas that print: shown, with at least one visible layer. Each is a print file of its own. */
+export function areasWithArtwork(doc: DesignDocument): DesignArea[] {
+  return designAreas(doc).filter((a) => a.visible && a.orderedLayerIds.some((id) => a.layers[id]?.visible));
 }
 
 /** Relative luminance below this reads as a dark garment that needs a white underbase. */
@@ -163,10 +175,13 @@ const release = (c: HTMLCanvasElement) => {
  * width. The text stays anchored by its alignment, along the layer's rotation.
  */
 export function fitPersonalisedText(person: DesignDocument, original: DesignDocument) {
-  for (const zoneId of Object.keys(person.zones) as ZoneId[]) {
-    const zone = person.zones[zoneId];
+  const stacks = [
+    ...(Object.keys(person.zones) as ZoneId[]).map((z) => [person.zones[z], original.zones[z]] as const),
+    ...designAreas(person).map((a) => [a, original.areas?.items[a.id]] as const),
+  ];
+  for (const [zone, originalStack] of stacks) {
     for (const [id, layer] of Object.entries(zone.layers)) {
-      const before = original.zones[zoneId].layers[id];
+      const before = originalStack?.layers[id];
       if (layer.content.kind !== 'text' || before?.content.kind !== 'text' || before.content.value === layer.content.value) continue;
       const m = layoutText(layer.content);
       if (!m.width || !m.height) continue;
@@ -220,7 +235,27 @@ async function makeProof(doc: DesignDocument, colorways: Colorway[], products: P
   const placements: ProofInput['placements'] = [];
   for (const zoneId of zones.slice(0, 6)) {
     const spec = zoneSpecOrFirst(model, zoneId);
-    placements.push({ zoneId, spec, sketch: await renderZoneSketch(doc, zoneId, 900, { printArea: true }), art: renderZoneArtwork(doc.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, 72).canvas });
+    placements.push({
+      label: spec.label,
+      method: PRINT_METHOD_LABELS[doc.zones[zoneId].printMethod],
+      widthMm: spec.printableWidthMm,
+      heightMm: spec.printableHeightMm,
+      where: placementText(spec),
+      sketch: await renderZoneSketch(doc, zoneId, 900, { printArea: true }),
+      art: renderZoneArtwork(doc.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, 72).canvas,
+    });
+  }
+  // Design areas sit on the 3D garment: their artwork, with where they go in words.
+  for (const area of areasWithArtwork(doc).slice(0, Math.max(0, 6 - placements.length))) {
+    placements.push({
+      label: area.name,
+      method: PRINT_METHOD_LABELS[area.printMethod],
+      widthMm: area.widthMm,
+      heightMm: area.heightMm,
+      where: describeAreaPlacement(area),
+      sketch: null,
+      art: renderZoneArtwork(area, area.widthMm, area.heightMm, 72).canvas,
+    });
   }
   const blob = await buildProofPdf({
     doc,
@@ -234,7 +269,7 @@ async function makeProof(doc: DesignDocument, colorways: Colorway[], products: P
     team: roster ? { people: roster.rows.length, sizes: sizeBreakdown(roster) } : undefined,
   });
   for (const p of placements) {
-    release(p.sketch);
+    if (p.sketch) release(p.sketch);
     release(p.art);
   }
   own.forEach(release);
@@ -280,8 +315,10 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
   const active = doc.colorways.find((c) => c.id === doc.activeColorwayId) ?? doc.colorways[0];
   const colorways = opts.colorways === 'all' ? doc.colorways : [active];
   const zones = zonesWithArtwork(doc);
+  const printedAreas = areasWithArtwork(doc);
   const roster = opts.roster?.rows.length ? opts.roster : null;
   const teamZones = roster ? personalisedZones(doc).filter((z) => zones.includes(z)) : [];
+  const teamAreas = roster ? personalisedAreas(doc) : [];
   const screenZones = opts.include.separations ? zones.filter((z) => doc.zones[z].printMethod === 'SCREEN_PRINT') : [];
   const zip = new ZipWriter();
   const files: PackageFile[] = [];
@@ -294,16 +331,27 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
   const total =
     1 +
     zones.length +
+    printedAreas.length +
     screenZones.length +
-    (roster && teamZones.length ? roster.rows.length : 0) +
+    (roster && (teamZones.length || teamAreas.length) ? roster.rows.length : 0) +
     (opts.include.flats ? colorways.length : 0) +
     (opts.include.mockups ? colorways.length : 0) +
     (opts.include.proof ? 2 : 0) +
     (opts.include.techSheet ? 1 : 0) +
     (opts.include.cutAndSew ? 1 : 0) +
     (opts.include.marker ? MARKER_STEPS : 0) +
-    (opts.include.model ? 1 : 0);
+    (opts.include.model ? 1 : 0) +
+    (opts.include.vector ? zones.length + printedAreas.length : 0);
   let done = 0;
+  // Vector print files: their fonts are noted once for the printer.
+  const vectorFonts = new Set<string>();
+  const addVector = async (stack: Parameters<typeof zoneSvg>[0], widthMm: number, heightMm: number, label: string, name: string) => {
+    step(`Vector print file, ${label}`);
+    const art = zoneSvg(stack, widthMm, heightMm, { dpi: opts.dpi, title: `${doc.title}, ${label}` });
+    art.fonts.forEach((f) => vectorFonts.add(f));
+    const file = await add(`print/vector/${name}.svg`, art.svg, 'image/svg+xml');
+    outputs.push({ zone: label, filename: file, format: 'svg', physicalWidthMm: widthMm, physicalHeightMm: heightMm, liveTextFonts: art.fonts, placedImages: art.rasterLayers, sha256: files[files.length - 1].sha256 });
+  };
   const step = (label: string) => {
     abortIfNeeded(ctx.signal);
     ctx.onProgress?.(label, Math.min(0.99, done / total));
@@ -380,12 +428,58 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
     }
     release(canvas);
     zoneRecords.push(record);
+    if (opts.include.vector) await addVector(doc.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, spec.label, nameFor(zoneId, spec, opts.dpi));
   }
+
+  // ---- Design areas: a print file each, at its own size, with where it goes in words ----
+  for (const area of printedAreas) {
+    step(`Print file, ${area.name}`);
+    const { canvas, dpi } = renderZoneArtwork(area, area.widthMm, area.heightMm, opts.dpi);
+    if (dpi < opts.dpi) warnings.push(`${area.name} was exported at ${dpi} dpi to stay within the browser's image size limit.`);
+    if (opts.include.print) {
+      const name = formatName(opts.naming, {
+        project: doc.title,
+        zone: fileSafe(area.name.toLowerCase()),
+        colorway: active.name,
+        size: doc.garment.sizeCode,
+        method: PRINT_METHOD_LABELS[area.printMethod],
+        w: Math.round(area.widthMm),
+        h: Math.round(area.heightMm),
+        dpi,
+        rev,
+        date,
+      });
+      const blob = await pngBlobWithDpi(await canvasToBlob(canvas), dpi);
+      const file = await add(`print/areas/${name}.png`, blob);
+      outputs.push({
+        zone: area.name,
+        designArea: true,
+        filename: file,
+        format: 'png',
+        colorSpace: 'sRGB',
+        physicalWidthMm: area.widthMm,
+        physicalHeightMm: area.heightMm,
+        pixelWidth: canvas.width,
+        pixelHeight: canvas.height,
+        dpi,
+        printMethod: area.printMethod,
+        placement: describeAreaPlacement(area),
+        finishes: [...new Set(area.orderedLayerIds.map((id) => area.layers[id]?.style.finish).filter(Boolean))],
+        sha256: files[files.length - 1].sha256,
+      });
+    }
+    release(canvas);
+    if (opts.include.vector) {
+      const name = formatName(opts.naming, { project: doc.title, zone: fileSafe(area.name.toLowerCase()), colorway: active.name, size: doc.garment.sizeCode, method: PRINT_METHOD_LABELS[area.printMethod], w: Math.round(area.widthMm), h: Math.round(area.heightMm), dpi: opts.dpi, rev, date });
+      await addVector(area, area.widthMm, area.heightMm, area.name, `areas/${name}`);
+    }
+  }
+  if (vectorFonts.size) warnings.push(`The SVG print files keep text as live text in ${[...vectorFonts].join(', ')}. The printer needs these fonts installed, or the text outlined.`);
 
   // ---- Team order: one print set per person ----
   let teamFile: string | undefined;
   if (roster) {
-    if (!teamZones.length) {
+    if (!teamZones.length && !teamAreas.length) {
       // A roster of sizes alone is an order for the marker; names and numbers need a placeholder to print.
       if (roster.fields.some((f) => f !== 'size')) warnings.push('Names and numbers were not printed: add {name} or {number} to a text layer to personalise them.');
     } else {
@@ -394,7 +488,7 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
         const row = roster.rows[i];
         step(`Team file ${i + 1} of ${roster.rows.length}`);
         const person = personalise(doc, row);
-        await ensureFonts(teamZones.map((z) => person.zones[z]));
+        await ensureFonts([...teamZones.map((z) => person.zones[z]), ...designAreas(person)]);
         fitPersonalisedText(person, doc);
         const folder = `team/${String(i + 1).padStart(3, '0')}${row.name ? `_${fileSafe(row.name)}` : ''}${row.number ? `_${fileSafe(row.number)}` : ''}`;
         const made: string[] = [];
@@ -403,6 +497,16 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
           const { canvas, dpi } = renderZoneArtwork(person.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, opts.dpi);
           const blob = await pngBlobWithDpi(await canvasToBlob(canvas), dpi);
           made.push(await add(`${folder}/${nameFor(zoneId, spec, dpi, { name: row.name ?? '', number: row.number ?? '' })}.png`, blob));
+          release(canvas);
+        }
+        // A name or number in a design area (on the hood, down a sleeve): its own file per person.
+        for (const area of teamAreas) {
+          const own = person.areas?.items[area.id];
+          if (!own) continue;
+          const { canvas, dpi } = renderZoneArtwork(own, own.widthMm, own.heightMm, opts.dpi);
+          const blob = await pngBlobWithDpi(await canvasToBlob(canvas), dpi);
+          const name = formatName(opts.naming, { project: doc.title, zone: fileSafe(own.name.toLowerCase()), colorway: active.name, size: doc.garment.sizeCode, method: PRINT_METHOD_LABELS[own.printMethod], w: Math.round(own.widthMm), h: Math.round(own.heightMm), dpi, rev, date, name: row.name ?? '', number: row.number ?? '' });
+          made.push(await add(`${folder}/${name}.png`, blob));
           release(canvas);
         }
         listing.push([i + 1, ...roster.fields.map((f) => row[f] ?? ''), made.join(' ')]);
@@ -493,7 +597,7 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
   // ---- Client proof ----
   if (opts.include.proof) {
     step('Client proof');
-    const proof = await makeProof(doc, colorways, proofProducts, ctx.approval.label, roster && teamZones.length ? roster : null, rev);
+    const proof = await makeProof(doc, colorways, proofProducts, ctx.approval.label, roster && (teamZones.length || teamAreas.length) ? roster : null, rev);
     step('Client proof');
     await add(proof.fileName, proof.blob);
   }
@@ -548,10 +652,12 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
       'print/              Print files: transparent PNG at true physical size. The resolution is written into each file,',
       '                    so it opens at the right size in RIP and design software.',
       screenZones.length ? 'print/separations/  Screen-print films, one per ink (black = ink), with registration marks in a 15 mm margin.' : null,
+      opts.include.vector ? 'print/vector/       The same print files as SVG at true size (1 unit = 1 mm): text and shapes as vector, photos and' : null,
+      opts.include.vector ? '                    raster effects as placed images. For screen-print films, vinyl cutting and embroidery digitising.' : null,
       teamFile ? 'team/               One folder per person with their personalised print files, roster.csv and sizes.csv.' : null,
       opts.include.flats ? 'flats/              Placement drawings for each colourway, with the print area outlined.' : null,
       Object.keys(mockups).length ? 'mockups/            Product images for each colourway.' : null,
-      opts.include.cutAndSew ? 'cut-and-sew/        Every pattern piece with its all-over print, 10 mm bleed and a dashed cut line, for sublimation.' : null,
+      opts.include.cutAndSew ? 'cut-and-sew/        Every pattern piece with its all-over print and any artwork across seams (split at each seam), 10 mm bleed and a dashed cut line, for sublimation.' : null,
       opts.include.cutAndSew ? '                    Not mirrored: set mirroring for transfer paper in your RIP.' : null,
       marker
         ? `marker/             Every piece of the order nested on a ${marker.rollWidthMm / 10} cm roll at true size (${marker.dpi} dpi), in ${marker.lengths.length} roll ${marker.lengths.length === 1 ? 'length' : 'lengths'}:`
@@ -595,7 +701,7 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
     colorways: doc.colorways,
     outputs,
     separations: Object.fromEntries(Object.entries(inksByZone).map(([z, inks]) => [z, inks])),
-    team: roster && teamZones.length ? { people: roster.rows.length, fields: roster.fields, zones: teamZones, sizes: sizeBreakdown(roster) } : null,
+    team: roster && (teamZones.length || teamAreas.length) ? { people: roster.rows.length, fields: roster.fields, zones: teamZones, areas: teamAreas.map((a) => a.name), sizes: sizeBreakdown(roster) } : null,
     marker: marker ?? null,
     fonts,
     preflight: issues,

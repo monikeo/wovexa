@@ -17,10 +17,12 @@ import {
   Hexagon,
   Image as ImageIcon,
   Layers,
+  Keyboard,
   LayoutTemplate,
   Loader2,
   Minus,
   MousePointer2,
+  PenTool,
   Plus,
   Redo2,
   RotateCcw,
@@ -28,6 +30,7 @@ import {
   Shapes,
   Shirt,
   Square,
+  SquareDashed,
   Star,
   Triangle,
   Type,
@@ -37,9 +40,10 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { renameDocument } from '@/domain/commands';
+import { designAreas } from '@/domain/areas';
 import { getGarment } from '@/domain/garments';
 import { summarize } from '@/domain/preflight';
-import type { ShapeContent } from '@/domain/schema';
+import type { AreaId, ShapeContent } from '@/domain/schema';
 import { ACCEPTED_TYPES } from '@/lib/assets';
 import { approvalState } from '@/lib/local-db';
 import { WovexaSymbol } from '@/components/brand/Logo';
@@ -50,15 +54,24 @@ import {
   addGraphic,
   addShape,
   addText,
+  copySelection,
   deleteSelection,
   duplicateSelection,
   groupSelection,
+  isOwnClipboard,
   moveSelectionInStack,
   nudgeSelection,
+  pasteLayers,
+  rotateSelection,
   selectAll,
+  selectNextLayer,
+  startPen,
+  switchArtboard,
   ungroupSelection,
   zoomToSelection,
 } from './actions';
+import { deleteProjection, duplicateProjection, moveProjectionBy, nudgeProjection } from './projection-actions';
+import { activeBareArea, addDesignArea, nudgeArea } from './area-actions';
 import { BrandKitProvider } from './brand-context';
 import { BrandPanel } from './BrandPanel';
 import { ColorwayCompare } from './ColorwayCompare';
@@ -71,6 +84,7 @@ import { LayerPanel } from './LayerPanel';
 import { PreflightPanel, usePreflight } from './PreflightPanel';
 import { RenderPanel } from './RenderPanel';
 import { SaveTemplatePanel } from './SaveTemplatePanel';
+import { ShortcutsPanel } from './ShortcutsPanel';
 import { StudioTour } from './StudioTour';
 
 const Editor2D = dynamic(() => import('./editor2d/Editor2D').then((m) => m.Editor2D), {
@@ -266,6 +280,16 @@ function MoreMenu() {
           <Link role="menuitem" className={item} href={`/production/${projectId}`} onClick={() => setOpen(false)}>
             <FileText size={15} /> Tech pack
           </Link>
+          <button
+            role="menuitem"
+            className={item}
+            onClick={() => {
+              setOpen(false);
+              window.dispatchEvent(new CustomEvent('wovexa:shortcuts'));
+            }}
+          >
+            <Keyboard size={15} /> Keys and gestures
+          </button>
         </div>
       ) : null}
     </div>
@@ -429,6 +453,16 @@ function ShapeMenu() {
               <Icon size={15} /> {label}
             </button>
           ))}
+          <button
+            role="menuitem"
+            className="flex items-center gap-2.5 rounded-md border-t border-line px-3 py-2 text-left text-sm hover:bg-hover"
+            onClick={() => {
+              closeMenu(false);
+              startPen();
+            }}
+          >
+            <PenTool size={15} /> Draw your own (P)
+          </button>
         </div>
       ) : null}
     </div>
@@ -497,6 +531,27 @@ function ZoneBar() {
           </button>
         );
       })}
+      {designAreas(doc).map((a) => {
+        const on = active === a.id;
+        const count = a.orderedLayerIds.length;
+        return (
+          <button
+            key={a.id}
+            role="tab"
+            aria-selected={on}
+            onClick={() => setActiveZone(a.id as AreaId)}
+            title={`${a.name}: a design area you placed on the garment, ${Math.round(a.widthMm)} × ${Math.round(a.heightMm)} mm`}
+            className={`flex min-h-9 flex-none items-center gap-1.5 rounded-lg px-3 text-[13px] font-medium ${on ? 'bg-inverse text-fg-inverse' : 'text-fg-2 hover:bg-hover'} ${a.visible ? '' : 'opacity-60'}`}
+          >
+            <SquareDashed size={13} aria-hidden />
+            {a.name}
+            {count ? <span className={`num text-xs ${on ? 'opacity-70' : 'text-fg-3'}`}>{count}</span> : null}
+          </button>
+        );
+      })}
+      <button className="flex min-h-9 flex-none items-center gap-1 rounded-lg px-2.5 text-[13px] font-medium text-fg-2 hover:bg-hover" onClick={addDesignArea} title="Add a design area anywhere on the garment: a hood, a side panel, across a seam" aria-label="Add a design area">
+        <Plus size={14} /> Area
+      </button>
     </div>
   );
 }
@@ -532,16 +587,31 @@ function Stage({ mode }: { mode: 'desktop' | 'tablet' | 'mobile' }) {
 function useShortcuts() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
+      // Keys sent to the window itself (no element focused) act on the page.
+      const target = e.target instanceof Element ? e.target : document.body;
       if (target.closest('input, textarea, select, [contenteditable="true"]')) return;
       // Dialogs and menus own the keyboard while open: Delete or arrows there must not edit the design.
       if (target.closest('[role="dialog"], [role="alertdialog"], [role="menu"]') || document.querySelector('[aria-modal="true"]')) return;
-      // The 3D view uses arrow keys and +/− to orbit and zoom when it has focus.
-      if (target.closest('[data-viewer3d]') && /^(Arrow|\+|=|-)/.test(e.key)) return;
+      // The 3D view uses arrow keys, +/− and comma/period to orbit, zoom and turn artwork when it has focus.
+      if (target.closest('[data-viewer3d]') && (/^(Arrow|\+|=|-)/.test(e.key) || e.code === 'Comma' || e.code === 'Period')) return;
       const mod = e.metaKey || e.ctrlKey;
       const s = useStudio.getState();
       const key = e.key.toLowerCase();
-      if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
+      if (e.key === 'Tab' && !mod && !e.altKey) {
+        // On the canvas, Tab steps through the layers, then on out of the canvas.
+        if (target.closest('[role="application"], [data-viewer3d]') && selectNextLayer(e.shiftKey ? -1 : 1)) e.preventDefault();
+        return;
+      }
+      if (e.key === '?' && !mod) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('wovexa:shortcuts'));
+      } else if (!mod && !e.altKey && (e.code === 'Comma' || e.code === 'Period')) {
+        e.preventDefault();
+        rotateSelection((e.code === 'Comma' ? -1 : 1) * (e.shiftKey ? 15 : 1));
+      } else if (!mod && !e.altKey && (e.key === 'PageUp' || e.key === 'PageDown')) {
+        e.preventDefault();
+        switchArtboard(e.key === 'PageDown' ? 1 : -1);
+      } else if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('wovexa:open-context-menu'));
       } else if (mod && key === 'a') {
@@ -560,7 +630,8 @@ function useShortcuts() {
         s.redo();
       } else if (mod && key === 'd') {
         e.preventDefault();
-        duplicateSelection();
+        if (s.selectedProjectionId) duplicateProjection(s.selectedProjectionId);
+        else duplicateSelection();
       } else if (mod && key === 'g') {
         e.preventDefault();
         if (e.shiftKey) ungroupSelection();
@@ -573,38 +644,75 @@ function useShortcuts() {
         e.preventDefault();
         void s.saveNow();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (s.selectedLayerIds.length) {
+        if (s.selectedProjectionId) {
+          e.preventDefault();
+          deleteProjection(s.selectedProjectionId);
+        } else if (s.selectedLayerIds.length) {
           e.preventDefault();
           deleteSelection();
         }
       } else if (e.key === 'Escape') {
         s.select([]);
-      } else if (e.key.startsWith('Arrow') && s.selectedLayerIds.length) {
+      } else if (e.key.startsWith('Arrow') && (s.selectedLayerIds.length || s.selectedProjectionId || activeBareArea())) {
         e.preventDefault();
         const step = e.shiftKey ? 10 : 1;
         const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
         const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
-        nudgeSelection(dx, dy);
+        const bare = activeBareArea();
+        if (s.selectedProjectionId) nudgeProjection(s.selectedProjectionId, dx, dy);
+        else if (bare) nudgeArea(bare.id, dx, dy);
+        else nudgeSelection(dx, dy);
       } else if (!mod && key === 't') {
         addText();
+      } else if (!mod && !e.altKey && key === 'p' && !target.closest('[data-viewer3d]') && s.viewMode !== '3d') {
+        // The pen, on the 2D artboard (P in the 3D view switches it to Place mode instead).
+        window.dispatchEvent(new CustomEvent('wovexa:pen'));
       } else if (!mod && e.key === ']') {
-        moveSelectionInStack(1);
+        if (s.selectedProjectionId) moveProjectionBy(s.selectedProjectionId, 1);
+        else moveSelectionInStack(1);
       } else if (!mod && e.key === '[') {
-        moveSelectionInStack(-1);
+        if (s.selectedProjectionId) moveProjectionBy(s.selectedProjectionId, -1);
+        else moveSelectionInStack(-1);
       }
     };
+    /** Whether a clipboard event belongs to a field or dialog (their own copy and paste), not the design. */
+    const elsewhere = (e: ClipboardEvent) => e.target instanceof Element && !!e.target.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="alertdialog"]');
+    // Copy and cut the selected layers; the system clipboard gets their words (or names).
+    const onCopy = (cut: boolean) => (e: ClipboardEvent) => {
+      if (elsewhere(e) || window.getSelection()?.toString()) return;
+      const text = copySelection(cut);
+      if (text === null) return;
+      e.preventDefault();
+      e.clipboardData?.setData('text/plain', text);
+    };
+    const onCopyEvent = onCopy(false);
+    const onCutEvent = onCopy(true);
     const onPaste = (e: ClipboardEvent) => {
-      if ((e.target as HTMLElement).closest('input, textarea')) return;
+      if (elsewhere(e)) return;
       const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith('image/'));
       if (files.length) {
         e.preventDefault();
         void addImages(files);
+        return;
+      }
+      // Layers copied here come back as layers; any other text becomes a text layer.
+      const text = e.clipboardData?.getData('text/plain') ?? '';
+      if (isOwnClipboard(text)) {
+        e.preventDefault();
+        pasteLayers();
+      } else if (text.trim()) {
+        e.preventDefault();
+        addText(text.trim().slice(0, 500));
       }
     };
     window.addEventListener('keydown', onKey);
+    window.addEventListener('copy', onCopyEvent);
+    window.addEventListener('cut', onCutEvent);
     window.addEventListener('paste', onPaste);
     return () => {
       window.removeEventListener('keydown', onKey);
+      window.removeEventListener('copy', onCopyEvent);
+      window.removeEventListener('cut', onCutEvent);
       window.removeEventListener('paste', onPaste);
     };
   }, []);
@@ -629,6 +737,9 @@ function MobileAddSheet({ onDone }: { onDone: () => void }) {
             <Icon size={20} /> {label}
           </button>
         ))}
+        <button className={item} onClick={() => { onDone(); startPen(); }}>
+          <PenTool size={20} /> Draw
+        </button>
       </div>
       <section>
         <h3 className="panel-title mb-2">Graphics</h3>
@@ -640,7 +751,7 @@ function MobileAddSheet({ onDone }: { onDone: () => void }) {
 
 function MobileRail() {
   const setSheet = useStudio((s) => s.setMobileSheet);
-  const hasSelection = useStudio((s) => s.selectedLayerIds.length > 0);
+  const hasSelection = useStudio((s) => s.selectedLayerIds.length > 0 || !!s.selectedProjectionId);
   const { errors } = summarize(usePreflight());
   const item = 'flex min-h-14 flex-1 flex-col items-center justify-center gap-1 text-[11px] font-medium text-fg-2';
   return (
@@ -691,6 +802,13 @@ export function StudioShell() {
   const closeChecks = useCallback(() => setChecksOpen(false), []);
   const closePanel = useCallback(() => setPanel(null), [setPanel]);
   const panelSide = mode === 'mobile' ? 'bottom' : 'right';
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const closeShortcuts = useCallback(() => setShortcutsOpen(false), []);
+  useEffect(() => {
+    const open = () => setShortcutsOpen(true);
+    window.addEventListener('wovexa:shortcuts', open);
+    return () => window.removeEventListener('wovexa:shortcuts', open);
+  }, []);
 
   // Tell people once when an older project was upgraded, and where the backup is.
   useEffect(() => {
@@ -791,6 +909,9 @@ export function StudioShell() {
       {/* Non-modal on larger screens: the 3D view stays visible and usable while framing renders. */}
       <Sheet open={panel === 'render'} onClose={closePanel} title="Wovexa Render" side={mode === 'mobile' ? 'bottom' : 'left'} modal={mode === 'mobile'}>
         <RenderPanel />
+      </Sheet>
+      <Sheet open={shortcutsOpen} onClose={closeShortcuts} title="Keys and gestures" side={panelSide} wide>
+        <ShortcutsPanel />
       </Sheet>
 
       <StudioTour mobile={mode === 'mobile'} />

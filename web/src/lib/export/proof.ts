@@ -4,8 +4,8 @@
  * print placement with its size, method and position. Drawn on canvas, then written as PDF.
  */
 import type { GarmentModel, GarmentSize, ZoneSpec } from '@/domain/garments';
-import { partColor, PRINT_METHOD_LABELS, sizeLabel } from '@/domain/garments';
-import type { Colorway, DesignDocument, ZoneId } from '@/domain/schema';
+import { partColor, sizeLabel } from '@/domain/garments';
+import type { Colorway, DesignDocument } from '@/domain/schema';
 import { A4_LANDSCAPE, buildPdf, type PdfPage } from './pdf';
 
 export interface ProofInput {
@@ -15,7 +15,11 @@ export interface ProofInput {
   fabricLabel: string;
   /** Product images per colourway (3D renders), or flats when the 3D view is closed. */
   products: { colorway: Colorway; images: { label: string; canvas: HTMLCanvasElement }[] }[];
-  placements: { zoneId: ZoneId; spec: ZoneSpec; sketch: HTMLCanvasElement; art: HTMLCanvasElement }[];
+  /**
+   * Each print: its name, method, size and where it goes, its artwork, and the garment flat with
+   * the print area drawn on (a design area, placed on the 3D garment, has no flat).
+   */
+  placements: { label: string; method: string; widthMm: number; heightMm: number; where: string; sketch: HTMLCanvasElement | null; art: HTMLCanvasElement }[];
   approval: string;
   /** v3, r12 or a design ID (see revisionLabel). */
   revision: string;
@@ -254,13 +258,14 @@ function placementsPage(input: ProofInput, pages: number) {
     const y = top + Math.floor(k / cols) * cellH;
     const imgH = cellH - 64;
     const half = (cellW - 16) / 2;
-    contain(ctx, item.sketch, x + 4, y + 4, half, imgH);
-    // The artwork alone on a light check, with its dimensions.
-    const ax = x + 12 + half;
-    const k2 = Math.min(half / item.art.width, (imgH - 18) / item.art.height);
+    if (item.sketch) contain(ctx, item.sketch, x + 4, y + 4, half, imgH);
+    // The artwork alone on a light check, with its dimensions (the whole cell without a flat).
+    const ax = item.sketch ? x + 12 + half : x + 4;
+    const artW = item.sketch ? half : cellW - 8;
+    const k2 = Math.min(artW / item.art.width, (imgH - 18) / item.art.height);
     const aw = item.art.width * k2;
     const ah = item.art.height * k2;
-    const ox = ax + (half - aw) / 2;
+    const ox = ax + (artW - aw) / 2;
     const oy = y + 4 + (imgH - 18 - ah) / 2;
     ctx.fillStyle = '#F4F5F7';
     ctx.fillRect(ox, oy, aw, ah);
@@ -270,11 +275,10 @@ function placementsPage(input: ProofInput, pages: number) {
     ctx.lineWidth = 0.75;
     ctx.strokeRect(ox, oy, aw, ah);
     ctx.setLineDash([]);
-    text(ctx, `${item.spec.printableWidthMm} × ${item.spec.printableHeightMm} mm`, ox + aw / 2, oy + ah + 12, 8, { align: 'center', color: ACCENT, weight: 600 });
-    const method = PRINT_METHOD_LABELS[input.doc.zones[item.zoneId].printMethod];
-    text(ctx, item.spec.label, x + 6, y + cellH - 40, 11, { weight: 700 });
-    text(ctx, method, x + 6, y + cellH - 26, 8.5, { color: MUTED, max: cellW - 12 });
-    text(ctx, placementText(item.spec), x + 6, y + cellH - 13, 8.5, { color: MUTED, max: cellW - 12 });
+    text(ctx, `${Math.round(item.widthMm)} × ${Math.round(item.heightMm)} mm`, ox + aw / 2, oy + ah + 12, 8, { align: 'center', color: ACCENT, weight: 600 });
+    text(ctx, item.label, x + 6, y + cellH - 40, 11, { weight: 700 });
+    text(ctx, item.method, x + 6, y + cellH - 26, 8.5, { color: MUTED, max: cellW - 12 });
+    text(ctx, item.where, x + 6, y + cellH - 13, 8.5, { color: MUTED, max: cellW - 12 });
   });
   if (!items.length) text(ctx, 'This design has no artwork yet.', W / 2, (top + bottom) / 2, 12, { align: 'center', color: MUTED });
   footer(ctx);

@@ -12,11 +12,11 @@ Nothing here has been run against a live Supabase project: the app works fully i
 
 | Priority | Features | Done | Partial | Not started |
 | --- | ---: | ---: | ---: | ---: |
-| P0 | 34 | 25 | 9 | 0 |
-| P1 | 88 | 38 | 32 | 18 |
-| P2 | 59 | 2 | 11 | 46 |
+| P0 | 34 | 26 | 8 | 0 |
+| P1 | 88 | 39 | 31 | 18 |
+| P2 | 59 | 3 | 12 | 44 |
 | Platform requirements (no priority) | 80 | 41 | 22 | 17 |
-| **All** | 261 | 106 | 74 | 81 |
+| **All** | 261 | 109 | 73 | 79 |
 
 ## Accounts and onboarding
 
@@ -50,9 +50,9 @@ Nothing here has been run against a live Supabase project: the app works fully i
 
 | ID | Priority | Feature | Status | Notes |
 | --- | --- | --- | --- | --- |
-| GAR-01 | P0 | Starter garment | Partial | Eleven procedural garments built from pattern measurements: arc-length UVs, edge-conforming necklines and armholes, drape folds, GPU-baked AO. Every style downloads as a garment template GLB (named parts, print-layout UVs, print areas drawn on); a shape reshaped from it in Blender, Clo3D or Marvelous Designer loads back in place of the built-in one, with prints, shading, motion and renders following it. No validated, calibrated GLBs ship with the app (marked uncalibrated in the UI). |
+| GAR-01 | P0 | Starter garment | Partial | Eleven procedural garments built from pattern measurements: arc-length UVs, edge-conforming necklines and armholes, drape folds, GPU-baked AO. Every style downloads as a garment template GLB (named parts, print-layout UVs, print areas drawn on); a shape reshaped from it in Blender, Clo3D or Marvelous Designer loads back in place of the built-in one, with prints, shading, motion and renders following it. Any other garment GLB loads as a shell (Basic mode): stood upright and turned to face front, sized by girth to the chosen size, its sleeves' pose matched, and every point given the pattern's print coordinates from the nearest point of the pressed pattern, so print areas, cross-seam artwork, Place mode, motion and photoreal work on it whatever its own UVs (or none). Cloth past the pattern (a hood on a tee, a layer over the body) has no zone print but wears the colourway's fabric print, takes design areas and can be picked and dragged on; the file's credit (title, author, licence, source) shows with it. Print files still come from the pattern. No validated, calibrated GLBs ship with the app (marked uncalibrated in the UI). |
 | GAR-02 | P1 | Garment types | Partial | Crew tee, oversized tee, cropped tee, long-sleeve tee, piqué polo, tank, pullover hoodie, crewneck sweatshirt, V-neck jersey, basketball jersey and Taekwondo dobok (top, pants and rank belt). No jacket, shorts or track wear yet. |
-| GAR-03 | P0 | Garment zones | Partial | Front, back, sleeves and, on the dobok, both legs; each garment lists only the zones it really has. Collar/neck zone not yet. |
+| GAR-03 | P0 | Garment zones | Done | Front, back, sleeves and, on the dobok, both legs; each garment lists only the zones it really has. Beyond them, up to 24 design areas per design, each a print area of its own size placed anywhere on the 3D garment (neck, hood, side panel, across a seam), moved, resized and turned there, designed in 2D like a zone, checked and exported with its placement in words. |
 | GAR-04 | P1 | Construction variants | Partial | Per model: fit, sleeve length and cuff, neckline (crew, V, scoop, polo, hood, dobok), rib or slit hems, hood, kangaroo pocket, placket, drawcords. Not mixable per project. |
 | GAR-05 | P0 | Per-zone color | Done | Per-garment colour parts (body, sleeves, collar, stitching, pants, belt with rank colours), live in 2D and 3D. |
 | GAR-06 | P1 | Fabric presets | Partial | Fabric presets per garment with GSM and their own surface (jersey, piqué, fleece, mesh, rib, diamond weave). All-over fabric prints: gradient, 8 patterns, image tiles and dye effects (spiral and crumple tie-dye, acid wash, heather, dip-dye, marble). |
@@ -60,7 +60,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | GAR-08 | P1 | Tag customization | Not started |  |
 | GAR-09 | P1 | Colorway manager | Partial | Create from presets or custom, rename, recolour, delete, compare. No reorder or duplicate. |
 | GAR-10 | P2 | Material library (new) | Not started |  |
-| GAR-11 | P2 | Custom garment intake | Not started |  |
+| GAR-11 | P2 | Custom garment intake | Partial | A brand's own garment GLB loads over a style as a shell for the look; its pattern, sizes and print areas stay the style's. The 3D model library is the app's `3d_models` folder: every GLB in it (and two levels of subfolders) is listed by file name as soon as it is added, grouped by subfolder or by the garment its name says, with its credit, and wearable from the Garment panel or as a new project. Each model shows front and back 2D views drawn from the model itself (saved beside it as Name.front.png and Name.back.png, or the designer's own flats). No intake of new patterns or zones. |
 | GAR-12 | P1 | Garment compatibility warnings | Done | Preflight blocks print methods a zone does not support. |
 
 ## 2D editor (Wovexa Studio)
@@ -68,20 +68,20 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | ID | Priority | Feature | Status | Notes |
 | --- | --- | --- | --- | --- |
 | ED2-01 | P0 | Zoomable artboard | Done | Pan, fit, zoom to selection, zoom steps, rulers in mm/in, print-area outline. |
-| ED2-02 | P0 | Zone artboards | Done | Four zone artboards; switching keeps per-zone layers and moves the 3D camera. |
+| ED2-02 | P0 | Zone artboards | Done | Four zone artboards plus any design areas; switching (tabs, Page Up/Down) keeps per-artboard layers and moves the 3D camera. |
 | ED2-03 | P0 | Upload and place | Done | PNG, JPEG, WebP and sanitized SVG, checked by file signature, size and pixel count. |
 | ED2-04 | P0 | Transform objects | Done | Move, resize, rotate, flip, align, nudge, duplicate; numeric fields in mm or in. |
 | ED2-05 | P0 | Layer stack | Done | Select, reorder, lock, hide, rename, opacity, duplicate, multi-select, groups. |
 | ED2-06 | P0 | Core text | Done | Text layers with font, weight, italic, spacing, leading, alignment, fill, outline. |
 | ED2-07 | P1 | Advanced typography | Done | Arc and wave warps, outlines, shadows, 61 catalogue fonts incl. Khmer and Chinese, uploaded fonts with licence confirmation, auto-fit boxes. Shaping is the browser’s; no shaping review step. |
 | ED2-08 | P0 | Align tools | Done | Align to print area or selection, distribute, snapping to artboard, centre lines and layer edges. |
-| ED2-09 | P1 | Vector drawing | Partial | Rectangle, ellipse, triangle, star, polygon, heart, line, plus a library of 19 vector graphics (badges, sport, symbols, nature) with solid, gradient or pattern fills and outlines. No path editing or boolean operations. |
+| ED2-09 | P1 | Vector drawing | Partial | Rectangle, ellipse, triangle, star, polygon, heart, line, plus a library of 19 vector graphics (badges, sport, symbols, nature) with solid, gradient or pattern fills and outlines. A pen (P) draws shapes of your own: corners and dragged-out curves, closed into a shape that prints and exports as vector. No node editing after drawing, no boolean operations. |
 | ED2-10 | P1 | Image adjustments | Partial | Brightness, contrast, saturation, hue, greyscale, invert, threshold (non-destructive), background removal, and crop shapes (circle, rounded, hexagon, shield, star, heart). No free crop or sharpen. |
 | ED2-11 | P1 | Pattern tool | Done | Image repeat: grid, half-drop, brick, mirror; tile size, gap, angle, offset; clipped to the layer box; DPI checked per tile. |
 | ED2-12 | P1 | Reusable components | Partial | Brand kit logos, user templates, graphics library and standard placements (left chest, centre chest, full front, below collar, upper back, leg and sleeve positions). No reusable component library. |
 | ED2-13 | P1 | Guides and constraints | Partial | Safe-margin checks and centre snapping. No draggable guides or seam clearance. |
 | ED2-14 | P0 | Undo/redo | Done | Semantic command history with merged drags and slider gestures. |
-| ED2-15 | P1 | Shortcuts / commands | Partial | Shortcuts, right-click/long-press/keyboard context menu, labelled undo. No command palette or remappable keys. |
+| ED2-15 | P1 | Shortcuts / commands | Partial | Shortcuts (copy, cut and paste layers between zones and design areas, Tab through layers, rotate with comma and period, pen, artboard switching), a "Keys and gestures" reference (?), right-click/long-press/keyboard context menu, labelled undo. No command palette or remappable keys. |
 | ED2-16 | P1 | Color sampling | Done | Screen eyedropper (EyeDropper API, Chromium), brand swatches, hex entry, image palette extraction. |
 | ED2-17 | P2 | Bulk replacement (new) | Not started |  |
 | ED2-18 | P2 | Dynamic data text (new) | Not started |  |
@@ -103,7 +103,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | ED3-11 | P1 | Position aids | Done | Print-area outlines and selection box on the garment; never in renders. |
 | ED3-12 | P1 | 2D/3D split view | Partial | Split view; the 2D editor follows 3D drags live. No draggable divider. |
 | ED3-13 | P1 | Animation presets | Partial | Motion presets: turntable, walk (an invisible walker: body bob and turn, sleeves and uniform legs swing from shoulder and hip), wind in gusts (pinned at the shoulders), hanger sway from the neck on a wooden hanger, float, and a knit reveal, with speed; all play in video, frame-exact. Procedural, not baked cloth simulation; no retail fold state. |
-| ED3-14 | P2 | Cross-seam artwork | Not started |  |
+| ED3-14 | P2 | Cross-seam artwork | Done | Text, images and shapes projected straight onto the 3D garment, like a texture painter's decal: wrap any zone layer across seams, then drag it over the shoulder or round a side seam in Place mode (or click the garment to place it), resize and turn it like other layers, all undoable. Back faces and cloth hidden behind nearer cloth are skipped; the print fades where the cloth turns edge-on. Painted on the pressed garment so it folds with the drape, and split at each seam in the cut-and-sew panels with real bleed. Preflight says it needs sublimation or cut-and-sew. |
 | ED3-15 | P2 | Side-by-side comparison (new) | Partial | Colourway comparison and batch renders use one camera. No live side-by-side 3D. |
 | ED3-16 | P0 | Capability fallback | Done | No-WebGL and context-loss fallbacks keep 2D editing and print export working. |
 
@@ -121,7 +121,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | PRT-08 | P1 | Print placement presets | Partial | Built-in templates for left chest, centre chest and back placements; no anchor presets per garment. |
 | PRT-09 | P1 | Method-dependent artwork rule sets | Partial | Minimum text height per method; no admin rule sets. |
 | PRT-10 | P1 | Warnings vs hard blockers | Partial | Errors vs warnings; exports allowed with a clear notice. No production profiles or overrides. |
-| PRT-11 | P1 | Proof sheet | Done | Tech pack page with placement drawings, dimensions, colourway, content hash and sign-off; prints to PDF. |
+| PRT-11 | P1 | Proof sheet | Done | Tech pack page with placement drawings, dimensions, colourway, content hash and sign-off; prints to PDF. Design areas appear with their artwork, method and placement in words, in the tech pack, client proof and decoration schedule. |
 | PRT-12 | P2 | Vendor printer profiles (new) | Not started |  |
 
 ## Assets
@@ -170,11 +170,11 @@ Nothing here has been run against a live Supabase project: the app works fully i
 
 | ID | Priority | Feature | Status | Notes |
 | --- | --- | --- | --- | --- |
-| MED-01 | P0 | Four-angle images | Done | Front, back, sides and ¾ (plus saved views) as PNG, JPEG or WebP. |
+| MED-01 | P0 | Four-angle images | Done | Front, back, sides and ¾ (plus saved views) as PNG, JPEG, WebP, AVIF (where the browser encodes it), TIFF or PDF. |
 | MED-02 | P1 | Scene presets | Partial | Studio, shop white, daylight, dark studio, golden hour, neon, flat, each with a tone curve. No podium or ghost-mannequin scenes. |
 | MED-03 | P1 | Camera controls | Done | Lens (field of view), saved views, orbit bounds, auto framing for tall frames. |
 | MED-04 | P1 | Background options | Done | Transparent, colour, gradient and uploaded photo backdrops, in the view and in every render. |
-| MED-05 | P1 | Still render settings | Done | 1:1, 4:5, 9:16, 16:9 at three sizes; the frame is outlined on the live view; quality for JPEG/WebP; GPU-limit checks. Real time or Photoreal (GPU path tracing, three-gpu-pathtracer): Draft, Studio and Final quality, depth of field, grain removal, progress and cancel. |
+| MED-05 | P1 | Still render settings | Done | 1:1, 4:5, 9:16, 16:9 at seven qualities (Low 720, Social 1080, High 1600, then 2K, 4K, 5K and 6K on the long side); the frame is outlined on the live view; quality for the lossy formats; GPU-limit checks. Real time or Photoreal (GPU path tracing, three-gpu-pathtracer): Draft, Studio and Final quality, depth of field, grain removal, progress and cancel. |
 | MED-06 | P1 | Turntable clip | Done | Turntable and motion video (walk, wind, hanger, float, knit): length, turn, size, frame rate, start view, backdrop; motion plays on the video clock, frame-accurate. |
 | MED-07 | P1 | Scene template saving | Partial | Saved looks (lighting, backdrop, lens) reusable across projects on this device; not shared with a workspace yet. |
 | MED-08 | P2 | Keyframe timeline | Not started |  |
@@ -189,14 +189,14 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | --- | --- | --- | --- | --- |
 | EXP-01 | P0 | Immediate screen image | Done | Snapshot button saves the current view at up to twice the stage size. |
 | EXP-02 | P0 | Export preset | Done | Quick front/back 4:5 export and social aspect presets in Wovexa Render. |
-| EXP-03 | P1 | High-resolution image output | Partial | Real-time renders in one offscreen pass up to tested GPU limits (6144 px). Photoreal renders in overlapping tiles, so GPU memory stays bounded at any size. No remote fallback. |
-| EXP-04 | P1 | Isolated print artwork | Done | Transparent PNG per zone at true physical size and chosen DPI; finish simulation excluded. |
-| EXP-05 | P1 | Production ZIP | Done | One production ZIP: print files with dpi written in, screen films, team files, placement drawings, product images, client proof PDF, tech sheet, cut-and-sew panels, 3D model, colour CSV and a manifest with SHA-256 for every file. |
+| EXP-03 | P1 | High-resolution image output | Done | Up to 6K (6144 px on the long side). Real-time renders in one offscreen pass up to the GPU's limit and past it in tiles of one camera, joined seamlessly. Photoreal renders in overlapping tiles, so GPU memory stays bounded; it stops at the device's largest render size. No remote fallback. |
+| EXP-04 | P1 | Isolated print artwork | Done | Transparent PNG per zone and design area at true physical size and chosen DPI; finish simulation excluded. The same prints as SVG at true size (1 unit = 1 mm): text stays live text, shapes and graphics are paths, gradients stay gradients, photos and raster effects are placed images, for screen-print films, vinyl and embroidery. |
+| EXP-05 | P1 | Production ZIP | Done | One production ZIP: print files (zones and design areas, optionally also as SVG) with dpi written in, screen films, team files, placement drawings, product images, client proof PDF, tech sheet, cut-and-sew panels, 3D model, colour CSV and a manifest with SHA-256 for every file. |
 | EXP-06 | P1 | Tech pack PDF | Done | Two-page client proof PDF (product per colourway with colour values, then placements with sizes and methods) and a self-contained HTML tech sheet in the package. |
 | EXP-07 | P1 | Export history | Partial | Export history per project in the export panel (what, when, which design version, files, size, outdated flag). The Exports page itself is still a placeholder. |
 | EXP-08 | P1 | Naming templates | Done | File-name templates with tokens (project, zone, colourway, size, method, size in mm, dpi, design version, date, name, number), Unicode-safe. |
 | EXP-09 | P2 | Commercial video | Partial | MP4 (H.264) or WebM in the browser via WebCodecs, frame-accurate. No server pipeline. |
-| EXP-10 | P2 | Professional color outputs | Partial | Screen-print colour separations (one film per ink, white underbase for dark garments, registration marks) and approximate CMYK in the colour CSV. No ICC-managed PDF/X or TIFF. |
+| EXP-10 | P2 | Professional color outputs | Partial | Screen-print colour separations (one film per ink, white underbase for dark garments, registration marks), vector SVG print files, TIFF renders (300 dpi, with transparency) and approximate CMYK in the colour CSV. No ICC-managed PDF/X or CMYK TIFF. |
 | EXP-11 | P2 | One-click client media kit (new) | Partial | Package includes product images per colourway, proof PDF and a 3D model (GLB); USDZ for AR Quick Look on its own. No social crops, carousel or QR viewer yet. |
 | EXP-12 | P2 | Export API (new) | Not started |  |
 
@@ -250,7 +250,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | COL-02 | P1 | Share links | Not started |  |
 | COL-03 | P1 | Review mode | Not started |  |
 | COL-04 | P1 | Approval states | Partial | Draft, approved and changed-since-approval with approver and version. No review or changes-requested states. |
-| COL-05 | P1 | Version comparison | Partial | Structured diff of layers, text, garment and colourways between versions; no visual overlay. |
+| COL-05 | P1 | Version comparison | Partial | Structured diff of layers, text, garment, colourways and design areas (added, moved on the garment, resized, turned) between versions; no visual overlay. |
 | COL-06 | P1 | Activity log | Not started |  |
 | COL-07 | P2 | Live presence | Not started |  |
 | COL-08 | P2 | Real-time coediting | Not started |  |
@@ -263,7 +263,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | --- | --- | --- | --- | --- |
 | SPT-01 | P2 | Team kit templates | Partial | Team tee, V-neck jersey with name and number, and Dojang uniform templates; no kit system. |
 | SPT-02 | P2 | Team roster import | Partial | Paste a roster (tab, comma or semicolon; header detected or columns inferred): name, number, size and any extra column. Preview count and size totals; no per-row validation UI. |
-| SPT-03 | P2 | Dynamic name/number placement | Partial | {name}, {number} or any {column} in text layers; each person keeps the designed letter height and natural proportions, shrinking to fit the box. No manual per-person overrides. |
+| SPT-03 | P2 | Dynamic name/number placement | Partial | {name}, {number} or any {column} in text layers, in zones or design areas (a name on the hood gets its own file per person); each person keeps the designed letter height and natural proportions, shrinking to fit the box. No manual per-person overrides. |
 | SPT-04 | P2 | Sponsor placement grid | Not started |  |
 | SPT-05 | P2 | Uniform consistency rule | Not started |  |
 | SPT-06 | P2 | Production matrix | Partial | Per person: a folder of print files; roster.csv lists files per row and sizes.csv totals sizes. Not split by colourway or method. |
@@ -274,9 +274,9 @@ Nothing here has been run against a live Supabase project: the app works fully i
 
 | ID | Priority | Feature | Status | Notes |
 | --- | --- | --- | --- | --- |
-| DSK-01 | – | keyboard-first professional workflow with semantic tool shortcuts, Space-to-pan only wh… | Partial | Tool shortcuts, Space-to-pan outside fields, Escape, undo/redo, zoom and arrange keys. No command search. |
+| DSK-01 | – | keyboard-first professional workflow with semantic tool shortcuts, Space-to-pan only wh… | Partial | Tool shortcuts, Space-to-pan outside fields, Escape, undo/redo, zoom and arrange keys, copy/cut/paste of layers, Tab through layers, keyboard rotation, the pen, and a Keys and gestures reference (?). No command search. |
 | DSK-02 | – | resizable/dockable sidebars, split-view divider, remembered panel widths and focus mode | Partial | Split view. Panels are fixed width; no resizing, docking or focus mode. |
-| DSK-03 | – | right-click context menu, hover hints, precision numeric edit, drag/drop files and mult… | Done | Context menu, hover hints, numeric fields, drag-and-drop and paste of images, multi-select. |
+| DSK-03 | – | right-click context menu, hover hints, precision numeric edit, drag/drop files and mult… | Done | Context menu, hover hints, numeric fields, drag-and-drop and paste of images (pasted text becomes a text layer), copy and paste of layers, multi-select. |
 | DSK-04 | – | fixed, discoverable primary export | Done | Export button, project name, save state, zone tabs, zoom and preflight badge are always visible. |
 | DSK-05 | – | handle ultrawide aspect ratios without stretching controls | Done | Bounded panel widths; stages fill the rest. |
 | DSK-06 | – | support keyboard-only equivalent for all important tools | Done | Keyboard equivalents for 2D and 3D, including a keyboard context menu and 3D orbit/placement. |

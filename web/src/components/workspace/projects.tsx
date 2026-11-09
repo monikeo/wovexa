@@ -3,8 +3,11 @@ import { Archive, ArchiveRestore, Copy, MoreHorizontal, Pencil, Plus, Trash2 } f
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { GARMENT_LIST } from '@/domain/garments';
+import { GARMENT_LIST, getGarment } from '@/domain/garments';
+import { groupLibrary, MAX_SHELL_TRIANGLES } from '@/domain/model-library';
 import { GarmentGlyph } from '@/components/studio/GarmentGlyph';
+import { ModelThumb } from '@/components/studio/ModelThumb';
+import { useModelLibrary } from '@/lib/model-library';
 import {
   approvalState,
   archiveProject,
@@ -238,10 +241,71 @@ export function NewProjectButton({ className = 'btn btn-primary' }: { className?
   );
 }
 
-/** Start a blank design on any garment: the flats come from the same pattern data as the 3D model. */
+/**
+ * Start a blank design on any garment: the flats come from the same pattern data as the 3D model.
+ * Below the styles, every model in the app's 3D model library (its `3d_models` folder), named
+ * after its file: a new design wears it from the start.
+ */
 export function QuickStart() {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
+  const library = useModelLibrary();
+  const start = async (key: string, run: () => Promise<{ id: string }>) => {
+    setBusy(key);
+    try {
+      const meta = await run();
+      router.push(`/studio/${meta.id}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'The project could not be created.', 'error');
+      setBusy(null);
+    }
+  };
+  const usable = (library ?? []).filter((m) => m.triangles <= MAX_SHELL_TRIANGLES);
+  return (
+    <div className="space-y-4">
+      <StyleStarts busy={busy} start={start} />
+      {usable.length ? (
+        <section className="space-y-3" aria-label="Start from a 3D model">
+          <h3 className="text-sm font-semibold">From the 3D model library</h3>
+          {groupLibrary(usable).map((group) => (
+            <div key={group.category} className="space-y-1.5">
+              <h4 className="text-xs font-medium text-fg-2">
+                {group.category} <span className="num text-fg-3">{group.models.length}</span>
+              </h4>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {group.models.map((m) => {
+                  const style = getGarment(m.styleId);
+                  return (
+                    <button
+                      key={m.file}
+                      disabled={busy !== null}
+                      className="group flex items-center gap-3 rounded-xl border border-line bg-panel p-2.5 text-left transition-colors hover:border-line-strong disabled:opacity-60"
+                      onClick={() =>
+                        void start(m.file, () =>
+                          createProject(`Untitled ${m.name}`.slice(0, 120), 0, style.id, { kind: 'shell', library: m.file, name: m.name, modelId: style.id, sizeCode: style.defaultSize, ...(m.credit ? { credit: m.credit } : {}) }),
+                        )
+                      }
+                    >
+                      <span className="grid h-14 w-14 flex-none place-items-center rounded-lg bg-[var(--surface-hover)] text-fg-2 group-hover:text-fg">
+                        <ModelThumb model={m} className="h-12 w-12" />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-semibold">{m.name}</span>
+                        <span className="mt-0.5 block truncate text-xs text-fg-2">{m.credit ? `${style.shortName} model` : `${style.shortName} model, no licence in the file`}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function StyleStarts({ busy, start }: { busy: string | null; start: (key: string, run: () => Promise<{ id: string }>) => Promise<void> }) {
   return (
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
       {GARMENT_LIST.map((m) => (
@@ -249,16 +313,7 @@ export function QuickStart() {
           key={m.id}
           disabled={busy !== null}
           className="group flex flex-col items-start gap-2 rounded-xl border border-line bg-panel p-3 text-left transition-colors hover:border-line-strong disabled:opacity-60"
-          onClick={async () => {
-            setBusy(m.id);
-            try {
-              const meta = await createProject(`Untitled ${m.shortName.toLowerCase()}`, 0, m.id);
-              router.push(`/studio/${meta.id}`);
-            } catch (e) {
-              toast(e instanceof Error ? e.message : 'The project could not be created.', 'error');
-              setBusy(null);
-            }
-          }}
+          onClick={() => void start(m.id, () => createProject(`Untitled ${m.shortName.toLowerCase()}`, 0, m.id))}
         >
           <span className="grid aspect-[4/3] w-full place-items-center rounded-lg bg-[var(--surface-hover)] text-fg-2 group-hover:text-fg">
             <GarmentGlyph model={m} className="h-16 w-16" />

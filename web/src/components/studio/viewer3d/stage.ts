@@ -3,7 +3,8 @@
  * panel, export). Free of three.js imports, so panels can use it without pulling the 3D engine
  * into their bundle; the viewer fills in `viewerApi` while it is mounted.
  */
-import type { CameraBookmark, ZoneId } from '@/domain/schema';
+import type { CameraBookmark, ProjectorSpec, ZoneId } from '@/domain/schema';
+import type { ProjectionMesh } from './projection';
 
 export type ViewPreset = 'front' | 'back' | 'left' | 'right' | 'three_quarter' | 'top' | 'bottom';
 
@@ -106,6 +107,10 @@ export const viewerApi: {
   exportModel?: (format: 'glb' | 'usdz') => Promise<Blob>;
   /** This style as a garment template GLB for Blender, Clo3D or Marvelous Designer (see garment-glb.ts). */
   exportTemplate?: () => Promise<Blob>;
+  /** Where a new design area goes: the cloth at the middle of the view, upright as seen. Null when the view misses the garment. */
+  areaAnchor?: () => ProjectorSpec | null;
+  /** The cloth at rest that design areas lie on, as the 3D view shows it (a fitted shell is its own). */
+  restCloth?: () => readonly ProjectionMesh[];
 } = {};
 
 export function shotKey(shot: ShotSpec) {

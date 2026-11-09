@@ -6,9 +6,11 @@
  * Each part has a change key, so only parts whose content changed are repainted and re-uploaded.
  */
 import { partColor, type GarmentModel, type PartId } from '@/domain/garments';
-import type { Colorway, DesignDocument, LayerTransform, Surface, ZoneId } from '@/domain/schema';
+import { isAreaId, type ArtboardId, type Colorway, type DesignDocument, type LayerTransform, type Surface, type ZoneId } from '@/domain/schema';
 import { drawZone, drawZoneSurface, paintFabric } from '@/lib/render/zone-renderer';
 import { partSizeMm, type EdgePoint, type GarmentGeometry } from './garment-geometry';
+import { areasKey, drawAreaOutlines, drawAreas, drawAreaSurfaces, drawProjectionOutline, drawProjections, projectionKey, sceneRest, type ProjectionEdit, type ProjectionScene } from './projected-paint';
+import type { RestShape } from './rest-shape';
 import { zoneOrigin } from './uv-mapping';
 
 export { partSizeMm };
@@ -32,14 +34,20 @@ export function setGpuMaxTexture(size: number) {
 type Overrides = Record<string, Partial<LayerTransform>> | undefined;
 
 export interface LiveState {
-  zoneId: ZoneId | null;
+  zoneId: ArtboardId | null;
   overrides: Overrides;
+  /** A projected layer or design area being dragged, resized or turned on the garment. */
+  projection?: ProjectionEdit | null;
 }
 
 /** On-garment position aids (spec ED3-11). Never drawn into renders or exports. */
 export interface Guides {
   zones: boolean;
-  selection: { zoneId: ZoneId; ids: string[] } | null;
+  selection: { zoneId: ArtboardId; ids: string[] } | null;
+  /** The selected projected layer, outlined where it lies on the cloth. */
+  projection?: string | null;
+  /** The zone or design area being designed on: a design area's outline is drawn solid. */
+  active?: ArtboardId | null;
   accent: string;
 }
 
@@ -47,6 +55,11 @@ export interface PaintContext {
   doc: DesignDocument;
   model: GarmentModel;
   geo: GarmentGeometry;
+  /**
+   * The garment pressed flat, matching `geo`'s mesh detail, that projected layers land on. Omit
+   * when `geo` was itself built without drape (as the cut-and-sew export builds it).
+   */
+  rest?: RestShape;
   colorway: Colorway;
   quality: Quality;
   live?: LiveState;
@@ -199,6 +212,9 @@ export function drawPart(canvas: HTMLCanvasElement, part: PartId, c: PaintContex
   const anchor = { x: (part === 'torso' ? 0.75 : 0.5) * W, y: 0 };
   // The torso wraps around the body, so dye effects must join where its texture meets itself.
   let complete = paintFabric(ctx, base, surfaceOf(colorway, part), W, H, ppm, anchor, part === 'torso' ? W : undefined);
+  // Artwork across seams is printed into the fabric before it is sewn: under trims, stitching and zone prints.
+  const projected = projectionScene(c);
+  complete = drawProjections(ctx, part, projected, ppm) && complete;
 
   const sewn = !c.production;
   if (part === 'torso') {
@@ -245,7 +261,19 @@ export function drawPart(canvas: HTMLCanvasElement, part: PartId, c: PaintContex
       }) && complete;
     drawGuides(ctx, c, zoneId, o, ppm);
   }
+  // Design areas go on last, like transfers pressed onto the finished garment.
+  complete = drawAreas(ctx, part, projected, ppm, { live: c.live, simulateFinish: sewn && (c.simulateFinish ?? true) }) && complete;
+  if (c.guides) {
+    const g = c.guides;
+    drawAreaOutlines(ctx, part, projected, ppm, { accent: g.accent, all: g.zones, active: g.active ?? null, selected: g.selection && isAreaId(g.selection.zoneId) ? g.selection.ids : undefined, live: c.live });
+  }
+  if (c.guides?.projection) drawProjectionOutline(ctx, part, projected, c.guides.projection, ppm, c.guides.accent);
   return complete;
+}
+
+/** Projected layers paint onto the garment at rest, into the displayed garment's texture layout. */
+function projectionScene(c: PaintContext): ProjectionScene {
+  return { doc: c.doc, rest: sceneRest(c.geo, c.rest), geo: c.geo, live: c.live?.projection };
 }
 
 /**
@@ -275,6 +303,7 @@ export function drawPartSurface(canvas: HTMLCanvasElement, part: PartId, c: Pain
         method: zone.printMethod,
       }) && complete;
   }
+  complete = drawAreaSurfaces(ctx, part, projectionScene(c), ppm, { live }) && complete;
   return complete;
 }
 
@@ -296,8 +325,13 @@ function idOf(o: object | undefined | null) {
  */
 export function partKey(part: PartId, c: PaintContext, generation: number) {
   const zones = zonesOnPart(c.model, part);
-  const live = c.live?.zoneId && zones.includes(c.live.zoneId) ? idOf(c.live.overrides) : 0;
+  const onPart = zones as ArtboardId[];
+  const live = c.live?.zoneId && onPart.includes(c.live.zoneId) ? idOf(c.live.overrides) : 0;
   const g = c.guides;
-  const guideKey = g ? `${g.zones ? 1 : 0}${g.selection && zones.includes(g.selection.zoneId) ? g.selection.ids.join(',') : ''}` : '-';
-  return [part, zones.map((z) => idOf(c.doc.zones[z])).join('.'), live, idOf(c.colorway), c.quality, guideKey, idOf(c.geo), generation].join('|');
+  const guideKey = g ? `${g.zones ? 1 : 0}${g.selection && onPart.includes(g.selection.zoneId) ? g.selection.ids.join(',') : ''}` : '-';
+  const scene = projectionScene(c);
+  const projected = projectionKey(scene, part, g?.projection);
+  const areaGuides = g ? `${g.zones ? 1 : 0}${g.active ?? ''}${g.selection && isAreaId(g.selection.zoneId) ? g.selection.ids.join(',') : ''}` : '-';
+  const areas = areasKey(scene, part, c.live, areaGuides);
+  return [part, zones.map((z) => idOf(c.doc.zones[z])).join('.'), live, projected, areas, idOf(c.colorway), c.quality, guideKey, idOf(c.geo), generation].join('|');
 }

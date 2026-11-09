@@ -10,11 +10,14 @@ import { ArrowLeft, BadgeCheck, Plus, Printer, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
+import { areaSpec, describeAreaPlacement, designAreas } from '@/domain/areas';
 import * as cmd from '@/domain/commands';
 import { newId } from '@/domain/factory';
 import { getGarment, getSize, partColor, PRINT_METHOD_LABELS, zoneSpecOrFirst } from '@/domain/garments';
 import { effectiveDpi, runPreflight, summarize } from '@/domain/preflight';
-import { migrateDesignDocument, type BomItem, type DesignDocument, type ZoneId } from '@/domain/schema';
+import { migrateDesignDocument, type BomItem, type DesignArea, type DesignDocument, type ZoneId } from '@/domain/schema';
+import { prepareDocument } from '@/lib/export/package';
+import { renderZoneArtwork } from '@/lib/render/zone-renderer';
 import { WovexaLockup } from '@/components/brand/Logo';
 import { approvalState, getVersion, type StoredVersion } from '@/lib/local-db';
 import { renderZoneSketch } from '@/lib/thumbnail';
@@ -36,6 +39,27 @@ function Sketch({ doc, zoneId }: { doc: DesignDocument; zoneId: ZoneId }) {
     };
   }, [doc, zoneId]);
   return <div ref={ref} className="aspect-square w-full rounded-lg border border-line bg-white" />;
+}
+
+/** A design area's artwork at its true proportions, for the placement section. */
+function AreaArtwork({ doc, area }: { doc: DesignDocument; area: DesignArea }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let cancelled = false;
+    // Loads every design area's images and fonts (the zones' are not needed here).
+    prepareDocument(doc, []).then(() => {
+      if (cancelled || !ref.current) return;
+      const { canvas } = renderZoneArtwork(area, area.widthMm, area.heightMm, 72);
+      canvas.className = 'h-full w-full object-contain';
+      canvas.setAttribute('role', 'img');
+      canvas.setAttribute('aria-label', `${area.name} artwork`);
+      ref.current.replaceChildren(canvas);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [doc, area]);
+  return <div ref={ref} className="flex aspect-square w-full items-center justify-center rounded-lg border border-dashed border-line bg-white p-2" />;
 }
 
 const fmt = (n: number) => (Math.round(n * 10) / 10).toFixed(1);
@@ -75,6 +99,7 @@ function TechPackBody({ doc, editable, header, projectId }: { doc: DesignDocumen
   const colorway = doc.colorways.find((c) => c.id === doc.activeColorwayId) ?? doc.colorways[0];
   const { errors, warnings } = summarize(runPreflight(doc));
   const zones = model.zoneOrder.filter((z) => doc.zones[z].orderedLayerIds.length > 0);
+  const areas = designAreas(doc).filter((a) => a.orderedLayerIds.length > 0);
   const sketchZones: ZoneId[] = zones.length ? zones : ['front'];
   const p = doc.production;
   const approval = header.version?.approval;
@@ -206,7 +231,16 @@ function TechPackBody({ doc, editable, header, projectId }: { doc: DesignDocumen
               <figcaption className="mt-1.5 text-xs text-fg-2">{zoneSpecOrFirst(model, z).label}. Dashed line: print area.</figcaption>
             </figure>
           ))}
+          {areas.map((a) => (
+            <figure key={a.id}>
+              <AreaArtwork doc={doc} area={a} />
+              <figcaption className="mt-1.5 text-xs text-fg-2">
+                <span className="font-medium text-fg">{a.name}</span>, {PRINT_METHOD_LABELS[a.printMethod]}: {describeAreaPlacement(a)}.
+              </figcaption>
+            </figure>
+          ))}
         </div>
+        {areas.length ? <p className="mt-2 text-xs text-fg-2">Design areas are placed on the garment in 3D; measure their centres on the finished garment, from the hem and the centre line.</p> : null}
       </section>
 
       <section className="mt-10" aria-labelledby="schedule">
@@ -228,21 +262,19 @@ function TechPackBody({ doc, editable, header, projectId }: { doc: DesignDocumen
               </tr>
             </thead>
             <tbody>
-              {zones.length === 0 ? (
+              {zones.length + areas.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-4 text-fg-2">
                     No artwork placed yet.
                   </td>
                 </tr>
               ) : (
-                zones.flatMap((z) => {
-                  const zone = doc.zones[z];
-                  const spec = zoneSpecOrFirst(model, z);
+                [...zones.map((z) => ({ key: z as string, zone: doc.zones[z], spec: zoneSpecOrFirst(model, z) })), ...areas.map((a) => ({ key: a.id as string, zone: a, spec: areaSpec(a) }))].flatMap(({ key, zone, spec }) => {
                   return zone.orderedLayerIds.map((id) => {
                     const l = zone.layers[id];
                     const dpi = effectiveDpi(l);
                     return (
-                      <tr key={id} className={`border-b border-line ${l.visible ? '' : 'text-fg-3'}`}>
+                      <tr key={`${key}:${id}`} className={`border-b border-line ${l.visible ? '' : 'text-fg-3'}`}>
                         <td className="py-2 pr-3">{spec.label}</td>
                         <td className="py-2 pr-3">{PRINT_METHOD_LABELS[zone.printMethod]}</td>
                         <td className="py-2 pr-3">

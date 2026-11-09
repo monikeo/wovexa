@@ -3,7 +3,8 @@
  * layer that contains a {name}, {number} or other {column} placeholder, giving one set of print
  * files per person, plus a size breakdown for production.
  */
-import type { DesignDocument, ZoneId } from '@/domain/schema';
+import { allStacks, designAreas } from '@/domain/areas';
+import type { DesignArea, DesignDocument, ZoneId } from '@/domain/schema';
 
 export interface Roster {
   fields: string[];
@@ -89,10 +90,10 @@ export function parseRoster(text: string): Roster {
   return { fields, rows };
 }
 
-/** Placeholder names used by the design's text layers, lower case, in order of first use. */
+/** Placeholder names used by the design's text layers (zones and design areas), lower case, in order of first use. */
 export function designPlaceholders(doc: DesignDocument): string[] {
   const out: string[] = [];
-  for (const zone of Object.values(doc.zones)) {
+  for (const zone of allStacks(doc)) {
     for (const id of zone.orderedLayerIds) {
       const c = zone.layers[id]?.content;
       if (c?.kind !== 'text') continue;
@@ -112,14 +113,19 @@ export function personalisedZones(doc: DesignDocument): ZoneId[] {
   );
 }
 
+/** Design areas whose artwork changes per person (a name on the hood, a number on the sleeve). */
+export function personalisedAreas(doc: DesignDocument): DesignArea[] {
+  return designAreas(doc).filter((a) => a.visible && Object.values(a.layers).some((l) => l.content.kind === 'text' && new RegExp(PLACEHOLDER.source, 'i').test(l.content.value)));
+}
+
 export function fillPlaceholders(text: string, row: Record<string, string>) {
   return text.replace(PLACEHOLDER, (match, key: string) => row[key.toLowerCase()] ?? match);
 }
 
-/** A copy of the design with every placeholder filled from one roster row. */
+/** A copy of the design with every placeholder filled from one roster row, in zones and design areas. */
 export function personalise(doc: DesignDocument, row: Record<string, string>): DesignDocument {
   const next = structuredClone(doc);
-  for (const zone of Object.values(next.zones)) {
+  for (const zone of allStacks(next)) {
     for (const layer of Object.values(zone.layers)) {
       if (layer.content.kind === 'text') layer.content.value = fillPlaceholders(layer.content.value, row);
     }

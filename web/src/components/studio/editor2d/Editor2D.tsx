@@ -6,20 +6,24 @@
  * World units are millimetres from the top-left of the active print zone.
  */
 import { ActiveSelection, Canvas as FabricCanvas, FabricImage, Group, Point, type FabricObject, type TPointerEventInfo } from 'fabric';
-import { Focus, Maximize, Minus, Plus } from 'lucide-react';
+import { Focus, Maximize, Minus, PenTool, Plus } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { expandToGroups, unionBounds } from '@/domain/arrange';
 import { EditorContextMenu } from './ContextMenu';
 import { updateTransforms } from '@/domain/commands';
-import { getGarment, getSize } from '@/domain/garments';
+import { getGarment, getSize, partColor } from '@/domain/garments';
 import { rotatedBounds, type Rect } from '@/domain/geometry';
-import type { ArtworkLayer, LayerTransform, ZoneDesign, ZoneId } from '@/domain/schema';
+import { artboardOf } from '@/domain/areas';
+import type { ArtboardId, ArtworkLayer, LayerStack, LayerTransform } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
 import { usePreference } from '@/lib/preferences';
 import { ensureFonts, imageNeedsBitmap, imageSource, renderLayerBitmap } from '@/lib/render/zone-renderer';
 import { useActiveColorway, useActiveZoneSpec, useLive, useStudio } from '@/stores/studio-store';
 import { drawRuler, RULER_SIZE } from './rulers';
 import { drawSketch, sketchForZone } from './flat-sketch';
+import { PenOverlay } from './PenOverlay';
+import { penShape } from '@/domain/pen';
+import { addDrawnShape } from '../actions';
 
 /**
  * A layer's Fabric object. Its width and height are the layer box; the bitmap may carry extra
@@ -82,7 +86,7 @@ function transformOf(obj: FabricObject): LayerTransform {
 }
 
 /** Document order split into display items: single layers, or contiguous group blocks. */
-function displayItems(zone: ZoneDesign) {
+function displayItems(zone: LayerStack) {
   const items: { key: string; ids: string[] }[] = [];
   const seen = new Map<string, number>();
   for (const id of zone.orderedLayerIds) {
@@ -114,7 +118,7 @@ export function Editor2D() {
   const fabricRef = useRef<FabricCanvas | null>(null);
   const objectsRef = useRef(new Map<string, LayerObject>());
   const groupsRef = useRef(new Map<string, GroupObject>());
-  const zoneRef = useRef<ZoneId>('front');
+  const zoneRef = useRef<ArtboardId>('front');
   const syncingSelection = useRef(false);
   const snapLines = useRef<{ x?: number; y?: number }>({});
   const pointerRef = useRef<{ x: number; y: number } | null>(null);
@@ -129,6 +133,14 @@ export function Editor2D() {
     setMenu(null);
     if (restoreFocus) hostRef.current?.focus();
   }, []);
+  // The pen: draw a shape of your own over the artboard (P, the toolbar, or the Add menu).
+  const [penOn, setPenOn] = useState(false);
+  const getFabric = useCallback(() => fabricRef.current, []);
+  useEffect(() => {
+    const toggle = (e: Event) => setPenOn((on) => ((e as CustomEvent).detail === 'on' ? true : !on));
+    window.addEventListener('wovexa:pen', toggle);
+    return () => window.removeEventListener('wovexa:pen', toggle);
+  }, []);
 
   const doc = useStudio((s) => s.document);
   const zoneId = useStudio((s) => s.activeZoneId);
@@ -136,7 +148,7 @@ export function Editor2D() {
   const zoneSpec = useActiveZoneSpec();
   const colorway = useActiveColorway();
   const units = usePreference('units');
-  const zone = doc?.zones[zoneId];
+  const zone = doc ? artboardOf(doc, zoneId) : undefined;
 
   // Latest values for event handlers registered once; refreshed after every render.
   const latest = useRef({ zoneSpec, colorway, doc, zoneId, units, selected });
@@ -158,7 +170,7 @@ export function Editor2D() {
       if (!canvas) return;
       if (live.source === '3d' && live.zoneId === zoneRef.current) {
         following = true;
-        const zone = latest.current.doc?.zones[zoneRef.current];
+        const zone = latest.current.doc ? artboardOf(latest.current.doc, zoneRef.current) : undefined;
         for (const [id, patch] of Object.entries(live.overrides)) {
           const obj = objectsRef.current.get(id);
           const layer = zone?.layers[id];
@@ -199,7 +211,7 @@ export function Editor2D() {
 
   const zoomToSelection = useCallback(() => {
     const { doc: d, zoneId: z, selected: ids } = latest.current;
-    const zn = d?.zones[z];
+    const zn = d ? artboardOf(d, z) : undefined;
     if (!zn || !ids.length) return;
     const rects = ids.map((id) => zn.layers[id]).filter(Boolean).map((l) => rotatedBounds(l.transform));
     if (!rects.length) return;
@@ -208,7 +220,7 @@ export function Editor2D() {
   }, [zoomToRect]);
 
   /** Make the canvas selection match the given layer ids (whole groups only). */
-  const restoreSelection = useCallback((canvas: FabricCanvas, zn: ZoneDesign, ids: string[]) => {
+  const restoreSelection = useCallback((canvas: FabricCanvas, zn: LayerStack, ids: string[]) => {
     canvas.discardActiveObject();
     const targets: FabricObject[] = [];
     for (const item of displayItems(zn)) {
@@ -261,12 +273,24 @@ export function Editor2D() {
       if (ctx !== canvas.getContext()) return;
       const { zoneSpec: spec, colorway: cw, doc: d } = latest.current;
       if (!spec || !cw || !d) return;
-      const model = getGarment(d.garment.modelId);
-      const sketch = sketchForZone(model, spec, getSize(model, d.garment.sizeCode).scale);
       const v = canvas.viewportTransform;
       ctx.save();
       ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
-      drawSketch(ctx, sketch, cw, v[0] * (window.devicePixelRatio || 1));
+      if (spec.areaId) {
+        // A design area sits on the 3D garment, not on the flat: plain fabric round its print area.
+        const m = Math.max(20, 0.15 * Math.max(spec.printableWidthMm, spec.printableHeightMm));
+        ctx.fillStyle = partColor(cw, 'body');
+        ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+        ctx.lineWidth = 1 / v[0];
+        ctx.beginPath();
+        ctx.roundRect(-m, -m, spec.printableWidthMm + 2 * m, spec.printableHeightMm + 2 * m, m * 0.4);
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        const model = getGarment(d.garment.modelId);
+        const sketch = sketchForZone(model, spec, getSize(model, d.garment.sizeCode).scale);
+        drawSketch(ctx, sketch, cw, v[0] * (window.devicePixelRatio || 1));
+      }
       ctx.restore();
     });
 
@@ -318,7 +342,7 @@ export function Editor2D() {
       const { units: u, doc: d, zoneId: z, selected: ids } = latest.current;
       const v = canvas.viewportTransform;
       const active = canvas.getActiveObjects().flatMap(leaves);
-      const zn = d?.zones[z];
+      const zn = d ? artboardOf(d, z) : undefined;
       const rects = active.length
         ? active.map((o) => rotatedBounds(transformOf(o)))
         : zn
@@ -352,7 +376,7 @@ export function Editor2D() {
       const target = e.target;
       snapLines.current = {};
       const { zoneSpec: spec, doc: d } = latest.current;
-      const zn = d?.zones[zoneRef.current];
+      const zn = d ? artboardOf(d, zoneRef.current) : undefined;
       if (spec && zn && !(e.e as MouseEvent).altKey) {
         const moving = leaves(target);
         const movingIds = new Set(moving.map((o) => o.layerId));
@@ -407,6 +431,9 @@ export function Editor2D() {
     const onSelection = () => {
       if (syncingSelection.current) return;
       const ids = canvas.getActiveObjects().flatMap(leaves).map((o) => o.layerId);
+      // Nothing selected here and nothing to clear: leave a selection made elsewhere (artwork
+      // across seams, picked in 3D or the layer list) alone.
+      if (!ids.length && !useStudio.getState().selectedLayerIds.length) return;
       useStudio.getState().select(ids);
     };
     canvas.on('selection:created', onSelection);
@@ -420,7 +447,7 @@ export function Editor2D() {
 
     // ---- Context menu: right-click (spec DSK-03), long-press (MOB-05), Shift+F10 / Menu key ----
     const openMenuAt = (x: number, y: number, target?: FabricObject) => {
-      const zn = latest.current.doc?.zones[zoneRef.current];
+      const zn = latest.current.doc ? artboardOf(latest.current.doc, zoneRef.current) : undefined;
       if (zn) {
         const ids = target ? leaves(target).map((o) => o.layerId) : [];
         const current = useStudio.getState().selectedLayerIds;
@@ -436,7 +463,7 @@ export function Editor2D() {
     const onMenuKey = () => {
       const r = host.getBoundingClientRect();
       const { doc: d, selected: ids } = latest.current;
-      const zn = d?.zones[zoneRef.current];
+      const zn = d ? artboardOf(d, zoneRef.current) : undefined;
       const rects = zn ? ids.map((id) => zn.layers[id]).filter(Boolean).map((l) => rotatedBounds(l.transform)) : [];
       if (!rects.length) return setMenu({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
       const b = unionBounds(rects);
@@ -928,7 +955,22 @@ export function Editor2D() {
         <button className="icon-btn" onClick={fit} aria-label="Fit print area to screen" title="Fit (Shift+1)">
           <Maximize size={15} />
         </button>
+        <button className="icon-btn" onClick={() => setPenOn((on) => !on)} aria-pressed={penOn} aria-label="Pen: draw a shape" title="Pen: draw your own shape (P)">
+          <PenTool size={15} />
+        </button>
       </div>
+      {penOn && zone ? (
+        <PenOverlay
+          key={zoneId}
+          fabric={getFabric}
+          onFinish={(points) => {
+            const shape = penShape(points);
+            if (shape) addDrawnShape(shape.path, shape.box);
+            setPenOn(false);
+          }}
+          onCancel={() => setPenOn(false)}
+        />
+      ) : null}
     </div>
   );
 }

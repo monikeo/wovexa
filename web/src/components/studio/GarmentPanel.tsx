@@ -3,7 +3,7 @@
  * Garment panel (spec GAR-02/05/06/07/09, VAR-01/02): style, size, fabric, colourways with a
  * colour for every part the garment has, and all-over fabric prints per part.
  */
-import { Check, Dices, Download, GitCompare, ImagePlus, Loader2, Plus, Trash2, Upload } from 'lucide-react';
+import { Check, Dices, Download, GitCompare, ImagePlus, Loader2, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { useBrandKit } from './brand-context';
 import * as cmd from '@/domain/commands';
@@ -11,10 +11,14 @@ import { createColorway } from '@/domain/factory';
 import { BELT_COLOURS, colorwayPresetsFor, GARMENT_LIST, getGarment, hasZone, partColor, PRINT_METHOD_LABELS, sizeChart, sizeLabel, type GarmentModel } from '@/domain/garments';
 import { FABRIC_EFFECTS, PATTERNS, ZONE_IDS, type Colorway, type DesignDocument, type FabricEffect, type PrintMethod, type Surface } from '@/domain/schema';
 import { downloadBlob } from '@/lib/download';
+import { groupLibrary, MAX_SHELL_TRIANGLES, type LibraryModel } from '@/domain/model-library';
+import { useModelLibrary } from '@/lib/model-library';
+import { saveViewsToLibrary, unsavedViews } from '@/lib/model-views';
+import { ModelThumb } from './ModelThumb';
 import { viewerApi } from './viewer3d/stage';
 import { AssetError, importImageFile, loadAssetImage } from '@/lib/assets';
 import { ColorField, toast } from '@/components/ui/primitives';
-import { useActiveColorway, useActiveZoneSpec, useStudio } from '@/stores/studio-store';
+import { useActiveArtboard, useActiveColorway, useActiveZoneSpec, useStudio } from '@/stores/studio-store';
 import { GarmentGlyph } from './GarmentGlyph';
 import { RangeField } from './inspector-controls';
 
@@ -83,6 +87,97 @@ function StylePicker({ current }: { current: GarmentModel }) {
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * The app's 3D model library (its `3d_models` folder): ready-made garment models, named after
+ * their files and listed as soon as a file is added. Picking one switches to the style it is and
+ * wears the model; print areas and design areas wrap onto it.
+ */
+function ModelLibraryPicker({ current, doc }: { current: GarmentModel; doc: DesignDocument }) {
+  const dispatch = useStudio((s) => s.dispatch);
+  const [rescan, setRescan] = useState(0);
+  const models = useModelLibrary(rescan);
+  const [side, setSide] = useState<'front' | 'back'>('front');
+  const [saving, setSaving] = useState<string | null>(null);
+  // While developing: save the drawn 2D views into the folder, beside their models, to ship with the app.
+  const saveViews = async () => {
+    if (!models) return;
+    try {
+      const saved = await saveViewsToLibrary(models, (done, total) => setSaving(`Saving 2D views, ${done} of ${total}…`));
+      toast(saved ? `Saved 2D views for ${saved} ${saved === 1 ? 'model' : 'models'} into the 3d_models folder.` : 'No 2D views could be saved.', saved ? 'success' : 'error');
+    } finally {
+      setSaving(null);
+      setRescan((n) => n + 1);
+    }
+  };
+  const worn = doc.garment.shape?.kind === 'shell' ? doc.garment.shape.library : undefined;
+  if (models && !models.length) return null;
+  const wear = (m: LibraryModel) => {
+    const style = getGarment(m.styleId);
+    if (worn === m.file && current.id === style.id) return;
+    const stranded = ZONE_IDS.filter((z) => !hasZone(style, z) && doc.zones[z].orderedLayerIds.length);
+    const sizeCode = style.sizes.some((s) => s.code === doc.garment.sizeCode) ? doc.garment.sizeCode : style.defaultSize;
+    dispatch(cmd.wearLibraryModel(style, { kind: 'shell', library: m.file, name: m.name, modelId: style.id, sizeCode, ...(m.credit ? { credit: m.credit } : {}) }));
+    if (stranded.length) toast(`Artwork on the ${stranded.map((z) => z.replace('_', ' ')).join(' and ')} is kept, but a ${style.shortName.toLowerCase()} has no such zone, so it won't print.`);
+  };
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <p className="label">3D models</p>
+        <div className="flex rounded-lg border border-line p-0.5 text-[11px]" role="group" aria-label="Show each model from">
+          {(['front', 'back'] as const).map((s) => (
+            <button key={s} className={`rounded-md px-2 py-0.5 capitalize ${side === s ? 'bg-inverse text-fg-inverse' : 'text-fg-2 hover:text-fg'}`} aria-pressed={side === s} onClick={() => setSide(s)}>
+              {s}
+            </button>
+          ))}
+        </div>
+      </div>
+      {models === null ? (
+        <p className="text-[11px] text-fg-3">Loading the model library…</p>
+      ) : (
+        groupLibrary(models).map((group) => (
+          <section key={group.category} className="space-y-1" aria-label={group.category}>
+            <h4 className="text-[11px] font-medium text-fg-2">
+              {group.category} <span className="num text-fg-3">{group.models.length}</span>
+            </h4>
+            <div className="grid grid-cols-4 gap-1.5" role="radiogroup" aria-label={`${group.category}: 3D models from the library`}>
+              {group.models.map((m) => {
+                const style = getGarment(m.styleId);
+                const on = worn === m.file && current.id === style.id;
+                const heavy = m.triangles > MAX_SHELL_TRIANGLES;
+                const credit = m.credit ? ` By ${(m.credit.author ?? 'its author').replace(/\s*\(https?:[^)]*\)/g, '')}${m.credit.license ? `, ${m.credit.license.replace(/\s*\(https?:[^)]*\)/g, '')}` : ''}.` : ' No licence in the file.';
+                return (
+                  <button
+                    key={m.file}
+                    role="radio"
+                    aria-checked={on}
+                    disabled={heavy}
+                    title={
+                      heavy
+                        ? `${m.name}: ${m.triangles.toLocaleString('en')} triangles, over the ${MAX_SHELL_TRIANGLES.toLocaleString('en')} limit. Slim it (Blender Decimate), then it can be used.`
+                        : `${m.name}, worn as a ${style.shortName.toLowerCase()}.${credit}`
+                    }
+                    onClick={() => wear(m)}
+                    className="touch-hit group flex min-h-[86px] flex-col items-center justify-start gap-1 rounded-xl border border-line px-0.5 pb-1.5 pt-1.5 text-fg-2 transition-colors hover:border-line-strong hover:text-fg disabled:opacity-45 aria-checked:border-[var(--accent)] aria-checked:bg-selected aria-checked:text-fg"
+                  >
+                    <ModelThumb model={m} side={side} className="h-12 w-12 flex-none" />
+                    <span className="w-full truncate px-0.5 text-center text-[10.5px] font-medium leading-[1.15]">{m.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        ))
+      )}
+      <p className="text-[11px] text-fg-3">Drop a .glb into the 3d_models folder to add one; a subfolder becomes its category. A 2D view saved beside it (Name.front.png, Name.back.svg) is shown as its flat.</p>
+      {process.env.NODE_ENV === 'development' && models && unsavedViews(models).length ? (
+        <button className="btn btn-outline min-h-8 w-full text-xs" disabled={saving !== null} onClick={() => void saveViews()} title="Development only: write each model's drawn front and back views into the 3d_models folder, so they ship with the app">
+          {saving ?? `Save 2D views into the folder (${unsavedViews(models).length} ${unsavedViews(models).length === 1 ? 'model' : 'models'})`}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -250,15 +345,41 @@ function FabricPrint({ colorway, model }: { colorway: Colorway; model: GarmentMo
 
 const cm = (mm: number | undefined) => (mm === undefined ? '–' : (mm / 10).toFixed(mm % 10 ? 1 : 0));
 
+type ModelCredit = NonNullable<NonNullable<DesignDocument['garment']['shape']>['credit']>;
+
+/** Who made a 3D model and on what licence, as its file states (CC BY needs this shown). */
+function CreditLine({ credit }: { credit: ModelCredit }) {
+  // Sketchfab adds profile and licence URLs in brackets; the names read better alone.
+  const plain = (s: string) => s.replace(/\s*\(https?:[^)]*\)/g, '').trim();
+  const source = credit.source && /^https?:\/\//i.test(credit.source) ? credit.source : undefined;
+  return (
+    <p className="text-[11px] leading-snug text-fg-2">
+      {credit.title ? `“${plain(credit.title)}”` : 'Model'}
+      {credit.author ? ` by ${plain(credit.author)}` : ''}
+      {credit.license ? `, ${plain(credit.license)}` : ''}
+      {source ? (
+        <>
+          {'. '}
+          <a href={source} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
+            Source
+          </a>
+        </>
+      ) : null}
+    </p>
+  );
+}
+
 /**
- * The garment's 3D shape: built in, or one an artist made from this style's template in Blender,
- * Clo3D or Marvelous Designer. Prints, colours, lighting, motion and renders follow either.
+ * The garment's 3D model: built in; any garment GLB fitted over this style as a shell (print
+ * areas wrap onto it); or a shape an artist made from this style's template in Blender, Clo3D or
+ * Marvelous Designer (exact print layout). Prints, colours, lighting, motion and renders follow each.
  */
 function ShapePicker({ model, doc }: { model: GarmentModel; doc: DesignDocument }) {
   const dispatch = useStudio((s) => s.dispatch);
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState<'template' | 'shape' | null>(null);
   const shape = doc.garment.shape?.modelId === model.id ? doc.garment.shape : undefined;
+  const shell = shape?.kind === 'shell' ? shape : undefined;
 
   const downloadTemplate = async () => {
     if (!viewerApi.exportTemplate) {
@@ -279,10 +400,13 @@ function ShapePicker({ model, doc }: { model: GarmentModel; doc: DesignDocument 
   const load = async (file: File) => {
     setBusy('shape');
     try {
-      const { importGarmentShape } = await import('./viewer3d/garment-glb');
-      const next = await importGarmentShape(file, model, doc.garment.sizeCode);
+      const { importGarmentModel } = await import('./viewer3d/garment-shell');
+      const next = await importGarmentModel(file, model, doc.garment.sizeCode);
       dispatch(cmd.setGarmentShape(next));
-      toast(`Using your 3D shape “${next.name}”. Prints, colours and lighting follow it.`, 'success');
+      toast(
+        next.kind === 'shell' ? `Fitting “${next.name}” over the ${model.name.toLowerCase()}. Your print areas wrap onto it.` : `Using your 3D shape “${next.name}”. Prints, colours and lighting follow it.`,
+        'success',
+      );
     } catch (error) {
       toast(error instanceof Error ? error.message : 'That file couldn’t be used.', 'error');
     } finally {
@@ -294,8 +418,8 @@ function ShapePicker({ model, doc }: { model: GarmentModel; doc: DesignDocument 
     <div className="space-y-2 rounded-lg border border-line p-2.5">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-xs font-semibold">3D shape</p>
-          <p className="truncate text-[11px] text-fg-3">{shape ? `Your shape: ${shape.name}` : 'Built-in shape'}</p>
+          <p className="text-xs font-semibold">3D model</p>
+          <p className="truncate text-[11px] text-fg-3">{shape ? `${shape.library ? 'Library model' : shell ? 'Your model' : 'Your shape'}: ${shape.name}` : 'Built-in shape'}</p>
         </div>
         {shape ? (
           <button className="btn btn-ghost min-h-8 flex-none px-2 text-xs" onClick={() => dispatch(cmd.setGarmentShape(null))}>
@@ -303,13 +427,20 @@ function ShapePicker({ model, doc }: { model: GarmentModel; doc: DesignDocument 
           </button>
         ) : null}
       </div>
+      {shell?.credit ? <CreditLine credit={shell.credit} /> : null}
       <div className="grid grid-cols-2 gap-1.5">
-        <button className="btn btn-outline min-h-8 px-2 text-xs" disabled={busy !== null} onClick={() => void downloadTemplate()} title="This style as a GLB with named parts and print areas, for Blender, Clo3D or Marvelous Designer">
-          {busy === 'template' ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} Template
+        <button className="btn btn-outline min-h-8 px-2 text-xs" disabled={busy !== null} onClick={() => fileRef.current?.click()} title="Any garment GLB: WOVEXA fits it to this size and wraps your print areas onto it">
+          {busy === 'shape' ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {shape ? 'Replace' : 'Load GLB'}
         </button>
-        <button className="btn btn-outline min-h-8 px-2 text-xs" disabled={busy !== null} onClick={() => fileRef.current?.click()} title="Load a GLB made from this style’s template">
-          {busy === 'shape' ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {shape ? 'Replace' : 'Load shape'}
-        </button>
+        {shell ? (
+          <button className="btn btn-outline min-h-8 px-2 text-xs" onClick={() => dispatch(cmd.turnGarmentShell())} title="If the model shows its back as its front, turn it round">
+            <RotateCcw size={13} /> Turn round
+          </button>
+        ) : (
+          <button className="btn btn-outline min-h-8 px-2 text-xs" disabled={busy !== null} onClick={() => void downloadTemplate()} title="This style as a GLB with named parts and print areas, for Blender, Clo3D or Marvelous Designer">
+            {busy === 'template' ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} Template
+          </button>
+        )}
       </div>
       <input
         ref={fileRef}
@@ -324,7 +455,10 @@ function ShapePicker({ model, doc }: { model: GarmentModel; doc: DesignDocument 
         }}
       />
       <p className="text-[11px] text-fg-3">
-        Download this style’s template, reshape it in Blender, Clo3D or Marvelous Designer with the part names and UVs kept, then load it back for a more natural drape. Use models you own or have a licence for.
+        {shell
+          ? 'Your print areas wrap onto this model; print files still come from the style’s pattern. Cloth past the pattern, like a hood on a tee, shows plain fabric.'
+          : 'Load any garment GLB: WOVEXA fits it to this size and wraps your prints onto it. For an exact fit, reshape this style’s template in Blender, Clo3D or Marvelous Designer and load it back.'}{' '}
+        Use models you own or have a licence for.
       </p>
     </div>
   );
@@ -378,6 +512,8 @@ export function GarmentPanel() {
   const dispatch = useStudio((s) => s.dispatch);
   const colorway = useActiveColorway();
   const spec = useActiveZoneSpec();
+  const activeZoneId = useStudio((s) => s.activeZoneId);
+  const artboard = useActiveArtboard();
   const setPanel = useStudio((s) => s.setPanel);
   const kit = useBrandKit();
   if (!doc || !colorway) return null;
@@ -395,6 +531,7 @@ export function GarmentPanel() {
           </p>
         </div>
         <StylePicker current={model} />
+        <ModelLibraryPicker current={model} doc={doc} />
         <div className="grid grid-cols-2 gap-2">
           <label className="grid gap-1">
             <span className="label">Size</span>
@@ -499,7 +636,7 @@ export function GarmentPanel() {
 
       <section>
         <h2 className="panel-title">Print method, {spec.label.toLowerCase()}</h2>
-        <select className="field mt-2" value={doc.zones[spec.id].printMethod} onChange={(e) => dispatch(cmd.setPrintMethod(spec.id, e.target.value as PrintMethod))}>
+        <select className="field mt-2" value={artboard?.printMethod ?? doc.zones[spec.id].printMethod} onChange={(e) => dispatch(cmd.setPrintMethod(activeZoneId, e.target.value as PrintMethod))}>
           {(Object.keys(PRINT_METHOD_LABELS) as PrintMethod[]).map((m) => (
             <option key={m} value={m} disabled={!spec.methods.includes(m)}>
               {PRINT_METHOD_LABELS[m]}

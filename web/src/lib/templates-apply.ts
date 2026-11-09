@@ -1,4 +1,5 @@
 /** Turning templates into projects in the browser, where fonts can be measured. */
+import { allStacks } from '@/domain/areas';
 import { newId } from '@/domain/factory';
 import { migrateDesignDocument, type DesignDocument } from '@/domain/schema';
 import { documentFromSnapshot, instantiateTemplate, type TemplateDef } from '@/domain/templates';
@@ -6,11 +7,11 @@ import { createProjectFromDocument, type ProjectMeta, type StoredTemplate } from
 import { ensureFonts, textAspect } from './render/zone-renderer';
 import { renderThumbnail } from './thumbnail';
 
-/** Size every text box to its font's real proportions, keeping each box's width and centre. */
+/** Size every text box (in zones and design areas) to its font's real proportions, keeping each box's width and centre. */
 export async function fitTextBoxes(doc: DesignDocument): Promise<DesignDocument> {
-  await ensureFonts(Object.values(doc.zones));
+  await ensureFonts(allStacks(doc));
   const out = structuredClone(doc);
-  for (const zone of Object.values(out.zones)) {
+  for (const zone of allStacks(out)) {
     for (const layer of Object.values(zone.layers)) {
       if (layer.content.kind === 'text') layer.transform.heightMm = layer.transform.widthMm / textAspect(layer.content);
     }

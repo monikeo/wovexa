@@ -7,31 +7,41 @@
  */
 import { CameraControls, CameraControlsImpl, ContactShadows, Environment, Lightformer, PerformanceMonitor } from '@react-three/drei';
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
-import { Camera as CameraIcon, Clapperboard, Frame, Move, Rotate3d, RotateCw, SlidersHorizontal, Sparkles } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Camera as CameraIcon, Clapperboard, Frame, Loader2, Move, Rotate3d, RotateCw, SlidersHorizontal, Sparkles } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as THREE from 'three';
 import { unionBounds } from '@/domain/arrange';
-import { coalescing, updateTransforms } from '@/domain/commands';
+import { artboardOf, designAreas, NEW_AREA_MM } from '@/domain/areas';
+import { batch, coalescing, scaleArea, updateArea, updateProjectedLayer, updateTransforms, type Command } from '@/domain/commands';
 import { getGarment, getSize, partColor, zoneSpecOrFirst, type PartId } from '@/domain/garments';
 import { clamp, hitTestLayer, normalizeDeg, rotatedBounds, scaleRotateAbout } from '@/domain/geometry';
+import { projectionsAsZone } from '@/domain/projected';
 import { backdropCss, drapeAmount, motionOf, presetOf, sceneOf, toneOf, type MotionKind, type ToneId } from '@/domain/scene';
-import type { DesignDocument, LayerTransform, Scene, ZoneId } from '@/domain/schema';
+import { emptyProjections, isAreaId, type AreaId, type ArtboardId, type DesignArea, type DesignDocument, type LayerTransform, type ProjectedLayer, type ProjectedTransform, type ProjectorSpec, type Scene, type ZoneId } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
 import { getAsset } from '@/lib/local-db';
+import { fetchLibraryModel } from '@/lib/model-library';
 import { canvasToBlob, downloadBlob, slugify } from '@/lib/download';
 import { paintBackdrop } from '@/lib/render/backdrop';
-import { ensureFonts } from '@/lib/render/zone-renderer';
+import { ensureFonts, paintFabric } from '@/lib/render/zone-renderer';
 import { toast } from '@/components/ui/primitives';
 import { useDisplayColorway, useLive, useStudio } from '@/stores/studio-store';
 import { nudgeSelection, selectLayers } from '../actions';
+import { nudgeProjection, transformProjection } from '../projection-actions';
+import { activeBareArea, nudgeArea } from '../area-actions';
 import { ScenePanel } from './ScenePanel';
 import { BASE_FOV, frameFit, shotKey, shotLabel, VIEW_PRESETS, viewerApi, ZONE_VIEW, type RenderBackground, type ShotSpec, type ViewPreset } from './stage';
-import { buildGarment, createFabricNormalMap, FABRIC_LOOK, type GarmentGeometry, type TrimColor } from './garment-geometry';
+import { buildGarment, createFabricNormalMap, FABRIC_LOOK, type GarmentGeometry, type GarmentLayout, type TrimColor } from './garment-geometry';
 import { drawPart, drawPartSurface, partKey, partSizeMm, setGpuMaxTexture, type PaintContext, type Quality } from './garment-textures';
 import { bakeAmbientOcclusion, type AoTarget } from './ao-bake';
 import { cachedShape, exportGarmentTemplate, ShapeError, shapedGarment, type ParsedShape } from './garment-glb';
+import { shellGarment } from './garment-shell';
 import { applyMotion, MOTION_CACHE_KEY, motionDepthMaterial, motionState, motionUniforms, patchMotion, setLimbPivots } from './motion';
 import { disposeDecal, disposePhotoreal, fillCard, inkDecals, insetGeometry, liveTrace, pathTrace, photorealSupport, softStudioLights } from './photoreal';
+import { areaOutlineImage, effectiveArea, effectiveLayer, projectArea, projectLayer, renderAreaArtwork } from './projected-paint';
+import { dragProjector, footprintNormal, insideDecal, planeOffset, pointOnTriangle, steadyProjector, surfaceAtUv, tangentUp, toDecal, type DecalFrame, type ProjectedPart, type ProjectionMesh, type Projector, type SurfacePoint } from './projection';
+import { paintMesh, restCloth, restFromGeometry, restShape, SHELL_TRIM_PREFIX, type RestShape } from './rest-shape';
+import { overlayGeometry, overlayTexture } from './area-overlays';
 import { uvInZone, uvToZone, type GarmentPart } from './uv-mapping';
 
 export { VIEW_PRESETS, viewerApi, type ViewPreset } from './stage';
@@ -172,10 +182,10 @@ function writeFlag(key: string, value: boolean) {
   } catch {}
 }
 
-/** Unlocked selected layers of the active zone with their committed transforms. */
+/** Unlocked selected layers of the active zone or design area with their committed transforms. */
 function movableSelection() {
   const s = useStudio.getState();
-  const zone = s.document?.zones[s.activeZoneId];
+  const zone = s.document ? artboardOf(s.document, s.activeZoneId) : undefined;
   if (!zone) return null;
   const ids = s.selectedLayerIds.filter((id) => zone.layers[id] && !zone.layers[id].locked);
   if (!ids.length) return null;
@@ -190,6 +200,38 @@ function transformSelection(scale: number, rotateDeg: number, label: string) {
   useStudio.getState().dispatch(coalescing(updateTransforms(sel.zoneId, next, label), `3d:${label}:${sel.ids.join()}`));
   return true;
 }
+
+/** The selected projected (cross-seam) layer, when it is unlocked. */
+function movableProjection(): ProjectedLayer | null {
+  const s = useStudio.getState();
+  const layer = s.selectedProjectionId ? s.document?.projections.layers[s.selectedProjectionId] : undefined;
+  return layer && !layer.locked ? layer : null;
+}
+
+/** Grow or turn the active design area as a whole (when none of its layers is selected), as a mergeable undo step. */
+function transformArea(scale: number, rotateDeg: number, label: string) {
+  const area = activeBareArea();
+  if (!area || area.locked) return false;
+  const commands: Command[] = [];
+  if (scale !== 1) commands.push(scaleArea(area.id, scale, label));
+  if (rotateDeg) commands.push(updateArea(area.id, { rotationDeg: normalizeDeg(area.rotationDeg + rotateDeg) }, label));
+  if (!commands.length) return false;
+  useStudio.getState().dispatch(coalescing(commands.length === 1 ? commands[0] : batch(label, commands), `3d:${label}:${area.id}`));
+  return true;
+}
+
+/** Resize or turn whatever is selected for Place mode: a projected layer, the zone or area selection, else a bare design area. */
+function transformSelected(scale: number, rotateDeg: number, label: string) {
+  const projection = movableProjection();
+  if (projection) return transformProjection(projection.id, scale, rotateDeg, label);
+  return transformSelection(scale, rotateDeg, label) || transformArea(scale, rotateDeg, label);
+}
+
+const toSpec = (p: { point: readonly number[]; normal: readonly number[]; up: readonly number[] }): ProjectorSpec => ({
+  point: [p.point[0], p.point[1], p.point[2]],
+  normal: [p.normal[0], p.normal[1], p.normal[2]],
+  up: [p.up[0], p.up[1], p.up[2]],
+});
 
 // ---------------------------------------------------------------------------
 // Garment
@@ -209,6 +251,42 @@ interface Drag {
 
 const PART_COLOR: Record<PartId, 'body' | 'sleeves' | 'pants'> = { torso: 'body', sleeveLeft: 'sleeves', sleeveRight: 'sleeves', legLeft: 'pants', legRight: 'pants' };
 
+/** A texture u back in 0–1: a shell's triangles across a tube's wrap (side seam, underarm) reach just past 1. */
+const wrapU = (u: number) => u - Math.floor(u);
+
+/** What a raycast reports about the cloth it hit. */
+type SurfaceHit = { object: THREE.Object3D; faceIndex?: number | null; barycoord?: THREE.Vector3 | null; uv?: THREE.Vector2 };
+
+/**
+ * The cloth at rest under a hit on the displayed garment. The built-in garment and a fitted shell
+ * share their triangles with the rest shape (same triangle, same place in it); a template shape
+ * has its own mesh and finds the same spot of fabric through the shared texture layout.
+ */
+function surfaceOnRest(rest: RestShape, restMeshes: ProjectionMesh[], hit: SurfaceHit): SurfacePoint | null {
+  const i = rest.parts.findIndex((p) => p.id === hit.object.userData.part);
+  if (i < 0) return null;
+  if (restMeshes[i] === rest.parts[i].mesh) {
+    const s = hit.uv ? surfaceAtUv(restMeshes[i], wrapU(hit.uv.x), hit.uv.y) : null;
+    return s ? { ...s, mesh: i } : null;
+  }
+  if (hit.faceIndex == null || !hit.barycoord) return null;
+  return pointOnTriangle(restMeshes, i, hit.faceIndex, [hit.barycoord.x, hit.barycoord.y, hit.barycoord.z]);
+}
+
+/**
+ * The cloth under a hit on a fitted shell's plain piece (a hood, a belt). The shell is its own
+ * rest shape, so the hit is the point itself, in garment millimetres. Only the side facing the
+ * viewer counts: a print lies on the outside of the cloth.
+ */
+function surfaceOnTrim(hit: THREE.Intersection, camera: THREE.Camera): SurfacePoint | null {
+  if (!hit.face) return null;
+  const n = hit.face.normal;
+  const toViewer = camera.getWorldPosition(new THREE.Vector3()).sub(hit.point);
+  if (n.clone().transformDirection(hit.object.matrixWorld).dot(toViewer) <= 0) return null;
+  const local = hit.object.worldToLocal(hit.point.clone());
+  return { mesh: -1, triangle: hit.faceIndex ?? 0, bary: [1, 0, 0], point: [local.x, local.y, local.z], normal: [n.x, n.y, n.z], uv: [0, 0] };
+}
+
 const motionCacheKey = () => MOTION_CACHE_KEY;
 
 /** Bump strength for printed relief: a puff print's full height rises clearly off the knit. */
@@ -219,6 +297,140 @@ function FabricMaterial({ lite, look, ...props }: { lite: boolean; look: (typeof
   const normalScale = useMemo(() => new THREE.Vector2(look.normal, look.normal), [look.normal]);
   if (lite) return <meshStandardMaterial roughness={look.roughness} normalScale={normalScale} onBeforeCompile={patchMotion} customProgramCacheKey={motionCacheKey} {...props} />;
   return <meshPhysicalMaterial roughness={look.roughness} sheen={look.sheen} sheenRoughness={0.75} normalScale={normalScale} onBeforeCompile={patchMotion} customProgramCacheKey={motionCacheKey} {...props} />;
+}
+
+/** A fitted shell's plain pieces wear their fabric print from one tile this many pixels a side, standing for this many millimetres. */
+const TRIM_FABRIC_PX = 2048;
+const TRIM_FABRIC_MM = 600;
+
+/** Design area artwork drawn over plain pieces: this many pixels per millimetre (as the part textures, roughly). */
+const OVERLAY_PX_PER_MM = { low: 2, high: 5 } as const;
+
+/** Shows or hides each design area guide drawn over a plain piece: off for renders, like the painted guides. */
+const overlayGuideToggles = new Set<(visible: boolean) => void>();
+
+interface AreaGuide {
+  accent: string;
+  /** Every area's edge, or only the active one's. */
+  all: boolean;
+  active: string | null;
+  selected?: string[];
+}
+
+/**
+ * Design areas over a fitted shell's plain pieces (hood, belt, collar), which have no print
+ * texture: each piece under an area gets a thin overlay mesh with the area's artwork, and its guide.
+ */
+function AreaTrimOverlays({ doc, rest, geo, lite, quality, guide }: { doc: DesignDocument; rest: RestShape | undefined; geo: GarmentGeometry; lite: boolean; quality: Quality; guide: AreaGuide | null }) {
+  const projection = useLive((s) => s.projection);
+  const liveZone = useLive((s) => s.zoneId);
+  const overrides = useLive((s) => s.overrides);
+  if (!rest?.trims?.length || !doc.areas?.orderedIds.length) return null;
+  const scene = { doc, rest, geo, live: projection };
+  const ppm = quality === 'low' ? OVERLAY_PX_PER_MM.low : OVERLAY_PX_PER_MM.high;
+  const out: ReactNode[] = [];
+  for (const stored of designAreas(doc)) {
+    if (!stored.visible) continue;
+    const area = effectiveArea(stored, projection);
+    const p = projectArea(area, scene);
+    for (const [key, on] of p.trims) {
+      const trim = geo.trims.find((t) => t.key === key);
+      if (!trim) continue;
+      const active = guide?.active === area.id;
+      out.push(
+        <AreaOnTrim
+          key={`${area.id}:${key}`}
+          area={area}
+          trim={trim}
+          projected={on.projected}
+          frame={p.frame}
+          ppm={ppm}
+          overrides={liveZone === area.id ? overrides : undefined}
+          lite={lite}
+          guide={guide && (guide.all || active) ? { accent: guide.accent, active, selected: active ? guide.selected : undefined } : null}
+        />,
+      );
+    }
+  }
+  return <>{out}</>;
+}
+
+function AreaOnTrim({
+  area,
+  trim,
+  projected,
+  frame,
+  ppm,
+  overrides,
+  lite,
+  guide,
+}: {
+  area: DesignArea;
+  trim: GarmentGeometry['trims'][number];
+  projected: ProjectedPart;
+  frame: DecalFrame;
+  ppm: number;
+  overrides: Record<string, Partial<LayerTransform>> | undefined;
+  lite: boolean;
+  guide: { accent: string; active: boolean; selected?: string[] } | null;
+}) {
+  const anisotropy = useThree((s) => Math.min(8, s.gl.capabilities.getMaxAnisotropy()));
+  const guideMesh = useRef<THREE.Mesh>(null);
+  useEffect(() => {
+    const toggle = (visible: boolean) => {
+      if (guideMesh.current) guideMesh.current.visible = visible;
+    };
+    overlayGuideToggles.add(toggle);
+    return () => {
+      overlayGuideToggles.delete(toggle);
+    };
+  }, []);
+  // Counts the loads it waited for (images, fonts): each one draws the artwork again.
+  const [loads, setLoads] = useState(0);
+  const art = useMemo(() => (loads >= 0 ? renderAreaArtwork(area, ppm, { overrides, simulateFinish: true }) : null), [area, ppm, overrides, loads]);
+  // An image still loading: draw again once it is in.
+  useEffect(() => {
+    if (art) return;
+    let alive = true;
+    const ids = Object.values(area.layers).flatMap((l) => (l.content.kind === 'image' && !getLoadedImage(l.content.assetId) ? [l.content.assetId] : []));
+    Promise.all([...ids.map((id) => loadAssetImage(id).catch(() => null)), ensureFonts([area])]).then(() => {
+      if (alive) setLoads((n) => n + 1);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [art, area]);
+  const geometry = useMemo(() => overlayGeometry(trim.geometry, projected, frame), [trim.geometry, projected, frame]);
+  useEffect(() => () => geometry?.dispose(), [geometry]);
+  const texture = useMemo(() => (art ? overlayTexture(art, anisotropy) : null), [art, anisotropy]);
+  useEffect(() => () => texture?.dispose(), [texture]);
+  const accent = guide?.accent ?? null;
+  const active = !!guide?.active;
+  const selected = guide?.selected;
+  const guideTexture = useMemo(
+    () => (accent ? overlayTexture(areaOutlineImage(area, ppm, { accent, active, selected, live: { zoneId: area.id, overrides } }), anisotropy) : null),
+    [area, ppm, accent, active, selected, overrides, anisotropy],
+  );
+  useEffect(() => () => guideTexture?.dispose(), [guideTexture]);
+  if (!geometry) return null;
+  const look = FABRIC_LOOK[trim.surface === 'plastic' ? 'jersey' : trim.surface];
+  const vertexColors = !!geometry.getAttribute('color');
+  const noRaycast = () => null;
+  const overlay = { transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4, vertexColors };
+  return (
+    <>
+      {texture ? (
+        <mesh geometry={geometry} raycast={noRaycast} receiveShadow renderOrder={1}>
+          <FabricMaterial lite={lite} look={look} map={texture} {...overlay} />
+        </mesh>
+      ) : null}
+      {guideTexture ? (
+        <mesh ref={guideMesh} geometry={geometry} raycast={noRaycast} renderOrder={2}>
+          <FabricMaterial lite={lite} look={look} map={guideTexture} {...overlay} polygonOffsetUnits={-6} />
+        </mesh>
+      ) : null}
+    </>
+  );
 }
 
 /** Plays the scene's motion in the live view. Video frames set the same state from their own clock. */
@@ -348,11 +560,12 @@ function Hanger({ hpsMm, shoulderMm, neckMm, slope }: { hpsMm: number; shoulderM
   );
 }
 
-function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: GarmentGeometry; quality: Quality; mode: Mode; guides: boolean; hanger: boolean; onOwnZone: (zone: ZoneId) => void }) {
+function Garment({ geo, ownRest, quality, mode, guides, hanger, onOwnZone }: { geo: GarmentGeometry; ownRest: boolean; quality: Quality; mode: Mode; guides: boolean; hanger: boolean; onOwnZone: (zone: ArtboardId) => void }) {
   const doc = useStudio((s) => s.document)!;
   const colorway = useDisplayColorway()!;
   const activeZone = useStudio((s) => s.activeZoneId);
   const selected = useStudio((s) => s.selectedLayerIds);
+  const selectedProjection = useStudio((s) => s.selectedProjectionId);
   const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
   const invalidate = useThree((s) => s.invalidate);
@@ -362,13 +575,101 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
   const look = FABRIC_LOOK[fabricPreset.surface];
   const meshes = useRef(new Map<PartId, THREE.Mesh>());
   const liningMeshes = useRef(new Map<PartId, THREE.Mesh>());
+  const trimMeshes = useRef(new Map<string, THREE.Mesh>());
   const lastKeys = useRef(new Map<PartId, string>());
   const generation = useRef(0);
-  const dragRef = useRef<Drag | null>(null);
+  const dragRef = useRef<{ cancel: () => void } | null>(null);
   const [accent] = useState(() => cssVar('--accent', '#2b59ff'));
+
+  // Artwork across seams and design areas land on the garment pressed flat (built only once there
+  // is some), then fold with the cloth: each displayed triangle has its pressed twin at the same
+  // index. A fitted shell keeps its own folds, so it is its own rest shape: art lands on its cloth.
+  const hasProjections = doc.projections.orderedLayerIds.length > 0 || !!doc.areas?.orderedIds.length;
+  const detail = quality === 'low' ? 'low' : 'high';
+  const rest = useMemo(() => (hasProjections ? (ownRest ? restFromGeometry(geo) : restShape(model, size, detail)) : undefined), [hasProjections, ownRest, geo, model, size, detail]);
+  const restMeshes = useMemo(() => (rest ? rest.parts.map((r) => paintMesh(r, geo.parts.find((p) => p.id === r.id)?.geometry)) : []), [rest, geo]);
+  // All the cloth prints are dragged, settled and steadied on: the parts, then a shell's plain pieces.
+  const clothMeshes = useMemo(() => (rest ? restCloth(rest, restMeshes) : []), [rest, restMeshes]);
+
+  /** What a pointer can land a design area on: the parts, and a fitted shell's plain pieces (its hood). */
+  const pickTargets = () => [...meshes.current.values(), ...[...trimMeshes.current].flatMap(([key, m]) => (key.startsWith(SHELL_TRIM_PREFIX) ? [m] : []))];
+
+  // The cloth design areas lie on, built when there is none yet (before the first area).
+  const clothNow = useCallback(() => {
+    if (rest) return { r: rest, meshes: restMeshes, all: clothMeshes };
+    const r = ownRest ? restFromGeometry(geo) : restShape(model, size, detail);
+    const parts = r.parts.map((p) => paintMesh(p, geo.parts.find((q) => q.id === p.id)?.geometry));
+    return { r, meshes: parts, all: restCloth(r, parts) };
+  }, [rest, restMeshes, clothMeshes, ownRest, geo, model, size, detail]);
+  // A fitted shell's plain body and sleeve pieces (a hood) wear the fabric print too: the colour,
+  // dye, pattern, gradient or image at true scale. Their texture coordinates run 1 to 600 mm
+  // straight on from the front (see garment-shell.ts), so one tile of fabric repeats, its join
+  // moved off the centre line.
+  const [fabricLoads, setFabricLoads] = useState(0);
+  const trimFabric = useMemo(() => {
+    const out = new Map<'body' | 'sleeves', THREE.CanvasTexture>();
+    let pending = false;
+    if (!ownRest || fabricLoads < 0) return { out, pending };
+    for (const role of ['body', 'sleeves'] as const) {
+      const surface = colorway.surfaces?.[role];
+      if (!surface || !geo.trims.some((t) => t.key.startsWith(SHELL_TRIM_PREFIX) && t.color === role)) continue;
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = TRIM_FABRIC_PX;
+      const ok = paintFabric(canvas.getContext('2d')!, partColor(colorway, role), surface, TRIM_FABRIC_PX, TRIM_FABRIC_PX, TRIM_FABRIC_PX / TRIM_FABRIC_MM, { x: TRIM_FABRIC_PX / 2, y: 0 }, TRIM_FABRIC_PX);
+      pending ||= !ok;
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+      texture.offset.set(0.5, 0);
+      texture.anisotropy = Math.min(8, gl.capabilities.getMaxAnisotropy());
+      out.set(role, texture);
+    }
+    return { out, pending };
+  }, [ownRest, colorway, geo, gl, fabricLoads]);
+  useEffect(() => () => trimFabric.out.forEach((t) => t.dispose()), [trimFabric]);
+  // An image print still loading: paint again once it is in.
+  useEffect(() => {
+    if (!trimFabric.pending) return;
+    let alive = true;
+    const ids = (['body', 'sleeves'] as const).flatMap((r) => {
+      const s = colorway.surfaces?.[r];
+      return s?.kind === 'image' && !getLoadedImage(s.assetId) ? [s.assetId] : [];
+    });
+    Promise.all(ids.map((id) => loadAssetImage(id).catch(() => null))).then(() => alive && setFabricLoads((n) => n + 1));
+    return () => {
+      alive = false;
+    };
+  }, [trimFabric, colorway]);
+
+  // Where "Add area" puts a new design area: the cloth at the middle of the view, upright as seen.
+  const areaAnchor = useCallback((): ProjectorSpec | null => {
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+    const targets = [...meshes.current.values(), ...[...trimMeshes.current].flatMap(([key, m]) => (key.startsWith(SHELL_TRIM_PREFIX) ? [m] : []))];
+    const hit = raycaster.intersectObjects(targets, false)[0];
+    if (!hit) return null;
+    const { r, meshes: rMeshes, all } = clothNow();
+    const s = hit.object.userData.trim ? surfaceOnTrim(hit, camera) : surfaceOnRest(r, rMeshes, hit);
+    if (!s) return null;
+    const screenUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+    const normal = footprintNormal(all, s.point, s.normal, NEW_AREA_MM / 2);
+    return toSpec({ point: s.point, normal, up: tangentUp(normal, [screenUp.x, screenUp.y, screenUp.z]) });
+  }, [camera, clothNow]);
+  // Copies and arrow-key nudges slide over the same cloth (a fitted shell's own, when worn).
+  const clothShown = useCallback(() => clothNow().all, [clothNow]);
+  useEffect(() => {
+    viewerApi.areaAnchor = areaAnchor;
+    viewerApi.restCloth = clothShown;
+    return () => {
+      if (viewerApi.areaAnchor === areaAnchor) viewerApi.areaAnchor = undefined;
+      if (viewerApi.restCloth === clothShown) viewerApi.restCloth = undefined;
+    };
+  }, [areaAnchor, clothShown]);
 
   // One canvas and texture per textured part, made once per geometry; plus, on capable devices,
   // a print-surface map per part (ink height, roughness, metalness) for real relief and gloss.
+  // Each part's texture wraps round its tube (side seam, underarm), so it repeats across: a
+  // shell's triangles that straddle the wrap reach just past u = 1.
   const useSurface = quality !== 'low';
   const textures = useMemo(() => {
     const out = new Map<PartId, { canvas: HTMLCanvasElement; texture: THREE.CanvasTexture }>();
@@ -376,6 +677,7 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
       const canvas = document.createElement('canvas');
       const texture = new THREE.CanvasTexture(canvas);
       texture.colorSpace = THREE.SRGBColorSpace;
+      texture.wrapS = THREE.RepeatWrapping;
       texture.anisotropy = Math.min(8, gl.capabilities.getMaxAnisotropy());
       out.set(p.id, { canvas, texture });
     }
@@ -388,6 +690,7 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
       const canvas = document.createElement('canvas');
       const texture = new THREE.CanvasTexture(canvas);
       texture.colorSpace = THREE.NoColorSpace;
+      texture.wrapS = THREE.RepeatWrapping;
       texture.anisotropy = Math.min(8, gl.capabilities.getMaxAnisotropy());
       out.set(p.id, { canvas, texture });
     }
@@ -462,6 +765,8 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
         const lining = linings.get(p.id);
         if (lining) targets.push({ geometry: p.geometry, out: lining, inside: true, floor: 0.12 });
       }
+      // A shell's plain cloth (a hood, cloth past the pattern) is shaded the same way as its printed parts.
+      for (const t of geo.trims) if (t.geometry.getAttribute('color')) targets.push({ geometry: t.geometry, out: t.geometry, floor: 0.38 });
       const occluders = [...geo.parts.map((p) => p.geometry), ...geo.trims.map((t) => t.geometry)];
       try {
         if (bakeAmbientOcclusion(gl, occluders, targets, quality === 'low' ? 'low' : 'high')) invalidate();
@@ -480,7 +785,7 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
   useEffect(() => {
     const exportTemplate = () => {
       const zones = Object.fromEntries(Object.entries(doc.zones).map(([id, z]) => [id, { ...z, layers: {}, orderedLayerIds: [] }])) as unknown as DesignDocument['zones'];
-      const blank: DesignDocument = { ...doc, zones };
+      const blank: DesignDocument = { ...doc, zones, projections: emptyProjections() };
       const neutral = {
         ...colorway,
         surfaces: undefined,
@@ -515,15 +820,20 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
    */
   const draw = useCallback(
     (opts: { quality?: Quality; guides?: boolean } = {}) => {
+      for (const toggle of overlayGuideToggles) toggle(opts.guides !== false);
       const live = useLive.getState();
       const ctx: PaintContext = {
         doc,
         model,
         geo,
+        rest,
         colorway,
         quality: opts.quality ?? quality,
-        live: { zoneId: live.zoneId, overrides: live.overrides },
-        guides: opts.guides === false ? undefined : { zones: guides, selection: showSelection && selected.length ? { zoneId: activeZone, ids: selected } : null, accent },
+        live: { zoneId: live.zoneId, overrides: live.overrides, projection: live.projection },
+        guides:
+          opts.guides === false
+            ? undefined
+            : { zones: guides, selection: showSelection && selected.length ? { zoneId: activeZone, ids: selected } : null, projection: showSelection ? selectedProjection : null, active: showSelection ? activeZone : null, accent },
         // With a surface map, relief, gloss and foil are real lighting, not painted in.
         simulateFinish: !surfaces.size,
       };
@@ -556,7 +866,7 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
       if (changed) invalidate();
       return ok;
     },
-    [doc, colorway, model, geo, quality, textures, surfaces, look.roughness, invalidate, guides, showSelection, selected, activeZone, accent],
+    [doc, colorway, model, geo, rest, quality, textures, surfaces, look.roughness, invalidate, guides, showSelection, selected, selectedProjection, activeZone, accent],
   );
 
   useEffect(() => {
@@ -609,6 +919,15 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
           });
         }
       }
+      // A shell's plain cloth carries baked shading too; the path tracer finds that occlusion itself.
+      for (const mesh of trimMeshes.current.values()) {
+        const material = mesh.material as THREE.MeshStandardMaterial;
+        if (Array.isArray(mesh.material) || !material.vertexColors) continue;
+        material.vertexColors = false;
+        undo.push(() => {
+          material.vertexColors = true;
+        });
+      }
       return () => {
         for (const u of undo.reverse()) u();
       };
@@ -635,14 +954,14 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
     };
     const loadMissing = () => {
       const ids = new Set<string>();
-      for (const zone of Object.values(doc.zones)) {
+      for (const zone of [...Object.values(doc.zones), projectionsAsZone(doc), ...designAreas(doc)]) {
         for (const layer of Object.values(zone.layers)) if (layer.content.kind === 'image') ids.add(layer.content.assetId);
       }
       for (const surface of Object.values(colorway.surfaces ?? {})) if (surface?.kind === 'image') ids.add(surface.assetId);
       for (const id of ids) if (!getLoadedImage(id)) loadAssetImage(id).then(schedule, () => {});
     };
     schedule();
-    ensureFonts(Object.values(doc.zones)).then((loaded) => {
+    ensureFonts([...Object.values(doc.zones), projectionsAsZone(doc), ...designAreas(doc)]).then((loaded) => {
       if (!loaded) return;
       generation.current += 1;
       schedule();
@@ -656,7 +975,7 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
   }, [draw, doc, colorway]);
 
   const pickAt = (part: GarmentPart, uv: THREE.Vector2) => {
-    const hit = uvToZone(model, geo.layout, part, uv.x, uv.y);
+    const hit = uvToZone(model, geo.layout, part, wrapU(uv.x), uv.y);
     if (!hit) return null;
     const zone = useStudio.getState().document!.zones[hit.zoneId];
     return { ...hit, layerId: hitTestLayer(zone, hit.xMm, hit.yMm) };
@@ -677,11 +996,253 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
   /** Each garment mesh carries its part in userData, so one set of handlers serves them all. */
   const partOf = (e: ThreeEvent<PointerEvent | MouseEvent>) => e.object.userData.part as GarmentPart;
 
+  /** The pressed-flat cloth under a hit on the displayed (draped) garment: same triangle, same place in it. */
+  const surfaceUnder = (hit: SurfaceHit): SurfacePoint | null => (rest ? surfaceOnRest(rest, restMeshes, hit) : null);
+  /** The cloth under a hit on a part or on a fitted shell's plain piece. */
+  const surfaceOf = (hit: THREE.Intersection): SurfacePoint | null => (hit.object.userData.trim ? surfaceOnTrim(hit, camera) : surfaceUnder(hit));
+
+  /** The visible design area under a point of cloth that faces it, topmost first, with the point in the area's millimetres. */
+  const areaAt = (at: SurfacePoint): { area: DesignArea; x: number; y: number } | null => {
+    const d = useStudio.getState().document;
+    if (!d || !rest) return null;
+    const scene = { doc: d, rest, geo, live: useLive.getState().projection };
+    const areas = designAreas(d);
+    for (let k = areas.length - 1; k >= 0; k--) {
+      const area = areas[k];
+      if (!area.visible) continue;
+      const { frame } = projectArea(effectiveArea(area, scene.live), scene);
+      const facing = at.normal[0] * frame.normal[0] + at.normal[1] * frame.normal[1] + at.normal[2] * frame.normal[2];
+      if (facing <= 0 || !insideDecal(frame, at.point)) continue;
+      const q = toDecal(frame, at.point);
+      return { area, x: q.x, y: q.y };
+    }
+    return null;
+  };
+
+  /** Pick inside a design area: it becomes the artboard being designed on, then its topmost layer at the point (or none). */
+  const selectInArea = (hit: { area: DesignArea; x: number; y: number }, keepSelection: boolean): string | null => {
+    const s = useStudio.getState();
+    if (s.activeZoneId !== hit.area.id) {
+      onOwnZone(hit.area.id as AreaId);
+      s.setActiveZone(hit.area.id as AreaId);
+    }
+    const layerId = hitTestLayer(hit.area, hit.x, hit.y);
+    if (!layerId) {
+      useStudio.getState().select([]);
+      return null;
+    }
+    if (!(keepSelection && useStudio.getState().selectedLayerIds.includes(layerId))) selectLayers([layerId]);
+    return layerId;
+  };
+
+  /**
+   * Move a whole design area over the garment, its artwork with it: the grabbed point follows the
+   * pointer over any part and across seams. One undoable command on release; Escape cancels.
+   */
+  const startAreaMove = (pointerId: number, area: DesignArea, at: SurfacePoint) => {
+    dragRef.current?.cancel();
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    const targets = pickTargets();
+    let current: Projector = area.projector;
+    let last: ProjectorSpec | null = null;
+    const grab = planeOffset(area.projector, at.point);
+    setCursor(gl.domElement, 'grabbing');
+    const handle = { cancel: () => finish(false) };
+    dragRef.current = handle;
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId || dragRef.current !== handle) return;
+      const rect = gl.domElement.getBoundingClientRect();
+      ndc.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
+      raycaster.setFromCamera(ndc, camera);
+      const hit = raycaster.intersectObjects(targets, false)[0];
+      const s = hit ? surfaceOf(hit) : null;
+      if (!s) return; // off the garment: hold the last position
+      if (!last && Math.hypot(s.point[0] - at.point[0], s.point[1] - at.point[1], s.point[2] - at.point[2]) < 1.5) return;
+      current = steadyProjector(clothMeshes, dragProjector(clothMeshes, current, grab, s), Math.max(area.widthMm, area.heightMm));
+      last = toSpec(current);
+      useLive.getState().setProjection({ id: area.id, projector: last });
+    };
+    const finish = (commit: boolean) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancelled);
+      window.removeEventListener('keydown', key, true);
+      if (dragRef.current !== handle) return;
+      dragRef.current = null;
+      if (commit && last) useStudio.getState().dispatch(updateArea(area.id, { projector: last }, `Move ${area.name}`));
+      useLive.getState().clear();
+      setCursor(gl.domElement, '');
+    };
+    const up = (ev: PointerEvent) => ev.pointerId === pointerId && finish(true);
+    const cancelled = (ev: PointerEvent) => ev.pointerId === pointerId && finish(false);
+    const key = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      finish(false);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancelled);
+    window.addEventListener('keydown', key, true);
+  };
+
+  /** Drag layers inside a design area on the garment: their centre follows the pointer across the area. */
+  const startAreaLayerDrag = (pointerId: number, area: DesignArea, start: { x: number; y: number }, sel: NonNullable<ReturnType<typeof movableSelection>>) => {
+    dragRef.current?.cancel();
+    if (!rest) return;
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    const targets = pickTargets();
+    const scene = { doc: useStudio.getState().document!, rest, geo, live: null };
+    const { frame } = projectArea(area, scene);
+    const b = unionBounds(Object.values(sel.origin).map(rotatedBounds));
+    const c0 = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    let moved = false;
+    let last: Record<string, Partial<LayerTransform>> | null = null;
+    setCursor(gl.domElement, 'grabbing');
+    const handle = { cancel: () => finish(false) };
+    dragRef.current = handle;
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId || dragRef.current !== handle) return;
+      const rect = gl.domElement.getBoundingClientRect();
+      ndc.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
+      raycaster.setFromCamera(ndc, camera);
+      const hit = raycaster.intersectObjects(targets, false)[0];
+      const s = hit ? surfaceOf(hit) : null;
+      if (!s) return;
+      const p = toDecal(frame, s.point);
+      if (!moved && Math.hypot(p.x - start.x, p.y - start.y) < 1.5) return;
+      moved = true;
+      let x = c0.x + p.x - start.x;
+      let y = c0.y + p.y - start.y;
+      if (Math.abs(x - area.widthMm / 2) < 4) x = area.widthMm / 2;
+      x = clamp(x, 0, area.widthMm);
+      y = clamp(y, 0, area.heightMm);
+      const dx = x - c0.x;
+      const dy = y - c0.y;
+      last = Object.fromEntries(sel.ids.map((id) => [id, { centerXmm: sel.origin[id].centerXmm + dx, centerYmm: sel.origin[id].centerYmm + dy }]));
+      useLive.getState().setOverrides(area.id as AreaId, last, '3d');
+    };
+    const finish = (commit: boolean) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancelled);
+      window.removeEventListener('keydown', key, true);
+      if (dragRef.current !== handle) return;
+      dragRef.current = null;
+      if (commit && moved && last) useStudio.getState().dispatch(updateTransforms(area.id as AreaId, last, 'Move on garment'));
+      useLive.getState().clear();
+      setCursor(gl.domElement, '');
+    };
+    const up = (ev: PointerEvent) => ev.pointerId === pointerId && finish(true);
+    const cancelled = (ev: PointerEvent) => ev.pointerId === pointerId && finish(false);
+    const key = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      finish(false);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancelled);
+    window.addEventListener('keydown', key, true);
+  };
+
+  /** The topmost visible projected layer covering a point of cloth that faces its projector. */
+  const projectionAt = (at: SurfacePoint): ProjectedLayer | null => {
+    const d = useStudio.getState().document;
+    if (!d || !rest) return null;
+    const scene = { doc: d, rest, geo, live: useLive.getState().projection };
+    const order = d.projections.orderedLayerIds;
+    for (let k = order.length - 1; k >= 0; k--) {
+      const layer = d.projections.layers[order[k]];
+      if (!layer?.visible) continue;
+      const { frame } = projectLayer(effectiveLayer(layer, scene.live), scene);
+      const facing = at.normal[0] * frame.normal[0] + at.normal[1] * frame.normal[1] + at.normal[2] * frame.normal[2];
+      if (facing > 0 && insideDecal(frame, at.point)) return layer;
+    }
+    return null;
+  };
+
   const onClick = (e: ThreeEvent<MouseEvent>) => {
     if (mode !== 'orbit' || e.delta > 4 || !e.uv) return; // ignore clicks that ended an orbit drag
     e.stopPropagation();
+    const surface = surfaceUnder(e);
+    // Design areas lie on top of everything else, like transfers pressed onto the garment.
+    const inArea = surface ? areaAt(surface) : null;
+    if (inArea) {
+      selectInArea(inArea, false);
+      return;
+    }
+    const projected = surface ? projectionAt(surface) : null;
+    if (projected) return useStudio.getState().selectProjection(projected.id);
     const hit = pickAt(partOf(e), e.uv);
     if (hit) selectHit(hit, false);
+  };
+
+  /**
+   * Move projected artwork across the garment: the grabbed point follows the pointer over any
+   * part, seams included. With `place`, the artwork first jumps to the pressed point, upright as
+   * seen from the camera. Commits one undoable command on release; Escape cancels.
+   */
+  const startProjectionDrag = (pointerId: number, layer: ProjectedLayer, at: SurfacePoint, place: boolean) => {
+    dragRef.current?.cancel();
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    const parts = [...meshes.current.values()];
+    let current: Projector = layer.projector;
+    let last: ProjectorSpec | null = null;
+    let grab: [number, number] = [0, 0];
+    if (place) {
+      const screenUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+      last = toSpec({ point: at.point, normal: at.normal, up: tangentUp(at.normal, [screenUp.x, screenUp.y, screenUp.z]) });
+      current = last;
+      useLive.getState().setProjection({ id: layer.id, projector: last });
+    } else {
+      grab = planeOffset(layer.projector, at.point);
+    }
+    setCursor(gl.domElement, 'grabbing');
+    const handle = { cancel: () => finish(false) };
+    dragRef.current = handle;
+
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId || dragRef.current !== handle) return;
+      const rect = gl.domElement.getBoundingClientRect();
+      ndc.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
+      raycaster.setFromCamera(ndc, camera);
+      const hit = raycaster.intersectObjects(parts, false)[0];
+      const s = hit ? surfaceUnder(hit) : null;
+      if (!s) return; // off the garment: hold the last position
+      if (!last && Math.hypot(s.point[0] - at.point[0], s.point[1] - at.point[1], s.point[2] - at.point[2]) < 1.5) return;
+      current = dragProjector(restMeshes, current, grab, s);
+      last = toSpec(current);
+      useLive.getState().setProjection({ id: layer.id, projector: last });
+    };
+    const finish = (commit: boolean) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancelled);
+      window.removeEventListener('keydown', key, true);
+      if (dragRef.current !== handle) return;
+      dragRef.current = null;
+      if (commit && last) useStudio.getState().dispatch(updateProjectedLayer(layer.id, { projector: last }, place ? 'Place on garment' : 'Move on garment'));
+      useLive.getState().clear();
+      setCursor(gl.domElement, '');
+    };
+    const up = (ev: PointerEvent) => ev.pointerId === pointerId && finish(true);
+    const cancelled = (ev: PointerEvent) => ev.pointerId === pointerId && finish(false);
+    const key = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      finish(false);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancelled);
+    window.addEventListener('keydown', key, true);
   };
 
   /** Direct surface editing (spec ED3-05): press on artwork in Place mode and drag it across the garment. */
@@ -690,7 +1251,27 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.stopPropagation();
     const part = partOf(e);
+    const surface = surfaceUnder(e);
+    // A design area first (it lies on top): press its artwork to move that, its bare cloth to move the whole area.
+    const inArea = surface ? areaAt(surface) : null;
+    if (inArea && surface) {
+      const layerId = selectInArea(inArea, true);
+      const sel = movableSelection();
+      if (layerId && sel && sel.zoneId === inArea.area.id) startAreaLayerDrag(e.pointerId, inArea.area, inArea, sel);
+      else if (!layerId && !inArea.area.locked) startAreaMove(e.pointerId, inArea.area, surface);
+      return;
+    }
+    // Then artwork across seams: it lies over any zone print it covers.
+    const projected = surface ? projectionAt(surface) : null;
+    if (projected && surface) {
+      useStudio.getState().selectProjection(projected.id);
+      if (!projected.locked) startProjectionDrag(e.pointerId, projected, surface, false);
+      return;
+    }
     const hit = pickAt(part, e.uv);
+    // Bare cloth while projected artwork is selected: place it here (and keep dragging).
+    const placing = movableProjection();
+    if (placing && surface && !hit?.layerId) return startProjectionDrag(e.pointerId, placing, surface, true);
     if (!hit) return;
     selectHit(hit, true);
     const mesh = meshes.current.get(part);
@@ -716,7 +1297,7 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
       raycaster.setFromCamera(ndc, camera);
       const uv = raycaster.intersectObject(d.mesh, false)[0]?.uv;
       if (!uv) return; // off the garment: hold the last position
-      const p = uvInZone(model, geo.layout, d.zoneId, uv.x, uv.y);
+      const p = uvInZone(model, geo.layout, d.zoneId, wrapU(uv.x), uv.y);
       if (!d.moved && Math.hypot(p.xMm - d.start.xMm, p.yMm - d.start.yMm) < 1.5) return;
       d.moved = true;
       // Snap to the zone's centre line and keep the artwork's centre on the print area.
@@ -766,7 +1347,10 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
   useEffect(() => {
     const el = gl.domElement;
     const touches = new Map<number, { x: number; y: number }>();
-    let pinch: { d0: number; a0: number; zoneId: ZoneId; origin: Record<string, LayerTransform>; last: Record<string, Partial<LayerTransform>> | null } | null = null;
+    let pinch: { d0: number; a0: number; zoneId: ArtboardId; origin: Record<string, LayerTransform>; last: Record<string, Partial<LayerTransform>> | null } | null = null;
+    let pinchProjection: { d0: number; a0: number; id: string; origin: ProjectedTransform; last: Partial<ProjectedTransform> | null } | null = null;
+    // A bare design area pinches as a whole: each step applies the change since the last one, as one merged undo step.
+    let pinchArea: { d0: number; a0: number; scale: number; turn: number } | null = null;
     const metrics = () => {
       const [p, q] = [...touches.values()];
       return { d: Math.hypot(q.x - p.x, q.y - p.y), a: Math.atan2(q.y - p.y, q.x - p.x) };
@@ -775,34 +1359,63 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
       if (e.pointerType !== 'touch') return;
       touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (touches.size !== 2 || modeRef.current !== 'place') return;
-      const sel = movableSelection();
-      if (!sel) return;
+      const projection = movableProjection();
+      const sel = projection ? null : movableSelection();
+      const area = projection || sel ? null : activeBareArea();
+      if (!projection && !sel && !(area && !area.locked)) return;
       dragRef.current?.cancel(); // a one-finger drag becomes a pinch
       const m = metrics();
-      pinch = { d0: Math.max(10, m.d), a0: m.a, zoneId: sel.zoneId, origin: sel.origin, last: null };
+      if (projection) pinchProjection = { d0: Math.max(10, m.d), a0: m.a, id: projection.id, origin: projection.transform, last: null };
+      else if (sel) pinch = { d0: Math.max(10, m.d), a0: m.a, zoneId: sel.zoneId, origin: sel.origin, last: null };
+      else pinchArea = { d0: Math.max(10, m.d), a0: m.a, scale: 1, turn: 0 };
     };
     const move = (e: PointerEvent) => {
       if (!touches.has(e.pointerId)) return;
       touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (!pinch || touches.size < 2) return;
+      if (pinchArea && touches.size >= 2) {
+        const m = metrics();
+        const scale = m.d / pinchArea.d0;
+        const turn = normalizeDeg(((m.a - pinchArea.a0) * 180) / Math.PI);
+        if (Math.abs(scale / pinchArea.scale - 1) > 0.01 || Math.abs(turn - pinchArea.turn) > 0.5) {
+          transformArea(scale / pinchArea.scale, normalizeDeg(turn - pinchArea.turn), 'Resize area');
+          pinchArea.scale = scale;
+          pinchArea.turn = turn;
+        }
+        return;
+      }
+      const active = pinchProjection ?? pinch;
+      if (!active || touches.size < 2) return;
       const m = metrics();
-      pinch.last = scaleRotateAbout(pinch.origin, m.d / pinch.d0, normalizeDeg(((m.a - pinch.a0) * 180) / Math.PI));
-      useLive.getState().setOverrides(pinch.zoneId, pinch.last, '3d');
+      const scale = m.d / active.d0;
+      const turn = normalizeDeg(((m.a - active.a0) * 180) / Math.PI);
+      if (pinchProjection) {
+        const t = pinchProjection.origin;
+        const k = clamp(scale, 2 / Math.min(t.widthMm, t.heightMm), 3000 / Math.max(t.widthMm, t.heightMm));
+        pinchProjection.last = { widthMm: t.widthMm * k, heightMm: t.heightMm * k, rotationDeg: normalizeDeg(t.rotationDeg + turn) };
+        useLive.getState().setProjection({ id: pinchProjection.id, transform: pinchProjection.last });
+      } else if (pinch) {
+        pinch.last = scaleRotateAbout(pinch.origin, scale, turn);
+        useLive.getState().setOverrides(pinch.zoneId, pinch.last, '3d');
+      }
     };
     const up = (e: PointerEvent) => {
-      if (!touches.delete(e.pointerId) || !pinch || touches.size >= 2) return;
-      if (pinch.last) useStudio.getState().dispatch(updateTransforms(pinch.zoneId, pinch.last, 'Resize on garment'));
-      useLive.getState().clear();
+      if (!touches.delete(e.pointerId) || touches.size >= 2) return;
+      if (pinchProjection?.last) useStudio.getState().dispatch(updateProjectedLayer(pinchProjection.id, { transform: pinchProjection.last }, 'Resize on garment'));
+      else if (pinch?.last) useStudio.getState().dispatch(updateTransforms(pinch.zoneId, pinch.last, 'Resize on garment'));
+      if (pinch || pinchProjection) useLive.getState().clear();
       pinch = null;
+      pinchProjection = null;
+      pinchArea = null;
     };
     const wheel = (e: WheelEvent) => {
-      if (modeRef.current !== 'place' || !movableSelection()) return;
+      const bare = activeBareArea();
+      if (modeRef.current !== 'place' || (!movableProjection() && !movableSelection() && !(bare && !bare.locked))) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       const raw = e.deltaY || e.deltaX;
       const delta = e.deltaMode === 1 ? raw * 16 : e.deltaMode === 2 ? raw * 400 : raw;
-      if (e.shiftKey) transformSelection(1, clamp(delta * 0.15, -15, 15), 'Rotate on garment');
-      else transformSelection(Math.exp(-clamp(delta, -200, 200) * 0.0008), 0, 'Resize on garment');
+      if (e.shiftKey) transformSelected(1, clamp(delta * 0.15, -15, 15), 'Rotate on garment');
+      else transformSelected(Math.exp(-clamp(delta, -200, 200) * 0.0008), 0, 'Resize on garment');
     };
     el.addEventListener('pointerdown', down);
     window.addEventListener('pointermove', move);
@@ -818,17 +1431,62 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
     };
   }, [gl]);
 
-  // Hover feedback: in Place mode the cursor says whether there is artwork to grab.
+  // Hover feedback: in Place mode the cursor says whether there is artwork to grab, or a spot to
+  // place the selected projected artwork.
   const onHover = (e: ThreeEvent<PointerEvent>) => {
     if (dragRef.current || !e.uv) return;
     if (mode !== 'place') return;
+    const surface = surfaceUnder(e);
+    const inArea = surface ? areaAt(surface) : null;
+    if (inArea) {
+      const layerId = hitTestLayer(inArea.area, inArea.x, inArea.y);
+      const layer = layerId ? inArea.area.layers[layerId] : null;
+      return setCursor(gl.domElement, layer ? (layer.locked ? '' : 'grab') : inArea.area.locked ? '' : 'move');
+    }
+    const projected = surface ? projectionAt(surface) : null;
+    if (projected) return setCursor(gl.domElement, projected.locked ? '' : 'grab');
     const hit = pickAt(partOf(e), e.uv);
     const layer = hit?.layerId ? useStudio.getState().document!.zones[hit.zoneId].layers[hit.layerId] : null;
-    setCursor(gl.domElement, layer && !layer.locked ? 'grab' : '');
+    setCursor(gl.domElement, layer ? (layer.locked ? '' : 'grab') : movableProjection() ? 'crosshair' : '');
   };
   const onOut = () => {
     if (!dragRef.current) setCursor(gl.domElement, '');
   };
+
+  // A fitted shell's plain pieces (its hood, a belt) take design areas too: press an area there to
+  // pick, move or design it. Elsewhere the piece only hides what is behind it.
+  const onTrimClick = (e: ThreeEvent<MouseEvent>) => {
+    e.stopPropagation();
+    if (mode !== 'orbit' || e.delta > 4) return;
+    const surface = surfaceOnTrim(e, camera);
+    const inArea = surface ? areaAt(surface) : null;
+    if (inArea) selectInArea(inArea, false);
+  };
+  const onTrimDown = (e: ThreeEvent<PointerEvent>) => {
+    if (mode !== 'place') return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.stopPropagation();
+    const surface = surfaceOnTrim(e, camera);
+    const inArea = surface ? areaAt(surface) : null;
+    if (!inArea || !surface) return;
+    const layerId = selectInArea(inArea, true);
+    const sel = movableSelection();
+    if (layerId && sel && sel.zoneId === inArea.area.id) startAreaLayerDrag(e.pointerId, inArea.area, inArea, sel);
+    else if (!layerId && !inArea.area.locked) startAreaMove(e.pointerId, inArea.area, surface);
+  };
+  const onTrimHover = (e: ThreeEvent<PointerEvent>) => {
+    if (dragRef.current || mode !== 'place') return;
+    e.stopPropagation();
+    const surface = surfaceOnTrim(e, camera);
+    const inArea = surface ? areaAt(surface) : null;
+    if (!inArea) return setCursor(gl.domElement, '');
+    const layerId = hitTestLayer(inArea.area, inArea.x, inArea.y);
+    const layer = layerId ? inArea.area.layers[layerId] : null;
+    setCursor(gl.domElement, layer ? (layer.locked ? '' : 'grab') : inArea.area.locked ? '' : 'move');
+  };
+  const trimHandlers = { onClick: onTrimClick, onPointerDown: onTrimDown, onPointerMove: onTrimHover, onPointerOut: onOut };
+  const areaGuide: AreaGuide | null =
+    guides || showSelection ? { accent, all: guides, active: showSelection ? activeZone : null, selected: showSelection && selected.length && isAreaId(activeZone) ? selected : undefined } : null;
 
   const lite = quality === 'low';
   const handlers = { onClick, onPointerDown, onPointerMove: onHover, onPointerOut: onOut };
@@ -839,6 +1497,7 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
   };
   const noRaycast = () => null;
   const trimColor = (c: TrimColor) => (c === 'button' ? colorway.parts.stitching : c === 'body' || c === 'sleeves' || c === 'collar' ? colorway.parts[c] : partColor(colorway, c));
+  const fabricOf = (t: GarmentGeometry['trims'][number]) => (ownRest && t.key.startsWith(SHELL_TRIM_PREFIX) && (t.color === 'body' || t.color === 'sleeves') ? trimFabric.out.get(t.color) : undefined);
 
   return (
     <group scale={0.001} position={[0, -(geo.layout.bottomMm + geo.layout.heightMm / 2) * 0.001, 0]}>
@@ -876,21 +1535,38 @@ function Garment({ geo, quality, mode, guides, hanger, onOwnZone }: { geo: Garme
       {geo.trims.map((t) => {
         const color = trimColor(t.color);
         const trimLook = FABRIC_LOOK[t.surface];
+        const shellPiece = ownRest && t.key.startsWith(SHELL_TRIM_PREFIX);
+        const fabric = fabricOf(t);
         return (
-          <mesh key={t.key} geometry={t.geometry} raycast={noRaycast} castShadow receiveShadow customDepthMaterial={motionDepthMaterial}>
+          <mesh
+            key={t.key}
+            ref={(m) => {
+              if (m) trimMeshes.current.set(t.key, m);
+              else trimMeshes.current.delete(t.key);
+            }}
+            geometry={t.geometry}
+            {...(shellPiece ? { userData: { trim: t.key }, ...trimHandlers } : { raycast: noRaycast })}
+            castShadow
+            receiveShadow
+            customDepthMaterial={motionDepthMaterial}
+          >
             <FabricMaterial
+              // A new material when a fabric print comes or goes: three.js only adds a map to a shader it builds.
+              key={fabric ? 'fabric' : 'plain'}
               lite={lite}
               look={trimLook}
-              map={t.mapPart ? textures.get(t.mapPart)?.texture : undefined}
-              color={t.mapPart ? undefined : color}
+              map={t.mapPart ? textures.get(t.mapPart)?.texture : fabric}
+              color={t.mapPart ? undefined : fabric ? '#ffffff' : color}
               normalMap={t.surface === 'plastic' ? undefined : t.surface === 'rib' ? normals.trimRib : normals.trimFabric}
               sheenColor={shade(color, 1.1)}
               side={t.doubleSided ? THREE.DoubleSide : THREE.FrontSide}
+              vertexColors={!!t.geometry.getAttribute('color')}
               {...(t.mapPart ? surfaceProps(t.mapPart) : {})}
             />
           </mesh>
         );
       })}
+      <AreaTrimOverlays doc={doc} rest={rest} geo={geo} lite={lite} quality={quality} guide={areaGuide} />
       {hanger ? (
         <Hanger
           hpsMm={geo.layout.torsoHeightMm}
@@ -969,6 +1645,20 @@ function SceneLights({ scene, floorY, shadowKey }: { scene: Scene; floorY: numbe
 // ---------------------------------------------------------------------------
 
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
+
+/** The camera shot that shows a zone (its preset view) or a design area (looking straight at it). */
+function shotForArtboard(doc: DesignDocument | null | undefined, layout: GarmentLayout, id: ArtboardId, fovDeg: number): ShotSpec {
+  if (!isAreaId(id)) return { kind: 'preset', view: ZONE_VIEW[id] };
+  const area = doc?.areas?.items[id];
+  if (!area) return { kind: 'preset', view: 'front' };
+  // Garment millimetres to the stage: metres, centred on the garment as the Garment group places it.
+  const lift = -(layout.bottomMm + layout.heightMm / 2);
+  const [x, y, z] = area.projector.point;
+  const [nx, ny, nz] = area.projector.normal;
+  const target: [number, number, number] = [x / 1000, (y + lift) / 1000, z / 1000];
+  const distance = 0.7 + Math.max(area.widthMm, area.heightMm) / 450;
+  return { kind: 'bookmark', bookmark: { id: `area-${id}`, name: area.name, position: [target[0] + nx * distance, target[1] + ny * distance, target[2] + nz * distance], target, fovDeg } };
+}
 
 /** The classic tee's front-view extent in mm, which the preset camera distances were tuned for. */
 const TEE_FIT = { heightMm: 730, widthMm: 813 };
@@ -1122,7 +1812,8 @@ function CameraRig({
       return { W: even(w * s), H: even(h * s) };
     };
 
-    async function withOutput<T>(W: number, H: number, run: () => Promise<T>): Promise<T> {
+    /** `drawW`, `drawH`: the drawing buffer when it is smaller than the output (tiled renders). */
+    async function withOutput<T>(W: number, H: number, run: () => Promise<T>, drawW = W, drawH = H): Promise<T> {
       const c = controls.current;
       if (!c) throw new Error('The 3D view is not ready yet.');
       if (stage.capturing) throw new Error('A render is already running. Wait for it to finish.');
@@ -1138,11 +1829,12 @@ function CameraRig({
       try {
         stage.redraw?.({ quality: 'ultra', guides: false });
         gl.setPixelRatio(1);
-        gl.setSize(W, H, false);
+        gl.setSize(drawW, drawH, false);
         camera.aspect = W / H;
         camera.updateProjectionMatrix();
         return await run();
       } finally {
+        camera.clearViewOffset();
         gl.setPixelRatio(savedRatio);
         gl.setSize(savedSize.x, savedSize.y, false);
         camera.aspect = savedSize.x / savedSize.y;
@@ -1172,24 +1864,57 @@ function CameraRig({
       c.update(0);
     };
 
+    /**
+     * One real-time still larger than the GPU draws at once: the same camera, its view cut into
+     * tiles the GPU can draw (a view offset per tile), each copied into place. Seamless, since every
+     * tile is the same projection.
+     */
+    const renderTiled = (W: number, H: number, background: RenderBackground) => {
+      const out = composite(W, H, background, []);
+      const o = out.getContext('2d')!;
+      for (let y = 0; y < H; y += maxSide) {
+        for (let x = 0; x < W; x += maxSide) {
+          const tw = Math.min(maxSide, W - x);
+          const th = Math.min(maxSide, H - y);
+          gl.setSize(tw, th, false);
+          camera.setViewOffset(W, H, x, y, tw, th);
+          camera.updateProjectionMatrix();
+          gl.render(scene, camera);
+          o.drawImage(gl.domElement, 0, 0, tw, th, x, y, tw, th);
+        }
+      }
+      camera.clearViewOffset();
+      camera.updateProjectionMatrix();
+      return out;
+    };
+
     viewerApi.capture = async ({ shots, width: w, height: h, background = 'scene', frameCurrent = false, photoreal }) => {
-      const { W, H } = fit(w, h);
+      // Real time renders any size (in tiles past the GPU's limit); path tracing stops at the limit.
+      const tiled = !photoreal && Math.max(w, h) > maxSide;
+      const { W, H } = tiled ? { W: even(w), H: even(h) } : fit(w, h);
       const liveFov = camera.fov;
       const framedStage = frameCurrent ? gl.getSize(new THREE.Vector2()) : null;
       if (photoreal) {
         const unsupported = photorealSupport(gl);
         if (unsupported) throw new Error(unsupported);
       }
-      return withOutput(W, H, async () => {
-        const out = [];
-        if (!photoreal) {
-          for (const shot of shots) {
-            await place(shot, W / H, liveFov, framedStage);
-            gl.render(scene, camera);
-            out.push({ key: shotKey(shot), label: shotLabel(shot), canvas: composite(W, H, background) });
+      return withOutput(
+        W,
+        H,
+        async () => {
+          const out = [];
+          if (!photoreal) {
+            for (const shot of shots) {
+              await place(shot, W / H, liveFov, framedStage);
+              if (tiled) {
+                out.push({ key: shotKey(shot), label: shotLabel(shot), canvas: renderTiled(W, H, background) });
+                continue;
+              }
+              gl.render(scene, camera);
+              out.push({ key: shotKey(shot), label: shotLabel(shot), canvas: composite(W, H, background) });
+            }
+            return out;
           }
-          return out;
-        }
         // Photoreal: nothing else draws to the canvas while it renders, the view can't be moved
         // mid-render, and the stage shows the render resolving at the output's proportions.
         const c = controls.current!;
@@ -1230,7 +1955,10 @@ function CameraRig({
           setFrameloop('demand');
         }
         return out;
-      });
+        },
+        tiled ? Math.min(W, maxSide) : W,
+        tiled ? Math.min(H, maxSide) : H,
+      );
     };
 
     viewerApi.turntable = async ({ width: w, height: h, frames, degrees, from = { kind: 'current' }, background = 'scene', frameCurrent = false, fps, onFrame, signal }) => {
@@ -1440,10 +2168,10 @@ function PhotorealView({ enabled, overlay, onStatus }: { enabled: boolean; overl
     const resize = new ResizeObserver(arm);
     resize.observe(host);
     const unStudio = useStudio.subscribe((s, p) => {
-      if (s.document !== p.document || s.selectedLayerIds !== p.selectedLayerIds || s.activeZoneId !== p.activeZoneId) arm();
+      if (s.document !== p.document || s.selectedLayerIds !== p.selectedLayerIds || s.selectedProjectionId !== p.selectedProjectionId || s.activeZoneId !== p.activeZoneId) arm();
     });
     const unLive = useLive.subscribe((s, p) => {
-      if (s.overrides !== p.overrides || s.colorwayOverride !== p.colorwayOverride) arm();
+      if (s.overrides !== p.overrides || s.projection !== p.projection || s.colorwayOverride !== p.colorwayOverride) arm();
     });
     stage.stopLive = stop;
     arm();
@@ -1492,13 +2220,14 @@ function RenderFrame() {
 /** Client-only (loaded with ssr: false), so device checks can run during the first render. */
 export function Viewer3D({ compact = false }: { compact?: boolean }) {
   const activeZone = useStudio((s) => s.activeZoneId);
-  const hasSelection = useStudio((s) => s.selectedLayerIds.length > 0);
+  const hasSelection = useStudio((s) => s.selectedLayerIds.length > 0 || !!s.selectedProjectionId);
+  const projectionSelected = useStudio((s) => !!s.selectedProjectionId);
   const doc = useStudio((s) => s.document);
   const scene = sceneOf(doc);
   const [supported] = useState(hasWebGL);
   const [quality] = useState<Quality>(detectQuality);
   const [mode, setMode] = useState<Mode>('orbit');
-  const [request, setRequest] = useState<ViewRequest>(() => ({ shot: { kind: 'preset', view: ZONE_VIEW[activeZone] }, nonce: 0 }));
+  const [request, setRequest] = useState<ViewRequest>(() => ({ shot: { kind: 'preset', view: isAreaId(activeZone) ? 'front' : ZONE_VIEW[activeZone] }, nonce: 0 }));
   const [turntable, setTurntable] = useState(false);
   const [guides, setGuides] = useState(() => readFlag('wovexa.guides3d', true));
   const [sceneOpen, setSceneOpen] = useState(false);
@@ -1523,9 +2252,40 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
     [baseGeo],
   );
 
-  // A custom 3D shape made from this style's template, in place of the built-in parts.
-  const shapeAssetId = doc?.garment.shape?.modelId === modelId ? doc.garment.shape.assetId : null;
-  const shapeSizeCode = doc?.garment.shape?.sizeCode ?? sizeCode;
+  // A custom 3D shape in place of the built-in parts: made from this style's template (exact print
+  // layout), or any garment GLB fitted over the pattern as a shell.
+  const shapeRecord = doc?.garment.shape?.modelId === modelId ? doc.garment.shape : undefined;
+  const shapeAssetId = shapeRecord && shapeRecord.kind !== 'shell' ? shapeRecord.assetId : null;
+  const shapeSizeCode = shapeRecord?.sizeCode ?? sizeCode;
+  // A shell's file: a model from the app's library (by file name) or one uploaded to this device.
+  const shellLibrary = shapeRecord?.kind === 'shell' ? (shapeRecord.library ?? null) : null;
+  const shellAssetId = shapeRecord?.kind === 'shell' ? (shellLibrary ? `library:${shellLibrary}` : (shapeRecord.assetId ?? null)) : null;
+  const shellTurn = !!shapeRecord?.turn;
+  const shellKey = shellAssetId ? `${shellAssetId}:${modelId}:${sizeCode}:${shellTurn ? 1 : 0}` : null;
+  const [fittedShell, setFittedShell] = useState<{ key: string; geo: GarmentGeometry | null } | null>(null);
+  useEffect(() => {
+    if (!shellAssetId || !shellKey) return;
+    let alive = true;
+    const model = getGarment(modelId);
+    const read = async () => {
+      if (shellLibrary) return fetchLibraryModel(shellLibrary);
+      const asset = await getAsset(shellAssetId);
+      if (!asset) throw new ShapeError('The 3D model file isn’t on this device any more.');
+      return asset.blob.arrayBuffer();
+    };
+    shellGarment(shellAssetId, read, model, getSize(model, sizeCode), shellTurn).then(
+      (geo) => alive && setFittedShell({ key: shellKey, geo }),
+      (error: unknown) => {
+        if (!alive) return;
+        setFittedShell({ key: shellKey, geo: null });
+        toast(error instanceof Error ? `${error.message} Showing the built-in shape.` : 'The 3D model couldn’t be fitted.', 'error');
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [shellAssetId, shellLibrary, shellKey, shellTurn, modelId, sizeCode]);
+  const fittingShell = !!shellKey && fittedShell?.key !== shellKey;
   const [loadedShape, setLoadedShape] = useState<{ assetId: string; shape: ParsedShape } | null>(null);
   useEffect(() => {
     if (!shapeAssetId) return;
@@ -1547,15 +2307,19 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
       alive = false;
     };
   }, [shapeAssetId, modelId]);
+  const shellGeo = shellKey && fittedShell?.key === shellKey ? fittedShell.geo : null;
   const geo = useMemo(() => {
+    // A shell keeps its own folds, so the drape setting doesn't touch it.
+    if (shellGeo) return shellGeo;
     if (!shapeAssetId || loadedShape?.assetId !== shapeAssetId) return baseGeo;
     const model = getGarment(modelId);
     const now = getSize(model, sizeCode);
     const made = getSize(model, shapeSizeCode);
     return shapedGarment(baseGeo, loadedShape.shape, { width: now.chestFlatMm / made.chestFlatMm, length: now.bodyLengthMm / made.bodyLengthMm });
-  }, [baseGeo, shapeAssetId, loadedShape, modelId, sizeCode, shapeSizeCode]);
+  }, [baseGeo, shellGeo, shapeAssetId, loadedShape, modelId, sizeCode, shapeSizeCode]);
   useEffect(() => {
     if (geo === baseGeo) return;
+    // Fitted shells are cached for switching back; freeing their GPU buffers is enough (three uploads them again).
     return () => {
       for (const p of geo.parts) p.geometry.dispose();
       for (const t of geo.trims) t.geometry.dispose();
@@ -1567,21 +2331,23 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
   const fitH = geo.layout.heightMm / TEE_FIT.heightMm;
   const fitW = geo.layout.widthMm / TEE_FIT.widthMm;
   const floorY = -(geo.layout.heightMm / 2) * 0.001 - 0.015;
-  const shadowKey = `${modelId}:${sizeCode}:${quality}:${drapeId}`;
+  // The floor shadow is drawn once per shape: the built-in parts, a template shape or a fitted shell.
+  const shapeKey = shellGeo ? shellKey : shapeAssetId && loadedShape?.assetId === shapeAssetId ? shapeAssetId : 'built-in';
+  const shadowKey = `${modelId}:${sizeCode}:${quality}:${drapeId}:${shapeKey}`;
 
   // Adaptive resolution (spec MOB-11): drop the pixel ratio if frames slow down, restore it when they recover.
   const maxDpr = quality === 'high' ? 2 : quality === 'medium' ? 1.5 : 1;
   const [dpr, setDpr] = useState(maxDpr);
 
-  // Follow the zone being edited so the artwork stays in view, unless the 3D view chose it.
+  // Follow the zone or design area being edited so the artwork stays in view, unless the 3D view chose it.
   const [followedZone, setFollowedZone] = useState(activeZone);
-  const [ownZone, setOwnZone] = useState<ZoneId | null>(null);
+  const [ownZone, setOwnZone] = useState<ArtboardId | null>(null);
   if (followedZone !== activeZone) {
     setFollowedZone(activeZone);
-    if (activeZone !== ownZone) setRequest((r) => ({ shot: { kind: 'preset', view: ZONE_VIEW[activeZone] }, nonce: r.nonce + 1 }));
+    if (activeZone !== ownZone) setRequest((r) => ({ shot: shotForArtboard(doc, geo.layout, activeZone, scene.fovDeg), nonce: r.nonce + 1 }));
   }
 
-  const fly = useCallback((shot: ShotSpec) => setRequest((r) => ({ shot, nonce: r.nonce + 1 })), []);
+  const fly = useCallback((shot: ShotSpec) => setRequest((r) => ({ shot, nonce: r.nonce + 1 })), [setRequest]);
   useEffect(() => {
     viewerApi.flyTo = fly;
     return () => {
@@ -1624,23 +2390,30 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
     if (e.target !== e.currentTarget || e.ctrlKey || e.metaKey || e.altKey) return;
     const c = stage.controls;
     if (!c) return;
-    const placing = mode === 'place' && !!movableSelection();
+    const projection = mode === 'place' ? movableProjection() : null;
+    // A design area with nothing in it selected is itself what moves, resizes and turns.
+    const bareArea = mode === 'place' && !projection && !movableSelection() ? activeBareArea() : null;
+    const placing = mode === 'place' && (!!projection || !!movableSelection() || !!(bareArea && !bareArea.locked));
     const step = e.shiftKey ? 10 : 1;
     const preset = (Object.keys(VIEW_PRESETS) as ViewPreset[]).find((v) => VIEW_PRESETS[v].key === e.key);
     let handled = true;
     if (e.key.startsWith('Arrow')) {
-      if (placing) nudgeSelection(e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0, e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0);
+      const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+      const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+      if (projection) nudgeProjection(projection.id, dx, dy);
+      else if (bareArea && placing) nudgeArea(bareArea.id, dx, dy);
+      else if (placing) nudgeSelection(dx, dy);
       else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') void c.rotate((e.key === 'ArrowLeft' ? 1 : -1) * (Math.PI / 12), 0, true);
       // Up raises the camera to look down on the garment (a smaller polar angle).
       else void c.rotate(0, (e.key === 'ArrowUp' ? -1 : 1) * (Math.PI / 18), true);
     } else if (e.key === '+' || e.key === '=') {
-      if (!placing || !transformSelection(1.05, 0, 'Resize on garment')) void c.dolly(0.25, true);
+      if (!placing || !transformSelected(1.05, 0, 'Resize on garment')) void c.dolly(0.25, true);
     } else if (e.key === '-' || e.key === '_') {
-      if (!placing || !transformSelection(1 / 1.05, 0, 'Resize on garment')) void c.dolly(-0.25, true);
+      if (!placing || !transformSelected(1 / 1.05, 0, 'Resize on garment')) void c.dolly(-0.25, true);
     } else if (placing && (e.key === ',' || e.key === '.')) {
-      transformSelection(1, e.key === ',' ? -5 : 5, 'Rotate on garment');
+      transformSelected(1, e.key === ',' ? -5 : 5, 'Rotate on garment');
     } else if (e.key === 'Home' || e.key === '0') {
-      fly(request.shot.kind === 'current' ? { kind: 'preset', view: ZONE_VIEW[activeZone] } : request.shot);
+      fly(request.shot.kind === 'current' ? shotForArtboard(doc, geo.layout, activeZone, scene.fovDeg) : request.shot);
     } else if (preset) {
       fly({ kind: 'preset', view: preset });
     } else if (e.key.toLowerCase() === 'o') {
@@ -1670,7 +2443,7 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
       const scale = (e as Event & { scale: number }).scale;
       const k = scale / base;
       base = scale;
-      if (mode === 'place' && transformSelection(k, 0, 'Resize on garment')) return;
+      if (mode === 'place' && transformSelected(k, 0, 'Resize on garment')) return;
       const c = stage.controls;
       if (c) void c.dollyTo(c.distance / k, false);
     };
@@ -1681,6 +2454,13 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
       el.removeEventListener('gesturechange', change);
     };
   }, [mode]);
+
+  // Artwork just wrapped across seams (or picked from the layer list) is moved in Place mode.
+  useEffect(() => {
+    const place = () => setMode('place');
+    window.addEventListener('wovexa:place-on-garment', place);
+    return () => window.removeEventListener('wovexa:place-on-garment', place);
+  }, []);
 
   if (!supported || lost) {
     return (
@@ -1738,7 +2518,7 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
           <PerformanceMonitor flipflops={3} onDecline={() => setDpr(1)} onIncline={() => setDpr(maxDpr)} onFallback={() => setDpr(1)} />
           <SceneLights scene={scene} floorY={floorY} shadowKey={shadowKey} />
           <group ref={motionGroup}>
-            <Garment geo={geo} quality={quality} mode={mode} guides={guides} hanger={motion.kind === 'hanger'} onOwnZone={setOwnZone} />
+            <Garment geo={geo} ownRest={!!shellGeo} quality={quality} mode={mode} guides={guides} hanger={motion.kind === 'hanger'} onOwnZone={setOwnZone} />
           </group>
           <MotionDriver
             kind={mode === 'place' ? 'still' : motion.kind}
@@ -1844,9 +2624,17 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
         </div>
       </div>
 
-      {mode === 'place' ? (
+      {fittingShell ? (
+        <p className="pointer-events-none absolute left-3 top-3 flex items-center gap-1.5 rounded-md bg-floating/90 px-2 py-1 text-[11px] text-fg-2 shadow-sm backdrop-blur" role="status">
+          <Loader2 size={12} className="animate-spin" /> Fitting your 3D model to size {sizeCode}…
+        </p>
+      ) : mode === 'place' ? (
         <p className={`pointer-events-none absolute left-3 ${compact ? 'bottom-3 max-w-[85%]' : 'top-3 max-w-[60%]'} rounded-md bg-floating/85 px-2 py-1 text-[11px] text-fg-2 backdrop-blur`}>
-          {hasSelection ? 'Drag to move. Scroll or pinch to resize, Shift or twist to rotate.' : 'Press artwork on the garment to select and move it.'}
+          {projectionSelected
+            ? 'Drag it over seams, or click the garment to place it there. Scroll or pinch to resize, Shift or twist to rotate.'
+            : hasSelection
+              ? 'Drag to move. Scroll or pinch to resize, Shift or twist to rotate.'
+              : 'Press artwork on the garment to select and move it.'}
         </p>
       ) : photoreal && liveStatus ? null : (
         <p className="pointer-events-none absolute left-3 top-3 hidden rounded-md bg-floating/80 px-2 py-1 text-[11px] text-fg-2 backdrop-blur sm:block">Simulated preview: fabric and ink are approximate</p>

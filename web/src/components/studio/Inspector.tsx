@@ -18,21 +18,25 @@ import {
   Eraser,
   FlipHorizontal2,
   FlipVertical2,
+  Frame,
   Group,
   Italic,
   Link2,
   Link2Off,
   Loader2,
   Maximize2,
+  Move,
   RotateCcw,
+  Shirt,
   Trash2,
   Ungroup,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { selectionUnits, type AlignMode } from '@/domain/arrange';
 import * as cmd from '@/domain/commands';
-import { checkLayer, DEFAULT_PREFLIGHT, effectiveDpi } from '@/domain/preflight';
-import type { ArtworkLayer, ImageAdjust, ImageContent, ImageRepeat, LayerStyle, LayerTransform, ShapeContent, TextContent } from '@/domain/schema';
+import { checkLayer, checkProjectedLayer, DEFAULT_PREFLIGHT, effectiveDpi } from '@/domain/preflight';
+import { projectedAsArtwork } from '@/domain/projected';
+import { isAreaId, type ArtworkLayer, type DesignArea, type ImageAdjust, type ImageContent, type ImageRepeat, type LayerStyle, type LayerTransform, type ProjectedLayer, type ProjectedTransform, type ShapeContent, type TextContent } from '@/domain/schema';
 import { AssetError, getLoadedImage, importImageFile, loadAssetImage } from '@/lib/assets';
 import { ARTWORK_FONTS, fontWeights, loadFontStylesheets } from '@/lib/fonts';
 import { extractPalette, removeBackground, type PaletteColour } from '@/lib/image-ops';
@@ -40,15 +44,27 @@ import { getAsset } from '@/lib/local-db';
 import { usePreference } from '@/lib/preferences';
 import { DEFAULT_REPEAT, effectiveDistress, isCurved, isNeutralAdjust, isWarped, NEUTRAL_ADJUST, textAspect } from '@/lib/render/zone-renderer';
 import { ColorField, NumberField, toast } from '@/components/ui/primitives';
-import { useActiveZoneSpec, useStudio } from '@/stores/studio-store';
+import { useActiveArtboard, useActiveZoneSpec, useStudio } from '@/stores/studio-store';
 import { alignSelection, deleteSelection, distributeSelection, duplicateSelection, groupSelection, placementsFor, placeSelection, ungroupSelection } from './actions';
 import { useBrandKit } from './brand-context';
 import { FontPicker } from './FontPicker';
+import { AreaPanel } from './AreaPanel';
 import { GarmentPanel } from './GarmentPanel';
 import { FillControls, RangeField } from './inspector-controls';
 import { IssueItem } from './PreflightPanel';
+import { deleteProjection, duplicateProjection, returnProjectionToZone, showOnGarment, wrapSelectionAcrossSeams } from './projection-actions';
 
 const nearestOf = (weights: number[], weight: number) => weights.reduce((best, w) => (Math.abs(w - weight) < Math.abs(best - weight) ? w : best), weights[0]);
+
+/** Whether the inspected layer sits on a print zone (the default) or on the garment across seams. */
+const OnGarmentContext = createContext(false);
+
+/** The command that edits the inspected layer, wherever it lives. */
+function useLayerEdit() {
+  const zoneId = useStudio((s) => s.activeZoneId);
+  const onGarment = useContext(OnGarmentContext);
+  return (layerId: string, patch: cmd.LayerPatch, label: string) => (onGarment ? cmd.updateProjectedLayer(layerId, patch, label) : cmd.updateLayer(zoneId, layerId, patch, label));
+}
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -191,7 +207,7 @@ function TextStyles({ content, onApply }: { content: TextContent; onApply: (patc
 }
 
 function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextContent }) {
-  const zoneId = useStudio((s) => s.activeZoneId);
+  const edit = useLayerEdit();
   const dispatch = useStudio((s) => s.dispatch);
   const kit = useBrandKit();
   const textRef = useRef<HTMLTextAreaElement>(null);
@@ -227,7 +243,7 @@ function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextCon
         ? { heightMm: layer.transform.widthMm / aspect }
         : { widthMm: layer.transform.heightMm * aspect };
     const name = patch.value !== undefined ? patch.value.split('\n')[0].slice(0, 40) || 'Text' : undefined;
-    const command = cmd.updateLayer(zoneId, layer.id, { content: patch, transform, name }, label);
+    const command = edit(layer.id, { content: patch, transform, name }, label);
     dispatch(gesture ? cmd.coalescing(command, `${gesture}:${layer.id}`) : command);
   };
   const commitText = () => draft !== content.value && update({ value: draft }, 'Edit text');
@@ -352,11 +368,11 @@ function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextCon
 }
 
 function ShapeSection({ layer, content }: { layer: ArtworkLayer; content: ShapeContent }) {
-  const zoneId = useStudio((s) => s.activeZoneId);
+  const edit = useLayerEdit();
   const dispatch = useStudio((s) => s.dispatch);
   const kit = useBrandKit();
   const update = (patch: Partial<ShapeContent>, label: string, gesture?: string) => {
-    const command = cmd.updateLayer(zoneId, layer.id, { content: patch }, label);
+    const command = edit(layer.id, { content: patch }, label);
     dispatch(gesture ? cmd.coalescing(command, `${gesture}:${layer.id}`) : command);
   };
   return (
@@ -384,7 +400,7 @@ function ShapeSection({ layer, content }: { layer: ArtworkLayer; content: ShapeC
 }
 
 function BackgroundRemoval({ layer }: { layer: ArtworkLayer }) {
-  const zoneId = useStudio((s) => s.activeZoneId);
+  const edit = useLayerEdit();
   const dispatch = useStudio((s) => s.dispatch);
   const [open, setOpen] = useState(false);
   const [tolerance, setTolerance] = useState(40);
@@ -408,7 +424,7 @@ function BackgroundRemoval({ layer }: { layer: ArtworkLayer }) {
       const base = (original?.name ?? layer.name).replace(/\.[a-z0-9]+$/i, '');
       const asset = await importImageFile(new File([result.blob], `${base} (no background).png`, { type: 'image/png' }));
       await loadAssetImage(asset.id);
-      dispatch(cmd.updateLayer(zoneId, layer.id, { content: { assetId: asset.id, mime: 'image/png', originalAssetId: sourceId } }, 'Remove background'));
+      dispatch(edit(layer.id, { content: { assetId: asset.id, mime: 'image/png', originalAssetId: sourceId } }, 'Remove background'));
       toast(`Removed ${Math.round(result.removed * 100)}% of the image (${result.background}). The original is kept.`, 'success');
       setOpen(false);
     } catch (error) {
@@ -423,7 +439,7 @@ function BackgroundRemoval({ layer }: { layer: ArtworkLayer }) {
     const original = await getAsset(content.originalAssetId);
     if (!original) return toast('The original image is no longer on this device.', 'error');
     if (!getLoadedImage(original.id)) await loadAssetImage(original.id);
-    dispatch(cmd.updateLayer(zoneId, layer.id, { content: { assetId: original.id, mime: original.mime, originalAssetId: undefined } }, 'Restore original image'));
+    dispatch(edit(layer.id, { content: { assetId: original.id, mime: original.mime, originalAssetId: undefined } }, 'Restore original image'));
   };
 
   return (
@@ -471,7 +487,7 @@ const IMAGE_MASKS: { id: NonNullable<ImageContent['mask']> | 'none'; label: stri
 ];
 
 function ImageSection({ layer }: { layer: ArtworkLayer }) {
-  const zoneId = useStudio((s) => s.activeZoneId);
+  const edit = useLayerEdit();
   const dispatch = useStudio((s) => s.dispatch);
   if (layer.content.kind !== 'image') return null;
   const dpi = effectiveDpi(layer);
@@ -489,7 +505,7 @@ function ImageSection({ layer }: { layer: ArtworkLayer }) {
           <dd className="num text-right font-semibold">{dpi ? `${Math.round(dpi.min)} dpi` : 'Vector, any size'}</dd>
         </dl>
         {dpi && !c.repeat ? (
-          <button className="btn btn-outline w-full text-xs" onClick={() => dispatch(cmd.updateTransforms(zoneId, { [layer.id]: at300 }, 'Size for 300 dpi'))}>
+          <button className="btn btn-outline w-full text-xs" onClick={() => dispatch(edit(layer.id, { transform: at300 }, 'Size for 300 dpi'))}>
             Size for 300 dpi ({Math.round(at300.widthMm)} mm wide)
           </button>
         ) : null}
@@ -502,7 +518,7 @@ function ImageSection({ layer }: { layer: ArtworkLayer }) {
                   key={m.id}
                   className="flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-xs font-medium text-fg-2 hover:border-line-strong hover:text-fg aria-pressed:border-[var(--accent)] aria-pressed:text-fg"
                   aria-pressed={(c.mask ?? 'none') === m.id}
-                  onClick={() => dispatch(cmd.updateLayer(zoneId, layer.id, { content: { mask: m.id === 'none' ? undefined : m.id } }, m.id === 'none' ? 'Remove image shape' : `Image shape: ${m.label.toLowerCase()}`))}
+                  onClick={() => dispatch(edit(layer.id, { content: { mask: m.id === 'none' ? undefined : m.id } }, m.id === 'none' ? 'Remove image shape' : `Image shape: ${m.label.toLowerCase()}`))}
                 >
                   <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden className="flex-none">
                     <path d={m.icon} fill="currentColor" fillRule="evenodd" />
@@ -524,12 +540,12 @@ function ImageSection({ layer }: { layer: ArtworkLayer }) {
 
 /** Non-destructive adjustments (spec ED2-10, AST-05). The original pixels are never changed. */
 function ImageAdjustments({ layer, content }: { layer: ArtworkLayer; content: ImageContent }) {
-  const zoneId = useStudio((s) => s.activeZoneId);
+  const edit = useLayerEdit();
   const dispatch = useStudio((s) => s.dispatch);
   const a = content.adjust ?? NEUTRAL_ADJUST;
   const set = (patch: Partial<ImageAdjust>, label: string, gesture?: string) => {
     const next = { ...a, ...patch };
-    const command = cmd.updateLayer(zoneId, layer.id, { content: { adjust: isNeutralAdjust(next) ? undefined : next } }, label);
+    const command = edit(layer.id, { content: { adjust: isNeutralAdjust(next) ? undefined : next } }, label);
     dispatch(gesture ? cmd.coalescing(command, `adjust-${gesture}:${layer.id}`) : command);
   };
   return (
@@ -549,7 +565,7 @@ function ImageAdjustments({ layer, content }: { layer: ArtworkLayer; content: Im
           Invert
         </label>
         {content.adjust ? (
-          <button className="btn btn-ghost ml-auto min-h-8 px-2 text-xs" onClick={() => dispatch(cmd.updateLayer(zoneId, layer.id, { content: { adjust: undefined } }, 'Reset adjustments'))}>
+          <button className="btn btn-ghost ml-auto min-h-8 px-2 text-xs" onClick={() => dispatch(edit(layer.id, { content: { adjust: undefined } }, 'Reset adjustments'))}>
             <RotateCcw size={13} /> Reset
           </button>
         ) : null}
@@ -569,11 +585,13 @@ const REPEAT_MODES: { id: ImageRepeat['mode']; label: string }[] = [
 /** Repeat pattern (spec ED2-11, TYP-05): tile the image across the layer box, clipped to it. */
 function RepeatSection({ layer, content }: { layer: ArtworkLayer; content: ImageContent }) {
   const zoneId = useStudio((s) => s.activeZoneId);
+  const onGarment = useContext(OnGarmentContext);
+  const edit = useLayerEdit();
   const dispatch = useStudio((s) => s.dispatch);
   const spec = useActiveZoneSpec();
   const r = content.repeat;
   const set = (patch: Partial<ImageRepeat>, label: string, gesture?: string) => {
-    const command = cmd.updateLayer(zoneId, layer.id, { content: { repeat: { ...(r ?? DEFAULT_REPEAT), ...patch } } }, label);
+    const command = edit(layer.id, { content: { repeat: { ...(r ?? DEFAULT_REPEAT), ...patch } } }, label);
     dispatch(gesture ? cmd.coalescing(command, `repeat-${gesture}:${layer.id}`) : command);
   };
   return (
@@ -585,8 +603,7 @@ function RepeatSection({ layer, content }: { layer: ArtworkLayer; content: Image
           checked={!!r}
           onChange={(e) =>
             dispatch(
-              cmd.updateLayer(
-                zoneId,
+              edit(
                 layer.id,
                 { content: { repeat: e.target.checked ? { ...DEFAULT_REPEAT, tileWidthMm: Math.max(5, Math.round(Math.min(layer.transform.widthMm, layer.transform.heightMm) / 3)) } : undefined } },
                 e.target.checked ? 'Repeat as pattern' : 'Stop repeating',
@@ -613,16 +630,18 @@ function RepeatSection({ layer, content }: { layer: ArtworkLayer; content: Image
           <RangeField label="Angle" value={r.rotationDeg} min={-180} max={180} step={5} format={(v) => `${v}°`} onChange={(v) => set({ rotationDeg: v }, 'Pattern angle', 'angle')} />
           <RangeField label="Shift X" value={r.offsetXmm} min={-150} max={150} format={(v) => `${v} mm`} onChange={(v) => set({ offsetXmm: v }, 'Pattern offset', 'offx')} />
           <RangeField label="Shift Y" value={r.offsetYmm} min={-150} max={150} format={(v) => `${v} mm`} onChange={(v) => set({ offsetYmm: v }, 'Pattern offset', 'offy')} />
-          <button
-            className="btn btn-outline w-full text-xs"
-            onClick={() =>
-              dispatch(
-                cmd.updateTransforms(zoneId, { [layer.id]: { centerXmm: spec.printableWidthMm / 2, centerYmm: spec.printableHeightMm / 2, widthMm: spec.printableWidthMm, heightMm: spec.printableHeightMm, rotationDeg: 0 } }, 'Fill print area'),
-              )
-            }
-          >
-            <Maximize2 size={14} /> Fill the print area
-          </button>
+          {onGarment ? null : (
+            <button
+              className="btn btn-outline w-full text-xs"
+              onClick={() =>
+                dispatch(
+                  cmd.updateTransforms(zoneId, { [layer.id]: { centerXmm: spec.printableWidthMm / 2, centerYmm: spec.printableHeightMm / 2, widthMm: spec.printableWidthMm, heightMm: spec.printableHeightMm, rotationDeg: 0 } }, 'Fill print area'),
+                )
+              }
+            >
+              <Maximize2 size={14} /> Fill the print area
+            </button>
+          )}
           <p className="text-[11px] text-fg-3">The pattern is clipped to the layer box. Print resolution is checked per tile.</p>
         </>
       ) : null}
@@ -686,21 +705,26 @@ const FINISHES: { id: LayerStyle['finish']; label: string; note: string }[] = [
 ];
 
 /** Finish preview (spec ED3-08, TYP-06) and seeded distress (spec TYP-08). */
+/** Finishes a sublimated (dyed-in) print can have: it can wear and crack, but not rise, stitch or shine. */
+const DYED_FINISHES: LayerStyle['finish'][] = ['flat_ink', 'distressed', 'cracked'];
+
 function FinishControls({ layer }: { layer: ArtworkLayer }) {
-  const zoneId = useStudio((s) => s.activeZoneId);
+  const edit = useLayerEdit();
+  const onGarment = useContext(OnGarmentContext);
   const dispatch = useStudio((s) => s.dispatch);
   const distress = effectiveDistress(layer);
   const setStyle = (style: Partial<LayerStyle>, label: string, gesture?: string) => {
-    const command = cmd.updateLayer(zoneId, layer.id, { style }, label);
+    const command = edit(layer.id, { style }, label);
     dispatch(gesture ? cmd.coalescing(command, `${gesture}:${layer.id}`) : command);
   };
   const withAmount = (amount: number) => ({ ...(distress ?? { scaleMm: 6, seed: Math.floor(Math.random() * 100000) }), amount });
+  const finishes = onGarment ? FINISHES.filter((f) => DYED_FINISHES.includes(f.id) || f.id === layer.style.finish) : FINISHES;
   return (
     <>
       <label className="grid grid-cols-[52px_1fr] items-center gap-2">
         <span className="label">Finish</span>
         <select className="field" value={layer.style.finish} onChange={(e) => setStyle({ finish: e.target.value as LayerStyle['finish'] }, 'Finish')}>
-          {FINISHES.map((f) => (
+          {finishes.map((f) => (
             <option key={f.id} value={f.id}>
               {f.label}
             </option>
@@ -722,7 +746,7 @@ function FinishControls({ layer }: { layer: ArtworkLayer }) {
 }
 
 function AppearanceSection({ layer }: { layer: ArtworkLayer }) {
-  const zoneId = useStudio((s) => s.activeZoneId);
+  const edit = useLayerEdit();
   const dispatch = useStudio((s) => s.dispatch);
   return (
     <Section title="Appearance">
@@ -733,14 +757,14 @@ function AppearanceSection({ layer }: { layer: ArtworkLayer }) {
         min={0}
         max={100}
         value={layer.style.opacity * 100}
-        onCommit={(v) => dispatch(cmd.updateLayer(zoneId, layer.id, { style: { opacity: v / 100 } }, 'Opacity'))}
+        onCommit={(v) => dispatch(edit(layer.id, { style: { opacity: v / 100 } }, 'Opacity'))}
       />
       <label className="grid grid-cols-[52px_1fr] items-center gap-2">
         <span className="label">Blend</span>
         <select
           className="field"
           value={layer.style.blendMode}
-          onChange={(e) => dispatch(cmd.updateLayer(zoneId, layer.id, { style: { blendMode: e.target.value as ArtworkLayer['style']['blendMode'] } }, 'Blend mode'))}
+          onChange={(e) => dispatch(edit(layer.id, { style: { blendMode: e.target.value as ArtworkLayer['style']['blendMode'] } }, 'Blend mode'))}
         >
           <option value="normal">Normal</option>
           <option value="multiply">Multiply</option>
@@ -754,7 +778,7 @@ function AppearanceSection({ layer }: { layer: ArtworkLayer }) {
 }
 
 function MultiSelection({ count, layers }: { count: number; layers: ArtworkLayer[] }) {
-  const zone = useStudio((s) => s.document?.zones[s.activeZoneId]);
+  const zone = useActiveArtboard();
   const ids = layers.map((l) => l.id);
   const units = zone ? selectionUnits(zone, ids) : [];
   const groupIds = new Set(layers.map((l) => l.groupId).filter(Boolean));
@@ -790,19 +814,150 @@ function MultiSelection({ count, layers }: { count: number; layers: ArtworkLayer
           </button>
         </div>
       </Section>
+      <WrapSection count={count} />
     </div>
   );
 }
 
+/** Lift zone artwork onto the 3D garment so it can run across seams. */
+function WrapSection({ count }: { count: number }) {
+  return (
+    <Section title="Across seams">
+      <p className="text-xs text-fg-2">
+        Put {count === 1 ? 'it' : 'them'} on the 3D garment to run over the shoulder or round a side seam. Prints by sublimation or cut-and-sew, not in this zone’s print file.
+      </p>
+      <button className="btn btn-outline w-full text-xs" onClick={wrapSelectionAcrossSeams}>
+        <Shirt size={14} /> Wrap across seams
+      </button>
+    </Section>
+  );
+}
+
+/** Size, turn and mirroring of projected artwork, and where it goes next. */
+function ProjectionPlacement({ layer }: { layer: ProjectedLayer }) {
+  const dispatch = useStudio((s) => s.dispatch);
+  const units = usePreference('units');
+  const [linked, setLinked] = useState(true);
+  const k = units === 'in' ? 1 / 25.4 : 1;
+  const decimals = units === 'in' ? 2 : 1;
+  const t = layer.transform;
+  const set = (patch: Partial<ProjectedTransform>, label: string) =>
+    dispatch(cmd.coalescing(cmd.updateProjectedLayer(layer.id, { transform: patch }, label), `${label}:${Object.keys(patch).join()}:${layer.id}`));
+  const setSize = (dim: 'widthMm' | 'heightMm', mm: number) => {
+    if (!linked) return set({ [dim]: mm }, 'Resize');
+    const ratio = t.widthMm / t.heightMm;
+    set(dim === 'widthMm' ? { widthMm: mm, heightMm: mm / ratio } : { heightMm: mm, widthMm: mm * ratio }, 'Resize');
+  };
+  return (
+    <Section title="On the garment">
+      <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+        <NumberField compact label="W" suffix={units} decimals={decimals} value={t.widthMm * k} min={0.5 * k} step={k} onCommit={(v) => setSize('widthMm', v / k)} />
+        <NumberField compact label="H" suffix={units} decimals={decimals} value={t.heightMm * k} min={0.5 * k} step={k} onCommit={(v) => setSize('heightMm', v / k)} />
+        <NumberField compact label="∠" suffix="°" decimals={0} value={t.rotationDeg} min={-360} max={360} onCommit={(v) => set({ rotationDeg: v }, 'Rotate')} />
+        <div className="flex items-center justify-end gap-0.5">
+          <button className="icon-btn" aria-pressed={linked} onClick={() => setLinked((l) => !l)} aria-label={linked ? 'Unlink width and height' : 'Link width and height'} title="Keep proportions">
+            {linked ? <Link2 size={15} /> : <Link2Off size={15} />}
+          </button>
+          <button className="icon-btn" aria-pressed={t.flipX} onClick={() => set({ flipX: !t.flipX }, 'Flip')} aria-label="Flip horizontally" title="Flip horizontally">
+            <FlipHorizontal2 size={15} />
+          </button>
+          <button className="icon-btn" aria-pressed={t.flipY} onClick={() => set({ flipY: !t.flipY }, 'Flip')} aria-label="Flip vertically" title="Flip vertically">
+            <FlipVertical2 size={15} />
+          </button>
+        </div>
+      </div>
+      <p className="text-[11px] text-fg-3">
+        Sized on the cloth at its centre. Drag it on the 3D garment in Place mode, over the shoulder or round a side seam. It fades out where the cloth turns away and never prints on the inside.
+      </p>
+      <div className="flex gap-2">
+        <button className="btn btn-outline flex-1 px-2 text-xs" onClick={showOnGarment} title="Show the 3D garment in Place mode">
+          <Move size={14} /> Place on garment
+        </button>
+        <button className="btn btn-outline flex-1 px-2 text-xs" onClick={() => returnProjectionToZone(layer.id)} title="Put it back on the print zone under its centre">
+          <Frame size={14} /> Back to zone
+        </button>
+      </div>
+    </Section>
+  );
+}
+
+/** Artwork across seams: the same content, style and checks as a zone layer, placed on the garment itself. */
+const NO_IDS: string[] = [];
+
+function ProjectionInspector({ layer }: { layer: ProjectedLayer }) {
+  const dispatch = useStudio((s) => s.dispatch);
+  const order = useStudio((s) => s.document?.projections.orderedLayerIds) ?? NO_IDS;
+  const art = useMemo(() => projectedAsArtwork(layer), [layer]);
+  const issues = checkProjectedLayer(layer, DEFAULT_PREFLIGHT).filter((i) => i.code !== 'cross_seam');
+  const index = order.indexOf(layer.id);
+  return (
+    <OnGarmentContext.Provider value>
+      <div className="flex items-center gap-2 px-4 pb-1 pt-3">
+        <input
+          key={`${layer.id}:${layer.name}`}
+          className="field h-9 flex-1 font-semibold"
+          defaultValue={layer.name}
+          aria-label="Layer name"
+          onBlur={(e) => e.target.value.trim() && e.target.value !== layer.name && dispatch(cmd.updateProjectedLayer(layer.id, { name: e.target.value.trim() }, 'Rename layer'))}
+          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+        />
+        <button className="icon-btn" onClick={() => duplicateProjection(layer.id)} aria-label="Duplicate layer" title="Duplicate (Ctrl+D)">
+          <Copy size={15} />
+        </button>
+        <button className="icon-btn text-danger" onClick={() => deleteProjection(layer.id)} aria-label="Delete layer" title="Delete">
+          <Trash2 size={15} />
+        </button>
+      </div>
+      <p className="px-4 pb-2 text-xs text-fg-2">Across seams: printed by sublimation or as cut-and-sew panels.</p>
+      {layer.locked ? <p className="px-4 pb-2 text-xs text-fg-2">This layer is locked. Unlock it in the layer list to move it.</p> : null}
+      {issues.length ? (
+        <div className="mx-2 mb-1">
+          {issues.map((i) => (
+            <IssueItem key={i.id} issue={i} />
+          ))}
+        </div>
+      ) : null}
+      <ProjectionPlacement layer={layer} />
+      {art.content.kind === 'text' ? <TextSection key={layer.id} layer={art} content={art.content} /> : null}
+      {art.content.kind === 'shape' ? <ShapeSection layer={art} content={art.content} /> : null}
+      {art.content.kind === 'image' ? <ImageSection layer={art} /> : null}
+      <AppearanceSection layer={art} />
+      <Section title="Arrange">
+        <div className="flex gap-2">
+          <button className="btn btn-outline flex-1 px-2 text-xs" disabled={index === order.length - 1} onClick={() => dispatch(cmd.reorderProjectedLayer(layer.id, order.length))}>
+            <ArrowUpToLine size={14} /> To front
+          </button>
+          <button className="btn btn-outline flex-1 px-2 text-xs" disabled={index === 0} onClick={() => dispatch(cmd.reorderProjectedLayer(layer.id, 0))}>
+            <ArrowDownToLine size={14} /> To back
+          </button>
+        </div>
+      </Section>
+    </OnGarmentContext.Provider>
+  );
+}
+
 export function Inspector() {
-  const zone = useStudio((s) => s.document?.zones[s.activeZoneId]);
+  const zone = useActiveArtboard();
+  const zoneId = useStudio((s) => s.activeZoneId);
   const selectedIds = useStudio((s) => s.selectedLayerIds);
+  const projection = useStudio((s) => (s.selectedProjectionId ? s.document?.projections.layers[s.selectedProjectionId] : undefined));
   const dispatch = useStudio((s) => s.dispatch);
   const spec = useActiveZoneSpec();
   const layers = useMemo(() => (zone ? selectedIds.map((id) => zone.layers[id]).filter(Boolean) : []), [zone, selectedIds]);
 
   if (!zone) return null;
-  if (layers.length === 0) return <GarmentPanel />;
+  if (projection) return <ProjectionInspector layer={projection} />;
+  if (layers.length === 0) {
+    // A design area being designed on, nothing in it selected: its own settings, then the garment's.
+    return isAreaId(zoneId) && 'id' in zone ? (
+      <>
+        <AreaPanel area={zone as DesignArea} />
+        <GarmentPanel />
+      </>
+    ) : (
+      <GarmentPanel />
+    );
+  }
   if (layers.length > 1) return <MultiSelection count={layers.length} layers={layers} />;
 
   const layer = layers[0];
@@ -817,7 +972,7 @@ export function Inspector() {
           className="field h-9 flex-1 font-semibold"
           defaultValue={layer.name}
           aria-label="Layer name"
-          onBlur={(e) => e.target.value.trim() && e.target.value !== layer.name && dispatch(cmd.updateLayer(zone.zoneId, layer.id, { name: e.target.value.trim() }, 'Rename layer'))}
+          onBlur={(e) => e.target.value.trim() && e.target.value !== layer.name && dispatch(cmd.updateLayer(zoneId, layer.id, { name: e.target.value.trim() }, 'Rename layer'))}
           onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
         />
         <button className="icon-btn" onClick={duplicateSelection} aria-label="Duplicate layer" title="Duplicate (Ctrl+D)">
@@ -840,12 +995,13 @@ export function Inspector() {
       {layer.content.kind === 'shape' ? <ShapeSection layer={layer} content={layer.content} /> : null}
       {layer.content.kind === 'image' ? <ImageSection layer={layer} /> : null}
       <AppearanceSection layer={layer} />
+      <WrapSection count={1} />
       <Section title="Arrange">
         <div className="flex gap-2">
-          <button className="btn btn-outline flex-1 px-2 text-xs" disabled={index === zone.orderedLayerIds.length - 1} onClick={() => dispatch(cmd.reorderLayer(zone.zoneId, layer.id, zone.orderedLayerIds.length))}>
+          <button className="btn btn-outline flex-1 px-2 text-xs" disabled={index === zone.orderedLayerIds.length - 1} onClick={() => dispatch(cmd.reorderLayer(zoneId, layer.id, zone.orderedLayerIds.length))}>
             <ArrowUpToLine size={14} /> To front
           </button>
-          <button className="btn btn-outline flex-1 px-2 text-xs" disabled={index === 0} onClick={() => dispatch(cmd.reorderLayer(zone.zoneId, layer.id, 0))}>
+          <button className="btn btn-outline flex-1 px-2 text-xs" disabled={index === 0} onClick={() => dispatch(cmd.reorderLayer(zoneId, layer.id, 0))}>
             <ArrowDownToLine size={14} /> To back
           </button>
         </div>

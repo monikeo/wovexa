@@ -29,7 +29,7 @@ import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 import * as cmd from '@/domain/commands';
 import { ACCEPTED_TYPES } from '@/lib/assets';
 import { useMenuKeyboard } from '@/components/ui/primitives';
-import { useStudio } from '@/stores/studio-store';
+import { useActiveArtboard, useStudio } from '@/stores/studio-store';
 import {
   addImages,
   addShape,
@@ -57,7 +57,7 @@ const ITEM_HEIGHT = 36;
 export function EditorContextMenu({ x, y, onClose }: { x: number; y: number; onClose: (restoreFocus: boolean) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const zone = useStudio((s) => s.document?.zones[s.activeZoneId]);
+  const zone = useActiveArtboard();
   const zoneId = useStudio((s) => s.activeZoneId);
   const selected = useStudio((s) => s.selectedLayerIds);
   const dispatch = useStudio((s) => s.dispatch);

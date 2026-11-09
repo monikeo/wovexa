@@ -5,8 +5,9 @@
  * screen-print films, a client proof PDF, team names and numbers, product images through
  * Wovexa Render, and a history of what was exported from which revision.
  */
-import { Archive, Box, Check, Clapperboard, Download, FileText, History, Image as ImageIcon, Loader2, Printer, RotateCcw, Ruler, Smartphone, Users, X } from 'lucide-react';
+import { Archive, Box, Check, Clapperboard, Download, FileText, History, Image as ImageIcon, Loader2, PenTool, Printer, RotateCcw, Ruler, Smartphone, Users, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { describeAreaPlacement, designAreas } from '@/domain/areas';
 import * as cmd from '@/domain/commands';
 import { createTextLayer } from '@/domain/factory';
 import { getGarment, getSize, hasZone, partColor, PRINT_METHOD_LABELS, sizeLabel, zoneSpecOrFirst } from '@/domain/garments';
@@ -17,12 +18,14 @@ import { canvasToBlob, downloadBlob } from '@/lib/download';
 import { compareRollWidthsOffThread } from '@/lib/export/marker-compare';
 import { DEFAULT_MARKER, FILE_LENGTHS_M, ROLL_WIDTHS_CM, type MarkerSettings, type RollEstimate } from '@/lib/export/marker-layout';
 import { DEFAULT_PRINT_NAME, fileSafe, formatName, isoDate, NAME_TOKENS, revisionLabel, unknownTokens } from '@/lib/export/naming';
-import { buildClientProof, buildProductionPackage, designRevision, prepareDocument, zonesWithArtwork, type PackageOptions, type ProductRenderOptions, type ProductShot } from '@/lib/export/package';
+import { areasWithArtwork, buildClientProof, buildProductionPackage, designRevision, prepareDocument, zonesWithArtwork, type PackageOptions, type ProductRenderOptions, type ProductShot } from '@/lib/export/package';
 import { revisionText } from '@/lib/export/proof';
 import { pngBlobWithDpi } from '@/lib/export/png-dpi';
 import { designPlaceholders, parseRoster, sizeBreakdown, type Roster } from '@/lib/export/roster';
 import { addExportRecord, approvalState, clearExports, listExports, type ExportKind, type ExportRecord, type ProjectMeta } from '@/lib/local-db';
 import { renderZoneArtwork } from '@/lib/render/zone-renderer';
+import { zoneSvg } from '@/lib/export/svg-artwork';
+import { ZipWriter } from '@/lib/export/zip';
 import { toast } from '@/components/ui/primitives';
 import { useLive, useStudio } from '@/stores/studio-store';
 import { RangeField } from './inspector-controls';
@@ -41,7 +44,7 @@ const PREFS_KEY = 'wovexa.export.v1';
 const DEFAULT_PREFS: Prefs = {
   dpi: 300,
   colorways: 'all',
-  include: { print: true, separations: true, flats: true, mockups: true, proof: true, techSheet: true, cutAndSew: false, marker: false, model: false },
+  include: { print: true, separations: true, flats: true, mockups: true, proof: true, techSheet: true, cutAndSew: false, marker: false, model: false, vector: false },
   naming: DEFAULT_PRINT_NAME,
   marker: DEFAULT_MARKER,
 };
@@ -285,9 +288,12 @@ export function ExportPanel() {
   if (!doc) return null;
   const model = getGarment(doc.garment.modelId);
   const zones = zonesWithArtwork(doc);
+  const areas = areasWithArtwork(doc);
+  const printCount = zones.length + areas.length;
   const screenZones = zones.filter((z) => doc.zones[z].printMethod === 'SCREEN_PRINT');
   const mainColorway = doc.colorways.find((c) => c.id === doc.activeColorwayId) ?? doc.colorways[0];
   const allOver = !!mainColorway?.surfaces && Object.values(mainColorway.surfaces).some(Boolean);
+  const acrossSeams = doc.projections.orderedLayerIds.some((id) => doc.projections.layers[id]?.visible);
   const placeholders = designPlaceholders(doc);
   const missingFields = roster.rows.length ? placeholders.filter((p) => !roster.fields.includes(p)) : [];
   const sizes = sizeBreakdown(roster);
@@ -380,12 +386,70 @@ export function ExportPanel() {
       'Production package',
     );
 
+  /** Every print as SVG: one file, or a ZIP of them. Text and shapes stay vector. */
+  const vectorFiles = () =>
+    run(async (signal) => {
+      const current = useStudio.getState().document!;
+      const model = getGarment(current.garment.modelId);
+      setProgress({ label: 'Loading images and fonts', fraction: 0.1 });
+      await prepareDocument(current, zonesWithArtwork(current));
+      const label = await designRevision(current, approvalOf(useStudio.getState().meta));
+      const jobs = [
+        ...zonesWithArtwork(current).map((z) => {
+          const spec = zoneSpecOrFirst(model, z);
+          return { stack: current.zones[z], w: spec.printableWidthMm, h: spec.printableHeightMm, label: spec.label, zone: z as string, method: current.zones[z].printMethod };
+        }),
+        ...areasWithArtwork(current).map((a) => ({ stack: a, w: a.widthMm, h: a.heightMm, label: a.name, zone: fileSafe(a.name.toLowerCase()), method: a.printMethod })),
+      ];
+      const out: { name: string; svg: string }[] = [];
+      const fonts = new Set<string>();
+      for (const [i, job] of jobs.entries()) {
+        if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
+        setProgress({ label: `Vector print file, ${job.label}`, fraction: 0.2 + (0.7 * i) / jobs.length });
+        const art = zoneSvg(job.stack, job.w, job.h, { dpi: prefs.dpi, title: `${current.title}, ${job.label}` });
+        art.fonts.forEach((f) => fonts.add(f));
+        const name = formatName(prefs.naming, { project: current.title, zone: job.zone, colorway: current.colorways[0]?.name, size: current.garment.sizeCode, method: PRINT_METHOD_LABELS[job.method], w: Math.round(job.w), h: Math.round(job.h), dpi: prefs.dpi, rev: label, date: isoDate() });
+        out.push({ name: `${name}.svg`, svg: art.svg });
+      }
+      let blob: Blob;
+      let fileName: string;
+      if (out.length === 1) {
+        blob = new Blob([out[0].svg], { type: 'image/svg+xml' });
+        fileName = out[0].name;
+      } else {
+        const zip = new ZipWriter();
+        for (const f of out) await zip.add(f.name, f.svg);
+        blob = zip.finish();
+        fileName = `${fileSafe(current.title)}_vector_${label}.zip`;
+      }
+      downloadBlob(blob, fileName);
+      await record('print', 'Vector print files', fileName, out.length, blob.size, { dpi: prefs.dpi, format: 'svg' });
+      toast(`Exported ${out.length} vector print ${out.length === 1 ? 'file' : 'files'} (SVG, true size).${fonts.size ? ` Live text in ${[...fonts].join(', ')}: the printer needs these fonts or outlined text.` : ''}`, 'success');
+    });
+
   const printFiles = () => {
-    if (!zones.length) {
+    if (!printCount) {
       toast('There is no artwork to export yet.', 'error');
       return;
     }
-    if (zones.length > 1) {
+    if (printCount === 1 && areas.length === 1) {
+      void run(async () => {
+        const current = useStudio.getState().document!;
+        const area = areasWithArtwork(current)[0];
+        if (!area) return;
+        setProgress({ label: `Rendering ${area.name} at ${prefs.dpi} dpi`, fraction: 0.3 });
+        await prepareDocument(current, []);
+        const { canvas, dpi } = renderZoneArtwork(area, area.widthMm, area.heightMm, prefs.dpi);
+        const blob = await pngBlobWithDpi(await canvasToBlob(canvas), dpi);
+        const label = await designRevision(current, approvalOf(useStudio.getState().meta));
+        const fileName = `${formatName(prefs.naming, { project: current.title, zone: fileSafe(area.name), colorway: current.colorways[0]?.name, size: current.garment.sizeCode, method: PRINT_METHOD_LABELS[area.printMethod], w: Math.round(area.widthMm), h: Math.round(area.heightMm), dpi, rev: label, date: isoDate() })}.png`;
+        downloadBlob(blob, fileName);
+        await record('print', 'Print file', fileName, 1, blob.size, { dpi });
+        toast(dpi < prefs.dpi ? `Exported at ${dpi} dpi to stay within the browser's image size limit.` : `Exported ${area.name} at ${dpi} dpi, ${Math.round(area.widthMm)} × ${Math.round(area.heightMm)} mm. Placement: ${describeAreaPlacement(area)}.`, dpi < prefs.dpi ? undefined : 'success');
+      });
+      return;
+    }
+    if (printCount > 1) {
       void exportPackage(
         { dpi: prefs.dpi, naming: prefs.naming, include: { print: true, separations: false, flats: false, mockups: false, proof: false, techSheet: false }, colorways: 'active', roster: null },
         'print',
@@ -484,7 +548,13 @@ export function ExportPanel() {
           </div>
         </div>
         <div className="mt-3 space-y-0.5">
-          <Option checked={prefs.include.print} onChange={(v) => setInclude('print', v)} title="Print files" hint={zones.length ? `${zones.length} ${zones.length === 1 ? 'zone' : 'zones'}, true size, resolution written into each PNG` : 'Add artwork to make print files'} disabled={!zones.length} />
+          <Option
+            checked={prefs.include.print}
+            onChange={(v) => setInclude('print', v)}
+            title="Print files"
+            hint={printCount ? `${printCount} ${printCount === 1 ? 'print' : 'prints'}, true size, resolution written into each PNG` : 'Add artwork to make print files'}
+            disabled={!printCount}
+          />
           <Option
             checked={prefs.include.separations}
             onChange={(v) => setInclude('separations', v)}
@@ -500,7 +570,13 @@ export function ExportPanel() {
             checked={!!prefs.include.cutAndSew}
             onChange={(v) => setInclude('cutAndSew', v)}
             title="Cut-and-sew panels"
-            hint={allOver ? 'Every pattern piece with its all-over print, 10 mm bleed, 120 dpi. Recommended for this design' : 'Every pattern piece with its print and 10 mm bleed, for all-over sublimation'}
+            hint={
+              acrossSeams
+                ? 'Every pattern piece with the artwork across seams split at each seam, 10 mm bleed, 120 dpi. Needed for this design'
+                : allOver
+                  ? 'Every pattern piece with its all-over print, 10 mm bleed, 120 dpi. Recommended for this design'
+                  : 'Every pattern piece with its print and 10 mm bleed, for all-over sublimation'
+            }
           />
           <Option
             checked={!!prefs.include.marker}
@@ -510,6 +586,13 @@ export function ExportPanel() {
           />
           {prefs.include.marker ? <MarkerPanel doc={doc} order={order} settings={prefs.marker} onChange={setMarker} /> : null}
           <Option checked={!!prefs.include.model} onChange={(v) => setInclude('model', v)} title="3D model" hint="GLB in metres, for web viewers, Blender and AR" />
+          <Option
+            checked={!!prefs.include.vector}
+            onChange={(v) => setInclude('vector', v)}
+            title="Vector print files"
+            hint="Each print again as SVG: text and shapes stay vector, for screen-print films, vinyl and embroidery"
+            disabled={!printCount}
+          />
         </div>
         <div className="mt-3 grid grid-cols-2 gap-3">
           <div>
@@ -546,11 +629,17 @@ export function ExportPanel() {
 
       {/* One-off exports. */}
       <section className="grid grid-cols-2 gap-2">
-        <button className="btn btn-outline h-auto flex-col items-start gap-0.5 px-3 py-2.5 text-left" disabled={busy || !zones.length} onClick={printFiles}>
+        <button className="btn btn-outline h-auto flex-col items-start gap-0.5 px-3 py-2.5 text-left" disabled={busy || !printCount} onClick={printFiles}>
           <span className="flex items-center gap-2 text-[13px] font-semibold">
             <Printer size={14} /> Print files
           </span>
-          <span className="text-[11px] font-normal text-fg-2">{zones.length > 1 ? `${zones.length} PNGs in a ZIP` : 'True-size PNG'}, {prefs.dpi} dpi</span>
+          <span className="text-[11px] font-normal text-fg-2">{printCount > 1 ? `${printCount} PNGs in a ZIP` : 'True-size PNG'}, {prefs.dpi} dpi</span>
+        </button>
+        <button className="btn btn-outline h-auto flex-col items-start gap-0.5 px-3 py-2.5 text-left" disabled={busy || !printCount} onClick={() => void vectorFiles()}>
+          <span className="flex items-center gap-2 text-[13px] font-semibold">
+            <PenTool size={14} /> Vector files
+          </span>
+          <span className="text-[11px] font-normal text-fg-2">{printCount > 1 ? `${printCount} SVGs in a ZIP` : 'True-size SVG'}, for films, vinyl and embroidery</span>
         </button>
         <button className="btn btn-outline h-auto flex-col items-start gap-0.5 px-3 py-2.5 text-left" disabled={busy} onClick={() => void proof()}>
           <span className="flex items-center gap-2 text-[13px] font-semibold">
@@ -595,6 +684,21 @@ export function ExportPanel() {
                   <span className="text-fg-2">, {PRINT_METHOD_LABELS[doc.zones[z].printMethod]}</span>
                 </span>
                 <span className="num flex-none text-xs">{has ? `${spec.printableWidthMm} × ${spec.printableHeightMm} mm` : 'Empty'}</span>
+              </li>
+            );
+          })}
+          {designAreas(doc).map((a) => {
+            const has = areas.includes(a);
+            return (
+              <li key={a.id} className={has ? '' : 'text-fg-3'}>
+                <span className="flex items-baseline justify-between gap-3">
+                  <span className="truncate">
+                    {a.name}
+                    <span className="text-fg-2">, {PRINT_METHOD_LABELS[a.printMethod]}</span>
+                  </span>
+                  <span className="num flex-none text-xs">{has ? `${Math.round(a.widthMm)} × ${Math.round(a.heightMm)} mm` : a.visible ? 'Empty' : 'Hidden'}</span>
+                </span>
+                {has ? <span className="block text-xs text-fg-2">{describeAreaPlacement(a)}</span> : null}
               </li>
             );
           })}
