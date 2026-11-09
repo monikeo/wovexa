@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { paletteFromPixels } from '@/lib/image-ops';
-import { adjustMatrix, applyAdjust, distressAt, effectiveDistress, hashString, isNeutralAdjust, NEUTRAL_ADJUST, valueNoise } from './zone-renderer';
+import type { ArtworkLayer } from '@/domain/schema';
+import { adjustMatrix, applyAdjust, distanceField, distressAt, effectiveDistress, halftoneCover, hashString, isNeutralAdjust, layerBleedMm, layerShadow, needsEffectPass, NEUTRAL_ADJUST, valueNoise } from './zone-renderer';
 
 const px = (...rgba: number[]) => new Uint8ClampedArray(rgba);
 
@@ -64,6 +65,54 @@ describe('distress', () => {
     expect(effectiveDistress(layer)).toEqual({ amount: 0.45, scaleMm: 6, seed: hashString('layer-a') % 100000 });
     expect(effectiveDistress({ ...layer, style: { ...layer.style, distress: { amount: 0, scaleMm: 6, seed: 1 } } })).toBeNull();
     expect(effectiveDistress({ ...layer, style: { ...layer.style, finish: 'flat_ink' } })).toBeNull();
+  });
+});
+
+describe('sticker outline and halftone', () => {
+  it('measures the exact distance to the nearest inside pixel', () => {
+    // A single inside pixel in the middle of a 7 × 5 grid.
+    const field = distanceField((i) => i === 2 * 7 + 3, 7, 5);
+    expect(field[2 * 7 + 3]).toBe(0);
+    expect(field[2 * 7 + 6]).toBe(9); // three across
+    expect(field[0]).toBe(9 + 4); // corner: three across, two up
+    // Two inside pixels: each cell measures to the nearer one.
+    const two = distanceField((i) => i === 0 || i === 9, 10, 1);
+    expect(Array.from(two)).toEqual([0, 1, 4, 9, 16, 16, 9, 4, 1, 0]);
+  });
+
+  it('screens by tone (photos) or by opacity (fades)', () => {
+    expect(halftoneCover(0, 0, 0, 255, 'tone')).toBeCloseTo(1);
+    expect(halftoneCover(255, 255, 255, 255, 'tone')).toBeCloseTo(0);
+    expect(halftoneCover(0, 0, 0, 128, 'tone')).toBeCloseTo(128 / 255);
+    // A fade screens a light colour as solidly as a dark one; only its opacity counts.
+    expect(halftoneCover(255, 230, 0, 255, 'fade')).toBe(1);
+    expect(halftoneCover(255, 230, 0, 51, 'fade')).toBeCloseTo(0.2);
+  });
+
+  it('gives every layer a shadow, outline and halftone that reach the print and its bleed', () => {
+    const shape: ArtworkLayer = {
+      id: 's',
+      name: 'Star',
+      visible: true,
+      locked: false,
+      transform: { centerXmm: 50, centerYmm: 50, widthMm: 40, heightMm: 40, rotationDeg: 0, flipX: false, flipY: false },
+      style: { opacity: 1, blendMode: 'normal', finish: 'flat_ink' },
+      content: { kind: 'shape', shape: 'star', fill: '#000000', cornerRadiusMm: 0 },
+    };
+    expect(needsEffectPass(shape)).toBe(false);
+    expect(layerBleedMm(shape)).toBe(0);
+    const styled = { ...shape, style: { ...shape.style, outline: { color: '#FFFFFF', widthMm: 3 }, shadow: { color: '#000000', offsetXmm: 2, offsetYmm: 4, blurMm: 2 } } };
+    expect(needsEffectPass(styled)).toBe(true);
+    // The outline and the shadow beyond it both fit in the bleed.
+    expect(layerBleedMm(styled)).toBeCloseTo(3.5 + 4 + 3);
+    expect(needsEffectPass({ ...shape, style: { ...shape.style, halftone: { cellMm: 2, angleDeg: 45, shape: 'dot', by: 'tone' } } })).toBe(true);
+    // Outline-only shapes reach half their line past the box.
+    expect(layerBleedMm({ ...shape, content: { ...shape.content, hollow: true } as ArtworkLayer['content'] })).toBeCloseTo(1.25);
+    // Text keeps its own shadow; it wins over a style shadow.
+    const textShadow = { color: '#FF0000', offsetXmm: 1, offsetYmm: 1, blurMm: 0 };
+    const text = { ...styled, content: { kind: 'text', value: 'A', fontFamily: 'Archivo', fontWeight: 700, italic: false, fill: '#000000', align: 'center', letterSpacingEm: 0, lineHeight: 1.2, curveDeg: 0, shadow: textShadow } } as ArtworkLayer;
+    expect(layerShadow(text)).toEqual(textShadow);
+    expect(layerShadow(styled)).toEqual(styled.style.shadow);
   });
 });
 

@@ -74,9 +74,9 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | ED2-05 | P0 | Layer stack | Done | Select, reorder, lock, hide, rename, opacity, duplicate, multi-select, groups. |
 | ED2-06 | P0 | Core text | Done | Text layers with font, weight, italic, spacing, leading, alignment, fill, outline. |
 | ED2-07 | P1 | Advanced typography | Done | Arc and wave warps, outlines, shadows, 61 catalogue fonts incl. Khmer and Chinese, uploaded fonts with licence confirmation, auto-fit boxes. Shaping is the browser’s; no shaping review step. |
-| ED2-08 | P0 | Align tools | Done | Align to print area or selection, distribute, snapping to artboard, centre lines and layer edges. |
-| ED2-09 | P1 | Vector drawing | Partial | Rectangle, ellipse, triangle, star, polygon, heart, line, plus a library of 19 vector graphics (badges, sport, symbols, nature) with solid, gradient or pattern fills and outlines. A pen (P) draws shapes of your own: corners and dragged-out curves, closed into a shape that prints and exports as vector. No node editing after drawing, no boolean operations. |
-| ED2-10 | P1 | Image adjustments | Partial | Brightness, contrast, saturation, hue, greyscale, invert, threshold (non-destructive), background removal, and crop shapes (circle, rounded, hexagon, shield, star, heart). No free crop or sharpen. |
+| ED2-08 | P0 | Align tools | Done | Align to print area or selection, distribute, snapping to artboard, centre lines and layer edges. Step and repeat: copies in a row, a grid or round a circle (turned to face out), arranged round the original and grouped with it. |
+| ED2-09 | P1 | Vector drawing | Partial | Rectangle, ellipse, triangle, star, polygon, heart, line, plus a library of 19 vector graphics (badges, sport, symbols, nature) with solid, gradient or pattern fills and outlines, or outline only (drawn as lines in their fill, exported as vector strokes). A pen (P) draws shapes of your own: corners and dragged-out curves, closed into a shape that prints and exports as vector. No node editing after drawing, no boolean operations. |
+| ED2-10 | P1 | Image adjustments | Partial | Brightness, contrast, saturation, hue, greyscale, invert, threshold (non-destructive), background removal, and crop shapes (circle, rounded, hexagon, shield, star, heart), shown while editing in 2D and able to clip a repeat. Printed effects on any layer: drop shadow or glow, a sticker outline round the cut-out, and a halftone screen (dots, squares or lines, sized by darkness or fade, in one ink or the artwork's own colours). No free crop or sharpen. |
 | ED2-11 | P1 | Pattern tool | Done | Image repeat: grid, half-drop, brick, mirror; tile size, gap, angle, offset; clipped to the layer box; DPI checked per tile. |
 | ED2-12 | P1 | Reusable components | Partial | Brand kit logos, user templates, graphics library and standard placements (left chest, centre chest, full front, below collar, upper back, leg and sleeve positions). No reusable component library. |
 | ED2-13 | P1 | Guides and constraints | Partial | Safe-margin checks and centre snapping. No draggable guides or seam clearance. |
@@ -146,7 +146,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | --- | --- | --- | --- | --- |
 | TYP-01 | P0 | Editable text objects | Done | Text stays editable text in the document; textures are caches. |
 | TYP-02 | P1 | Curved and circular text | Done | Positive and negative arcs, grapheme-safe for Khmer combining marks. |
-| TYP-03 | P1 | Text styles | Done | Fill (solid, gradient, pattern), outline, shadow, arch and wave, transforms, line height, and one-tap styles (varsity, college arch, athletic, retro, script, stencil, wave, Korean and Khmer display). |
+| TYP-03 | P1 | Text styles | Done | Fill (solid; gradient across or from the centre, with an optional middle colour and eight presets; pattern), outline, outline only, a second outline round the word (the varsity double outline), shadow or glow, halftone, arch and wave, letter case (capitals, title, lower), transforms, line height, and one-tap styles (varsity, college arch, athletic, retro, script, stencil, wave, Korean and Khmer display). |
 | TYP-04 | P1 | Text legibility validation | Done | Small-text warning per print method. |
 | TYP-05 | P1 | Repeat design patterns | Done | Image repeat patterns plus procedural pattern fills; parameters stay editable. |
 | TYP-06 | P1 | Print finish simulation | Done | Puff relief, satin-stitch embroidery rows, foil and vinyl gloss, plastisol and DTF ink edges, and cracked vintage ink (the cracks also print). Lit in real time and path traced in photoreal renders. |
@@ -175,10 +175,10 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | MED-03 | P1 | Camera controls | Done | Lens (field of view), saved views, orbit bounds, auto framing for tall frames. |
 | MED-04 | P1 | Background options | Done | Transparent, colour, gradient and uploaded photo backdrops, in the view and in every render. |
 | MED-05 | P1 | Still render settings | Done | 1:1, 4:5, 9:16, 16:9 at seven qualities (Low 720, Social 1080, High 1600, then 2K, 4K, 5K and 6K on the long side); the frame is outlined on the live view; quality for the lossy formats; GPU-limit checks. Real time or Photoreal (GPU path tracing, three-gpu-pathtracer): Draft, Studio and Final quality, depth of field, grain removal, progress and cancel. |
-| MED-06 | P1 | Turntable clip | Done | Turntable and motion video (walk, wind, hanger, float, knit): length, turn, size, frame rate, start view, backdrop; motion plays on the video clock, frame-accurate. |
+| MED-06 | P1 | Turntable clip | Done | Turntable and motion video (walk, wind, hanger, float, knit): length, turn (or a still camera that films the motion alone), motion chosen right in Render, size, frame rate, start view, backdrop; motion plays on the video clock, frame-accurate. |
 | MED-07 | P1 | Scene template saving | Partial | Saved looks (lighting, backdrop, lens) reusable across projects on this device; not shared with a workspace yet. |
 | MED-08 | P2 | Keyframe timeline | Not started |  |
-| MED-09 | P2 | Batch gallery generator | Done | Every colourway × every chosen view, named files or one contact sheet. |
+| MED-09 | P2 | Batch gallery generator | Done | Every colourway × every chosen view × every lighting look (seven, for comparing moods without changing the scene), named files or one labelled contact sheet. |
 | MED-10 | P2 | Lifestyle model images | Not started |  |
 | MED-11 | P2 | 3D animation states | Partial | Static, walk, wind, hanger, float and knit states for every garment, with pressed, natural or relaxed drape. No retail fold or visible mannequin. |
 | MED-12 | P2 | Campaign storyboard (new) | Not started |  |
@@ -197,7 +197,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | EXP-08 | P1 | Naming templates | Done | File-name templates with tokens (project, zone, colourway, size, method, size in mm, dpi, design version, date, name, number), Unicode-safe. |
 | EXP-09 | P2 | Commercial video | Partial | MP4 (H.264) or WebM in the browser via WebCodecs, frame-accurate. No server pipeline. |
 | EXP-10 | P2 | Professional color outputs | Partial | Screen-print colour separations (one film per ink, white underbase for dark garments, registration marks), vector SVG print files, TIFF renders (300 dpi, with transparency) and approximate CMYK in the colour CSV. No ICC-managed PDF/X or CMYK TIFF. |
-| EXP-11 | P2 | One-click client media kit (new) | Partial | Package includes product images per colourway, proof PDF and a 3D model (GLB); USDZ for AR Quick Look on its own. No social crops, carousel or QR viewer yet. |
+| EXP-11 | P2 | One-click client media kit (new) | Partial | Package includes product images per colourway, proof PDF and a 3D model (GLB); USDZ for AR Quick Look on its own. Both carry the fabric's inside as a plain lining, so viewers that draw one side show a real inside rather than the print mirrored. No social crops, carousel or QR viewer yet. |
 | EXP-12 | P2 | Export API (new) | Not started |  |
 
 ## Factory handoff (Wovexa Production)

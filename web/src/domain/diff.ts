@@ -35,6 +35,9 @@ function describeLayerChange(a: ArtworkLayer, b: ArtworkLayer): string[] {
   if (a.locked !== b.locked) out.push(b.locked ? 'locked' : 'unlocked');
   if (a.style.opacity !== b.style.opacity) out.push(`opacity ${Math.round(b.style.opacity * 100)}%`);
   if (a.style.blendMode !== b.style.blendMode) out.push(`blend ${b.style.blendMode}`);
+  if (a.style.finish !== b.style.finish) out.push(`finish ${b.style.finish.replace('_', ' ')}`);
+  const effects = (s: ArtworkLayer['style']) => JSON.stringify([s.shadow ?? null, s.outline ?? null, s.halftone ?? null, s.distress ?? null]);
+  if (effects(a.style) !== effects(b.style)) out.push('effects changed');
   const ca = a.content;
   const cb = b.content;
   if (ca.kind === 'text' && cb.kind === 'text') {
@@ -43,10 +46,12 @@ function describeLayerChange(a: ArtworkLayer, b: ArtworkLayer): string[] {
     if (ca.fill !== cb.fill) out.push(`colour ${cb.fill}`);
     if (ca.curveDeg !== cb.curveDeg) out.push(cb.curveDeg ? `curved ${Math.round(cb.curveDeg)}°` : 'straightened');
     if (ca.strokeColor !== cb.strokeColor || ca.strokeWidthMm !== cb.strokeWidthMm) out.push('outline changed');
+    if (!!ca.hollow !== !!cb.hollow) out.push(cb.hollow ? 'outline only' : 'filled');
     if (ca.letterSpacingEm !== cb.letterSpacingEm || ca.lineHeight !== cb.lineHeight || ca.align !== cb.align) out.push('spacing or alignment changed');
   } else if (ca.kind === 'shape' && cb.kind === 'shape') {
     if (ca.fill !== cb.fill) out.push(`fill ${cb.fill}`);
     if (ca.cornerRadiusMm !== cb.cornerRadiusMm || ca.strokeColor !== cb.strokeColor || ca.strokeWidthMm !== cb.strokeWidthMm) out.push('shape style changed');
+    if (!!ca.hollow !== !!cb.hollow) out.push(cb.hollow ? 'outline only' : 'filled');
   } else if (ca.kind === 'image' && cb.kind === 'image') {
     if (ca.assetId !== cb.assetId) out.push('image replaced');
   }

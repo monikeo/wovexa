@@ -3,7 +3,7 @@
  * group keeps its internal arrangement. Pure functions: callers turn the result into an
  * updateTransforms command.
  */
-import { rotatedBounds, type Rect } from './geometry';
+import { normalizeDeg, rotatedBounds, type Rect } from './geometry';
 import type { ArtworkLayer, LayerStack, LayerTransform } from './schema';
 
 export type AlignMode = 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom';
@@ -92,4 +92,51 @@ export function expandToGroups(zone: LayerStack, ids: string[]): string[] {
     if (g && groups.has(g)) expanded.add(id);
   }
   return zone.orderedLayerIds.filter((id) => expanded.has(id));
+}
+
+/** Step and repeat: copies in a row, in a grid, or round a circle (spec ED2-08). */
+export interface CopyPlan {
+  mode: 'row' | 'grid' | 'circle';
+  /** How many in all, the original included. */
+  count: number;
+  /** Space between neighbours in a row or grid, mm. */
+  gapMm: number;
+  /** Circle radius, mm, to each copy's centre. */
+  radiusMm: number;
+  /** Round a circle, turn each copy to face out, like the numbers on a clock. */
+  turn: boolean;
+}
+
+export const MAX_COPIES = 48;
+
+/**
+ * Where each of the `count` items goes, the original first: the arrangement is centred where the
+ * original was (a circle's centre, a row's or grid's middle), so it stays where the person put it.
+ */
+export function arrangeCopies(t: LayerTransform, plan: CopyPlan): Pick<LayerTransform, 'centerXmm' | 'centerYmm' | 'rotationDeg'>[] {
+  const n = Math.max(2, Math.min(MAX_COPIES, Math.round(plan.count)));
+  const cx = t.centerXmm;
+  const cy = t.centerYmm;
+  const out: Pick<LayerTransform, 'centerXmm' | 'centerYmm' | 'rotationDeg'>[] = [];
+  if (plan.mode === 'circle') {
+    // From the top, clockwise.
+    for (let i = 0; i < n; i++) {
+      const a = (i * 2 * Math.PI) / n;
+      const turn = plan.turn ? (i * 360) / n : 0;
+      out.push({ centerXmm: cx + plan.radiusMm * Math.sin(a), centerYmm: cy - plan.radiusMm * Math.cos(a), rotationDeg: normalizeDeg(t.rotationDeg + turn) });
+    }
+    return out;
+  }
+  const cols = plan.mode === 'row' ? n : Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+  const stepX = t.widthMm + plan.gapMm;
+  const stepY = t.heightMm + plan.gapMm;
+  for (let i = 0; i < n; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    // The last row of a grid that doesn't fill is centred too.
+    const inRow = row === rows - 1 ? n - row * cols : cols;
+    out.push({ centerXmm: cx + (col - (inRow - 1) / 2) * stepX, centerYmm: cy + (row - (rows - 1) / 2) * stepY, rotationDeg: t.rotationDeg });
+  }
+  return out;
 }

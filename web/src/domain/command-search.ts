@@ -11,6 +11,12 @@ export interface Searchable {
 
 /** How well one word of the query matches the text: 0 for no match, higher is better. */
 function wordScore(word: string, text: string): number {
+  // A whole word of the text ("s" in "Size: S") beats the start of a longer one ("size"), and
+  // the name's first word beats the others.
+  const bare = word.replace(/[^\p{L}\p{N}]+/gu, '');
+  const whole = bare ? text.split(/[^\p{L}\p{N}]+/u).filter(Boolean).indexOf(bare) : -1;
+  if (whole === 0) return 120;
+  if (whole > 0) return 110 - Math.min(9, whole);
   const at = text.indexOf(word);
   if (at === 0) return 100;
   if (at > 0) {
