@@ -10,6 +10,7 @@ import { drawPatches, projectionBleed, sceneRest, type ProjectionScene } from '@
 import { insideOutline, meshPieces } from '@/components/studio/viewer3d/projection';
 import { getGarment, getSize, partColor, type PartId } from '@/domain/garments';
 import type { Colorway, DesignDocument } from '@/domain/schema';
+import { BLEED_MM } from './marker-layout';
 
 export interface CutPiece {
   id: string;
@@ -20,7 +21,6 @@ export interface CutPiece {
   heightMm: number;
 }
 
-const BLEED_MM = 10;
 const MARGIN_MM = 14;
 
 export function renderCutAndSew(doc: DesignDocument, colorway: Colorway, caption: string): CutPiece[] {

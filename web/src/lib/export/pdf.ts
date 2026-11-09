@@ -1,18 +1,35 @@
 /**
- * A minimal PDF writer for proof sheets. Each page is one full-page JPEG (DCTDecode), drawn on a
- * canvas first, so Khmer, Korean, Chinese and every artwork font appear exactly as designed,
- * with no fonts to embed.
+ * A minimal PDF writer for proof sheets and print files. Each page is one full-page image drawn
+ * on a canvas first, so Khmer, Korean, Chinese and every artwork font appear exactly as designed,
+ * with no fonts to embed: a JPEG for proofs, or lossless zlib-compressed rows for print. Print pages can add
+ * vector cut paths in a CutContour spot colour, which print-and-cut RIPs cut instead of printing.
  */
 export interface PdfPage {
-  jpeg: Uint8Array;
+  /** The page image as a JPEG… */
+  jpeg?: Uint8Array;
+  /** …or as zlib-compressed plain RGB rows (see raster-stream). */
+  flateRgb?: Uint8Array[];
   widthPx: number;
   heightPx: number;
   /** Page size in points (1/72 inch). */
   widthPt: number;
   heightPt: number;
+  /** Content drawn over the image, in points from the bottom left. The CutContour colour space is available to it. */
+  overlay?: string;
 }
 
 export const A4_LANDSCAPE = { widthPt: 841.89, heightPt: 595.28 };
+
+/** The spot colour print-and-cut RIPs read as a cut path, shown as magenta elsewhere. */
+const CUT_CONTOUR = '[/Separation /CutContour /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 1 0 0] /N 1 >>]';
+
+/** Closed paths stroked in CutContour, from outlines in millimetres measured from the top left of a page `pageHeightMm` tall. */
+export function cutContourPaths(outlines: [number, number][][], pageHeightMm: number): string {
+  const k = 72 / 25.4;
+  const xy = ([x, y]: [number, number]) => `${(x * k).toFixed(2)} ${((pageHeightMm - y) * k).toFixed(2)}`;
+  const paths = outlines.map((o) => `${o.map((p, i) => `${xy(p)} ${i ? 'l' : 'm'}`).join('\n')}\nh S`).join('\n');
+  return `q /CutContour CS 1 SCN 0.5 w 1 j\n${paths}\nQ`;
+}
 
 function pdfText(text: string) {
   if (/^[\x20-\x7e]*$/.test(text)) return `(${text.replace(/[\\()]/g, (c) => `\\${c}`)})`;
@@ -61,13 +78,19 @@ export function buildPdf(pages: PdfPage[], info: { title: string; subject?: stri
     const contentId = pageId + 2;
     const w = page.widthPt.toFixed(2);
     const h = page.heightPt.toFixed(2);
-    object(pageId, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}] /Resources << /XObject << /Im${k} ${imageId} 0 R >> /ProcSet [/PDF /ImageC] >> /Contents ${contentId} 0 R >>`);
+    const spot = page.overlay ? ` /ColorSpace << /CutContour ${CUT_CONTOUR} >>` : '';
+    object(pageId, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}] /Resources << /XObject << /Im${k} ${imageId} 0 R >>${spot} /ProcSet [/PDF /ImageC] >> /Contents ${contentId} 0 R >>`);
+    const data = page.jpeg ? [page.jpeg] : (page.flateRgb ?? []);
+    const filter = page.jpeg ? '/Filter /DCTDecode' : '/Filter /FlateDecode';
     offsets[imageId] = length;
-    push(`${imageId} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${page.widthPx} /Height ${page.heightPx} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${page.jpeg.length} >>\nstream\n`);
-    push(page.jpeg);
+    push(`${imageId} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${page.widthPx} /Height ${page.heightPx} /ColorSpace /DeviceRGB /BitsPerComponent 8 ${filter} /Length ${data.reduce((n, d) => n + d.length, 0)} >>\nstream\n`);
+    for (const d of data) push(d);
     push('\nendstream\nendobj\n');
-    const content = `q ${w} 0 0 ${h} 0 0 cm /Im${k} Do Q`;
-    object(contentId, `<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
+    const content = enc.encode(`q ${w} 0 0 ${h} 0 0 cm /Im${k} Do Q${page.overlay ? `\n${page.overlay}` : ''}`);
+    offsets[contentId] = length;
+    push(`${contentId} 0 obj\n<< /Length ${content.length} >>\nstream\n`);
+    push(content);
+    push('\nendstream\nendobj\n');
   });
   const count = 4 + pages.length * 3;
   const xref = length;

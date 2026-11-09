@@ -8,10 +8,12 @@
 import { partColor, type GarmentModel, type PartId } from '@/domain/garments';
 import { isAreaId, type ArtboardId, type Colorway, type DesignDocument, type LayerTransform, type Surface, type ZoneId } from '@/domain/schema';
 import { drawZone, drawZoneSurface, paintFabric } from '@/lib/render/zone-renderer';
-import type { EdgePoint, GarmentGeometry } from './garment-geometry';
+import { partSizeMm, type EdgePoint, type GarmentGeometry } from './garment-geometry';
 import { areasKey, drawAreaOutlines, drawAreas, drawAreaSurfaces, drawProjectionOutline, drawProjections, projectionKey, sceneRest, type ProjectionEdit, type ProjectionScene } from './projected-paint';
 import type { RestShape } from './rest-shape';
 import { zoneOrigin } from './uv-mapping';
+
+export { partSizeMm };
 
 /**
  * Live profiles (spec §24.2–24.3, MOB-11), plus `ultra`, used only while rendering stills and
@@ -69,13 +71,6 @@ export interface PaintContext {
    * relief, gloss and metal (see drawPartSurface).
    */
   simulateFinish?: boolean;
-}
-
-export function partSizeMm(geo: GarmentGeometry, part: PartId) {
-  const l = geo.layout;
-  if (part === 'torso') return { w: l.torsoCircumferenceMm, h: l.torsoHeightMm };
-  if (part === 'sleeveLeft' || part === 'sleeveRight') return { w: l.sleeveCircumferenceMm, h: l.sleeveLengthMm };
-  return { w: l.legCircumferenceMm, h: l.legLengthMm };
 }
 
 export function zonesOnPart(model: GarmentModel, part: PartId): ZoneId[] {
