@@ -14,9 +14,9 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | --- | ---: | ---: | ---: | ---: |
 | P0 | 34 | 26 | 8 | 0 |
 | P1 | 88 | 39 | 31 | 18 |
-| P2 | 59 | 3 | 12 | 44 |
+| P2 | 59 | 4 | 12 | 43 |
 | Platform requirements (no priority) | 80 | 41 | 22 | 17 |
-| **All** | 261 | 109 | 73 | 79 |
+| **All** | 261 | 110 | 73 | 78 |
 
 ## Accounts and onboarding
 
@@ -58,7 +58,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | GAR-06 | P1 | Fabric presets | Partial | Fabric presets per garment with GSM and their own surface (jersey, piqué, fleece, mesh, rib, diamond weave). All-over fabric prints: gradient, 8 patterns, image tiles and dye effects (spiral and crumple tie-dye, acid wash, heather, dip-dye, marble). |
 | GAR-07 | P1 | Size variants | Partial | Sizes from real charts (shirts K2 to 8XL, singlets, dobok 100 to 210) grade chest, length, sleeve and pants separately; a custom shape grades with them. Print areas are fixed per model, not per size. |
 | GAR-08 | P1 | Tag customization | Not started |  |
-| GAR-09 | P1 | Colorway manager | Partial | Create from presets or custom, rename, recolour, delete, compare. No reorder or duplicate. |
+| GAR-09 | P1 | Colorway manager | Partial | Create from presets, custom or colourway ideas, rename, recolour, delete, compare, switch from the command palette with a live preview. No reorder or duplicate. |
 | GAR-10 | P2 | Material library (new) | Not started |  |
 | GAR-11 | P2 | Custom garment intake | Partial | A brand's own garment GLB loads over a style as a shell for the look; its pattern, sizes and print areas stay the style's. The 3D model library is the app's `3d_models` folder: every GLB in it (and two levels of subfolders) is listed by file name as soon as it is added, grouped by subfolder or by the garment its name says, with its credit, and wearable from the Garment panel or as a new project. Each model shows front and back 2D views drawn from the model itself (saved beside it as Name.front.png and Name.back.png, or the designer's own flats). No intake of new patterns or zones. |
 | GAR-12 | P1 | Garment compatibility warnings | Done | Preflight blocks print methods a zone does not support. |
@@ -81,7 +81,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | ED2-12 | P1 | Reusable components | Partial | Brand kit logos, user templates, graphics library and standard placements (left chest, centre chest, full front, below collar, upper back, leg and sleeve positions). No reusable component library. |
 | ED2-13 | P1 | Guides and constraints | Partial | Safe-margin checks and centre snapping. No draggable guides or seam clearance. |
 | ED2-14 | P0 | Undo/redo | Done | Semantic command history with merged drags and slider gestures. |
-| ED2-15 | P1 | Shortcuts / commands | Partial | Shortcuts (copy, cut and paste layers between zones and design areas, Tab through layers, rotate with comma and period, pen, artboard switching), a "Keys and gestures" reference (?), right-click/long-press/keyboard context menu, labelled undo. No command palette or remappable keys. |
+| ED2-15 | P1 | Shortcuts / commands | Partial | Command palette (Ctrl+K or ⌘K, the top bar, or the project menu on phones): every studio action by name with forgiving search, only what makes sense for the selection, recent picks first, shortcut hints, colourways previewed on the 3D garment as you move through them. Shortcuts (copy, cut and paste layers between zones and design areas, Tab through layers, rotate with comma and period, pen, artboard switching), a "Keys and gestures" reference (?), right-click/long-press/keyboard context menu, labelled undo. Keys can't be remapped. |
 | ED2-16 | P1 | Color sampling | Done | Screen eyedropper (EyeDropper API, Chromium), brand swatches, hex entry, image palette extraction. |
 | ED2-17 | P2 | Bulk replacement (new) | Not started |  |
 | ED2-18 | P2 | Dynamic data text (new) | Not started |  |
@@ -193,7 +193,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | EXP-04 | P1 | Isolated print artwork | Done | Transparent PNG per zone and design area at true physical size and chosen DPI; finish simulation excluded. The same prints as SVG at true size (1 unit = 1 mm): text stays live text, shapes and graphics are paths, gradients stay gradients, photos and raster effects are placed images, for screen-print films, vinyl and embroidery. |
 | EXP-05 | P1 | Production ZIP | Done | One production ZIP: print files (zones and design areas, optionally also as SVG) with dpi written in, screen films, team files, placement drawings, product images, client proof PDF, tech sheet, cut-and-sew panels, 3D model, colour CSV and a manifest with SHA-256 for every file. |
 | EXP-06 | P1 | Tech pack PDF | Done | Two-page client proof PDF (product per colourway with colour values, then placements with sizes and methods) and a self-contained HTML tech sheet in the package. |
-| EXP-07 | P1 | Export history | Partial | Export history per project in the export panel (what, when, which design version, files, size, outdated flag). The Exports page itself is still a placeholder. |
+| EXP-07 | P1 | Export history | Partial | Export history per project in the export panel, and the Exports page for every project on the device: grouped by day, filtered by kind, searchable, with the design version, files, size, a "design changed since" flag, a link to the project and removal of a record. Exports run on the device as you wait, so there are no queued, failed or retry states and no expiry. |
 | EXP-08 | P1 | Naming templates | Done | File-name templates with tokens (project, zone, colourway, size, method, size in mm, dpi, design version, date, name, number), Unicode-safe. |
 | EXP-09 | P2 | Commercial video | Partial | MP4 (H.264) or WebM in the browser via WebCodecs, frame-accurate. No server pipeline. |
 | EXP-10 | P2 | Professional color outputs | Partial | Screen-print colour separations (one film per ink, white underbase for dark garments, registration marks), vector SVG print files, TIFF renders (300 dpi, with transparency) and approximate CMYK in the colour CSV. No ICC-managed PDF/X or CMYK TIFF. |
@@ -222,7 +222,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | AI-01 | P1 | Background removal | Partial | On-device background removal with tolerance, preview and original recovery. No manual mask cleanup. |
 | AI-02 | P2 | Raster upscaling | Not started |  |
 | AI-03 | P2 | Design variation suggestions | Not started |  |
-| AI-04 | P2 | Color palette assistant | Not started |  |
+| AI-04 | P2 | Color palette assistant | Done | Colourway ideas in the garment panel (or "Colourway ideas" in the command palette): tonal, complementary, analogous, triadic, split complementary and two-tone colourways in real fabric colours, built around a reference photo's colours, the garment's colour, the artwork's main ink or the brand kit. Each is scored for practical contrast: every artwork layer is checked against the fabric under it (a bold outline counts), with a tip when no one colour suits every ink. Hover to see one on the 3D garment, click to add it. Worked out on the device; the photo isn't kept. |
 | AI-05 | P2 | Lifestyle scene assistant | Not started |  |
 | AI-06 | P2 | Smart layout critique (new) | Not started |  |
 | AI-07 | P2 | Prompt-to-pattern (new) | Not started |  |

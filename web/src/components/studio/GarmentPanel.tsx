@@ -15,6 +15,7 @@ import { groupLibrary, MAX_SHELL_TRIANGLES, type LibraryModel } from '@/domain/m
 import { useModelLibrary } from '@/lib/model-library';
 import { saveViewsToLibrary, unsavedViews } from '@/lib/model-views';
 import { ModelThumb } from './ModelThumb';
+import { ColorwayIdeas } from './ColorwayIdeas';
 import { viewerApi } from './viewer3d/stage';
 import { AssetError, importImageFile, loadAssetImage } from '@/lib/assets';
 import { ColorField, toast } from '@/components/ui/primitives';
@@ -60,14 +61,35 @@ const PATTERN_LABELS: Record<(typeof PATTERNS)[number], string> = {
   camo: 'Camo',
 };
 
+/** Artwork on zones a style doesn't have stays (switching back restores it), but won't print: say so. */
+function warnStranded(doc: DesignDocument, style: GarmentModel) {
+  const stranded = ZONE_IDS.filter((z) => !hasZone(style, z) && doc.zones[z].orderedLayerIds.length);
+  if (stranded.length) toast(`Artwork on the ${stranded.map((z) => z.replace('_', ' ')).join(' and ')} is kept, but a ${style.shortName.toLowerCase()} has no such zone, so it won't print. Switch back any time.`);
+}
+
+/** Switch the garment style (the panel's style grid and the command palette). */
+export function chooseGarmentStyle(model: GarmentModel) {
+  const { document: doc, dispatch } = useStudio.getState();
+  if (!doc || model.id === doc.garment.modelId) return;
+  dispatch(cmd.setGarmentModel(model));
+  warnStranded(doc, model);
+}
+
+/** Wear a model from the 3D model library: its style, with the model on it, as one undo step. */
+export function wearModel(m: LibraryModel) {
+  const { document: doc, dispatch } = useStudio.getState();
+  if (!doc) return;
+  const style = getGarment(m.styleId);
+  const worn = doc.garment.shape?.kind === 'shell' ? doc.garment.shape.library : undefined;
+  if (worn === m.file && doc.garment.modelId === style.id) return;
+  const sizeCode = style.sizes.some((s) => s.code === doc.garment.sizeCode) ? doc.garment.sizeCode : style.defaultSize;
+  dispatch(cmd.wearLibraryModel(style, { kind: 'shell', library: m.file, name: m.name, modelId: style.id, sizeCode, ...(m.credit ? { credit: m.credit } : {}) }));
+  warnStranded(doc, style);
+}
+
 function StylePicker({ current }: { current: GarmentModel }) {
-  const doc = useStudio((s) => s.document)!;
-  const dispatch = useStudio((s) => s.dispatch);
   const choose = (model: GarmentModel) => {
-    if (model.id === current.id) return;
-    const stranded = ZONE_IDS.filter((z) => !hasZone(model, z) && doc.zones[z].orderedLayerIds.length);
-    dispatch(cmd.setGarmentModel(model));
-    if (stranded.length) toast(`Artwork on the ${stranded.map((z) => z.replace('_', ' ')).join(' and ')} is kept, but a ${model.shortName.toLowerCase()} has no such zone, so it won't print. Switch back any time.`);
+    if (model.id !== current.id) chooseGarmentStyle(model);
   };
   return (
     <div className="grid grid-cols-4 gap-1.5" role="radiogroup" aria-label="Garment style">
@@ -97,7 +119,6 @@ function StylePicker({ current }: { current: GarmentModel }) {
  * wears the model; print areas and design areas wrap onto it.
  */
 function ModelLibraryPicker({ current, doc }: { current: GarmentModel; doc: DesignDocument }) {
-  const dispatch = useStudio((s) => s.dispatch);
   const [rescan, setRescan] = useState(0);
   const models = useModelLibrary(rescan);
   const [side, setSide] = useState<'front' | 'back'>('front');
@@ -115,14 +136,6 @@ function ModelLibraryPicker({ current, doc }: { current: GarmentModel; doc: Desi
   };
   const worn = doc.garment.shape?.kind === 'shell' ? doc.garment.shape.library : undefined;
   if (models && !models.length) return null;
-  const wear = (m: LibraryModel) => {
-    const style = getGarment(m.styleId);
-    if (worn === m.file && current.id === style.id) return;
-    const stranded = ZONE_IDS.filter((z) => !hasZone(style, z) && doc.zones[z].orderedLayerIds.length);
-    const sizeCode = style.sizes.some((s) => s.code === doc.garment.sizeCode) ? doc.garment.sizeCode : style.defaultSize;
-    dispatch(cmd.wearLibraryModel(style, { kind: 'shell', library: m.file, name: m.name, modelId: style.id, sizeCode, ...(m.credit ? { credit: m.credit } : {}) }));
-    if (stranded.length) toast(`Artwork on the ${stranded.map((z) => z.replace('_', ' ')).join(' and ')} is kept, but a ${style.shortName.toLowerCase()} has no such zone, so it won't print.`);
-  };
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-2">
@@ -160,7 +173,7 @@ function ModelLibraryPicker({ current, doc }: { current: GarmentModel; doc: Desi
                         ? `${m.name}: ${m.triangles.toLocaleString('en')} triangles, over the ${MAX_SHELL_TRIANGLES.toLocaleString('en')} limit. Slim it (Blender Decimate), then it can be used.`
                         : `${m.name}, worn as a ${style.shortName.toLowerCase()}.${credit}`
                     }
-                    onClick={() => wear(m)}
+                    onClick={() => wearModel(m)}
                     className="touch-hit group flex min-h-[86px] flex-col items-center justify-start gap-1 rounded-xl border border-line px-0.5 pb-1.5 pt-1.5 text-fg-2 transition-colors hover:border-line-strong hover:text-fg disabled:opacity-45 aria-checked:border-[var(--accent)] aria-checked:bg-selected aria-checked:text-fg"
                   >
                     <ModelThumb model={m} side={side} className="h-12 w-12 flex-none" />
@@ -626,6 +639,7 @@ export function GarmentPanel() {
           ))}
           <p className="text-xs text-fg-3">Screen colours are previews, not verified print or fabric matches.</p>
         </div>
+        <ColorwayIdeas doc={doc} colorway={colorway} model={model} />
       </section>
 
       <section>

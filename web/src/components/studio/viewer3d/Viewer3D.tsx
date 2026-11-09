@@ -2171,7 +2171,7 @@ function PhotorealView({ enabled, overlay, onStatus }: { enabled: boolean; overl
       if (s.document !== p.document || s.selectedLayerIds !== p.selectedLayerIds || s.selectedProjectionId !== p.selectedProjectionId || s.activeZoneId !== p.activeZoneId) arm();
     });
     const unLive = useLive.subscribe((s, p) => {
-      if (s.overrides !== p.overrides || s.projection !== p.projection || s.colorwayOverride !== p.colorwayOverride) arm();
+      if (s.overrides !== p.overrides || s.projection !== p.projection || s.colorwayOverride !== p.colorwayOverride || s.colorwayPreview !== p.colorwayPreview) arm();
     });
     stage.stopLive = stop;
     arm();

@@ -1,10 +1,11 @@
 'use client';
 /**
- * The first-visit studio walkthrough (spec ACC-03): three tips, dismissible at any point and
+ * The first-visit studio walkthrough (spec ACC-03): four tips, dismissible at any point and
  * never shown again on this device. Tips only; it never changes the design.
  */
-import { Clapperboard, Move, Type, X } from 'lucide-react';
+import { Clapperboard, Move, Search, Type, X } from 'lucide-react';
 import { useState, useSyncExternalStore } from 'react';
+import { useModKey } from './CommandPalette';
 
 const KEY = 'wovexa.studio-tour';
 const listeners = new Set<() => void>();
@@ -37,13 +38,20 @@ const TIPS = [
   { Icon: Type, title: 'Design in 2D', body: 'Add text, images and shapes from the tools. Everything is measured in millimetres on the real print area, and print checks run as you work.' },
   { Icon: Move, title: 'Place it on the garment', body: 'In the 3D view, switch to Place to drag, resize and turn artwork right on the shirt. Orbit looks around without moving anything.' },
   { Icon: Clapperboard, title: 'Render and hand off', body: 'Wovexa Render makes product shots and turntable video. Export gives print-ready files, a manifest and the tech pack.' },
+  {
+    Icon: Search,
+    title: 'Find any action by name',
+    body: (open: string) => `${open} and type what you want: add a star, align left, wear a hoodie, export. Colourways show on the garment as you pass them.`,
+  },
 ];
 
 export function StudioTour({ mobile }: { mobile: boolean }) {
   const seen = useSeen();
+  const mod = useModKey();
   const [i, setI] = useState(0);
   if (seen) return null;
   const tip = TIPS[i];
+  const body = typeof tip.body === 'string' ? tip.body : tip.body(mobile ? 'Tap ⋯ then Find an action' : `Press ${mod}+K`);
   return (
     <div
       role="dialog"
@@ -59,7 +67,7 @@ export function StudioTour({ mobile }: { mobile: boolean }) {
             Tip {i + 1} of {TIPS.length}
           </p>
           <h2 className="text-sm font-semibold">{tip.title}</h2>
-          <p className="mt-1 text-xs text-fg-2">{tip.body}</p>
+          <p className="mt-1 text-xs text-fg-2">{body}</p>
         </div>
         <button className="icon-btn h-8 w-8 flex-none" onClick={dismiss} aria-label="Close tips">
           <X size={15} />

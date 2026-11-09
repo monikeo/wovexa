@@ -55,6 +55,8 @@ export function PenOverlay({ fabric, onFinish, onCancel }: { fabric: () => Fabri
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' && e.key !== 'Enter' && e.key !== 'Backspace' && e.key !== 'Delete') return;
+      // Typing in a field or a dialog (the command palette, a text layer's words) keeps its keys.
+      if (e.target instanceof Element && e.target.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="alertdialog"]')) return;
       e.preventDefault();
       e.stopPropagation();
       if (e.key === 'Escape') onCancel();

@@ -313,6 +313,9 @@ export function copySelection(cut = false): string | null {
 /** Whether the system clipboard's text is what WOVEXA last copied (so a paste brings its layers back). */
 export const isOwnClipboard = (text: string) => !!clipboard && text.replace(/\r\n/g, '\n') === clipboard.text;
 
+/** How many layers are waiting to be pasted (0 when nothing was copied this visit). */
+export const copiedLayerCount = () => clipboard?.layers.length ?? 0;
+
 /**
  * Paste the copied layers into the active zone or design area, on top and selected. Into the same
  * print area they sit a little offset; into another, at the same place relative to it, shrunk if
@@ -387,6 +390,29 @@ export function rotateSelection(deg: number) {
     selectedLayerIds.filter((id) => zone.layers[id] && !zone.layers[id].locked).map((id) => [id, { rotationDeg: normalizeDeg(zone.layers[id].transform.rotationDeg + deg) }]),
   );
   if (Object.keys(changes).length) dispatch(cmd.coalescing(cmd.updateTransforms(activeZoneId, changes, 'Rotate'), `rotate:${Object.keys(changes).join()}`));
+}
+
+/** Mirror each selected layer across its own centre, left to right (x) or top to bottom (y). */
+export function flipSelection(axis: 'x' | 'y') {
+  const { document, selectedLayerIds, activeZoneId, dispatch } = useStudio.getState();
+  const zone = document ? artboardOf(document, activeZoneId) : undefined;
+  if (!zone) return;
+  const key = axis === 'x' ? 'flipX' : 'flipY';
+  const changes = Object.fromEntries(selectedLayerIds.filter((id) => zone.layers[id] && !zone.layers[id].locked).map((id) => [id, { [key]: !zone.layers[id].transform[key] }]));
+  if (Object.keys(changes).length) dispatch(cmd.updateTransforms(activeZoneId, changes, 'Flip'));
+}
+
+/** Lock or hide the selected layers (or show and unlock them again), as one undo step. */
+export function setSelectionFlag(flag: 'locked' | 'visible', value: boolean) {
+  const { document, selectedLayerIds, activeZoneId, dispatch, select } = useStudio.getState();
+  const zone = document ? artboardOf(document, activeZoneId) : undefined;
+  if (!zone) return;
+  const ids = selectedLayerIds.filter((id) => zone.layers[id] && zone.layers[id][flag] !== value);
+  if (!ids.length) return;
+  const label = flag === 'locked' ? (value ? 'Lock' : 'Unlock') : value ? 'Show' : 'Hide';
+  dispatch(cmd.batch(label, ids.map((id) => cmd.updateLayer(activeZoneId, id, { [flag]: value }, label))));
+  // Hidden or locked layers can't be worked on the canvas, so they leave the selection.
+  if ((flag === 'locked' && value) || (flag === 'visible' && !value)) select([]);
 }
 
 /** Design on the next (or previous) print zone or design area, in tab order. */

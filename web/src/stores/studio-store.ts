@@ -10,7 +10,7 @@ import { artboardOf, artboardSpec, hasArtboard } from '@/domain/areas';
 import type { Command } from '@/domain/commands';
 import { getGarment } from '@/domain/garments';
 import { applyCommand, emptyHistory, redo as redoHistory, undo as undoHistory, type History } from '@/domain/history';
-import { isAreaId, type ArtboardId, type DesignDocument, type LayerTransform, type ProjectedTransform, type ProjectorSpec } from '@/domain/schema';
+import { isAreaId, type ArtboardId, type Colorway, type DesignDocument, type LayerTransform, type ProjectedTransform, type ProjectorSpec } from '@/domain/schema';
 import { getProject, loadDocument, saveDocument, type ProjectMeta } from '@/lib/local-db';
 import { renderThumbnail } from '@/lib/thumbnail';
 
@@ -262,11 +262,14 @@ interface LiveState {
   source: '2d' | '3d' | null;
   /** Shown instead of the active colourway while batch-rendering every colourway. */
   colorwayOverride: string | null;
+  /** A colourway not in the design yet (an idea being looked at), shown on the garment over everything else. */
+  colorwayPreview: Colorway | null;
   /** Output aspect (width / height) the render studio is set to; the 3D view frames it. */
   renderAspect: number | null;
   setOverrides: (zoneId: ArtboardId, overrides: Record<string, Partial<LayerTransform>>, source?: '2d' | '3d') => void;
   setProjection: (projection: LiveProjection | null) => void;
   setColorwayOverride: (id: string | null) => void;
+  setColorwayPreview: (colorway: Colorway | null) => void;
   setRenderAspect: (aspect: number | null) => void;
   clear: () => void;
 }
@@ -277,27 +280,31 @@ export const useLive = create<LiveState>((set) => ({
   projection: null,
   source: null,
   colorwayOverride: null,
+  colorwayPreview: null,
   renderAspect: null,
   setOverrides: (zoneId, overrides, source = '2d') => set({ zoneId, overrides, source }),
   setProjection: (projection) => set({ projection, source: projection ? '3d' : null }),
   setColorwayOverride: (colorwayOverride) => set({ colorwayOverride }),
+  setColorwayPreview: (colorwayPreview) => set({ colorwayPreview }),
   setRenderAspect: (renderAspect) => set({ renderAspect }),
   clear: () => set({ zoneId: null, overrides: {}, projection: null, source: null }),
 }));
 
-/** The colourway the 3D view should show: a batch-export override, else the active one. */
+/** The colourway the 3D view should show: an idea being looked at, a batch-export override, else the active one. */
 export function useDisplayColorway() {
   const override = useLive((s) => s.colorwayOverride);
-  return useStudio((s) => {
+  const preview = useLive((s) => s.colorwayPreview);
+  const chosen = useStudio((s) => {
     const d = s.document;
     if (!d) return undefined;
     return d.colorways.find((c) => c.id === (override ?? d.activeColorwayId)) ?? d.colorways[0];
   });
+  return preview ?? chosen;
 }
 
 if (typeof window !== 'undefined') {
   // Development-only handle for inspecting studio state from the console.
-  if (process.env.NODE_ENV !== 'production') Object.assign(window, { __wovexaStudio: useStudio });
+  if (process.env.NODE_ENV !== 'production') Object.assign(window, { __wovexaStudio: useStudio, __wovexaLive: useLive });
   // Flush pending edits when the tab is hidden or closed, so a reload never loses work.
   const flush = () => {
     if (useStudio.getState().saveState !== 'saved') void useStudio.getState().saveNow();

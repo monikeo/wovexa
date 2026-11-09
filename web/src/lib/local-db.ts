@@ -348,6 +348,17 @@ export async function listExports(projectId: string, limit = 12): Promise<Export
   return all.sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
 }
 
+/** Every recorded export on this device, newest first (the Exports page). */
+export async function listAllExports(limit = 400): Promise<ExportRecord[]> {
+  const all = await (await db()).getAll('exports');
+  return all.sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
+}
+
+/** Forget one export (the files already downloaded are not touched). */
+export async function deleteExportRecord(id: string) {
+  await (await db()).delete('exports', id);
+}
+
 export async function clearExports(projectId: string) {
   const database = await db();
   const keys = await database.getAllKeysFromIndex('exports', 'projectId', projectId);
