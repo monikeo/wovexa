@@ -65,12 +65,39 @@ export const layerStyleSchema = z.object({
    * identically in the editor, on the garment and in print files. It removes ink, so it prints.
    */
   distress: z.object({ amount: finite.min(0).max(1), scaleMm: finite.min(0.5).max(50), seed: z.number().int().min(0).max(2 ** 31) }).optional(),
+  /** A drop shadow, or with no offset a glow, behind the whole layer. Text keeps its own in its content. It prints. */
+  shadow: z.object({ color: hex, offsetXmm: finite.min(-50).max(50), offsetYmm: finite.min(-50).max(50), blurMm: finite.min(0).max(30) }).optional(),
+  /** A band of ink around the layer's silhouette: the sticker or die-cut border, or a second outline round text. */
+  outline: z.object({ color: hex, widthMm: finite.min(0.2).max(30) }).optional(),
+  /**
+   * Printed as a halftone screen: dots, squares or lines on a grid at an angle, each sized by the
+   * artwork's tone (photos) or by its opacity (fades). One ink colour, or each dot in its own colour.
+   */
+  halftone: z
+    .object({
+      cellMm: finite.min(0.4).max(20),
+      angleDeg: finite.min(-90).max(90),
+      shape: z.enum(['dot', 'square', 'line']),
+      by: z.enum(['tone', 'fade']),
+      color: hex.optional(),
+    })
+    .optional(),
 });
 export type LayerStyle = z.infer<typeof layerStyleSchema>;
+export type LayerShadow = NonNullable<LayerStyle['shadow']>;
+export type LayerHalftone = NonNullable<LayerStyle['halftone']>;
 
 export const PATTERNS = ['stripes', 'dots', 'checks', 'grid', 'zigzag', 'waves', 'diamonds', 'camo'] as const;
 
-const gradientFill = z.object({ kind: z.literal('gradient'), to: hex, angleDeg: finite.min(-360).max(360) });
+const gradientFill = z.object({
+  kind: z.literal('gradient'),
+  to: hex,
+  angleDeg: finite.min(-360).max(360),
+  /** A third colour halfway: sunsets, chrome, rainbows. */
+  via: hex.optional(),
+  /** From the centre outward instead of across (the angle is then unused). */
+  radial: z.boolean().optional(),
+});
 const patternFill = z.object({
   kind: z.literal('pattern'),
   pattern: z.enum(PATTERNS),
@@ -174,6 +201,8 @@ export const textContentSchema = z.object({
   fillStyle: fillStyleSchema.optional(),
   /** A font uploaded to this device's font library (spec AST-07), when not a built-in family. */
   fontAssetId: id.optional(),
+  /** Outline only: the letters drawn as lines (the outline colour and width, else the fill colour at 1 mm), no fill. */
+  hollow: z.boolean().optional(),
 });
 
 export const SHAPES = ['rect', 'ellipse', 'triangle', 'star', 'polygon', 'heart', 'line', 'path'] as const;
@@ -194,6 +223,8 @@ export const shapeContentSchema = z.object({
   path: z.string().max(8000).regex(/^[MmLlHhVvCcSsQqTtAaZz0-9.,\s+-]*$/, 'Expected SVG path data').optional(),
   /** The graphic library item this came from, for naming. */
   graphicId: z.string().max(40).optional(),
+  /** Outline only: rings, frames and line art (the outline colour and width, else the fill colour at 1 mm), no fill. */
+  hollow: z.boolean().optional(),
 });
 
 export const layerContentSchema = z.discriminatedUnion('kind', [imageContentSchema, textContentSchema, shapeContentSchema]);

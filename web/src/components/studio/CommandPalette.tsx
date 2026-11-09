@@ -18,12 +18,14 @@ import {
   BringToFront,
   Camera,
   Circle,
+  CircleDashed,
   Clapperboard,
   ClipboardPaste,
   Columns2,
   Copy,
   CopyPlus,
   Download,
+  Eraser,
   Eye,
   EyeOff,
   FileText,
@@ -32,6 +34,8 @@ import {
   Focus,
   FolderOpen,
   GitCompare,
+  Grid3x3,
+  Grip,
   Group,
   Heart,
   Hexagon,
@@ -41,6 +45,7 @@ import {
   Images,
   Keyboard,
   Layers,
+  Layers2,
   LayoutTemplate,
   ListChecks,
   Lock,
@@ -48,11 +53,14 @@ import {
   Maximize,
   Minus,
   Moon,
+  Orbit,
+  PaintBucket,
   Palette,
   Pencil,
   PenTool,
   Redo2,
   RotateCw,
+  Rows3,
   Ruler,
   Save,
   Scissors,
@@ -66,7 +74,9 @@ import {
   Square,
   SquareDashed,
   Star,
+  Sticker,
   Sun,
+  SunDim,
   SunMoon,
   SwatchBook,
   Trash2,
@@ -85,6 +95,7 @@ import { searchCommands, type Searchable } from '@/domain/command-search';
 import * as cmd from '@/domain/commands';
 import { GARMENT_LIST, getGarment, partColor, sizeLabel } from '@/domain/garments';
 import { GRAPHICS } from '@/domain/graphics';
+import { DRAPES, drapeOf, MOTIONS, motionOf, SCENE_PRESETS, sceneOf, toneOf, TONES } from '@/domain/scene';
 import { MAX_SHELL_TRIANGLES, type LibraryModel } from '@/domain/model-library';
 import { isAreaId, type AreaId, type ArtboardId, type DesignDocument, type ShapeContent } from '@/domain/schema';
 import { ACCEPTED_TYPES } from '@/lib/assets';
@@ -98,6 +109,7 @@ import {
   addShape,
   addText,
   alignSelection,
+  clearEffects,
   copiedLayerCount,
   copySelection,
   deleteSelection,
@@ -106,12 +118,16 @@ import {
   flipSelection,
   groupSelection,
   moveSelectionInStack,
+  outlineOnlySelection,
   pasteLayers,
   placementsFor,
   placeSelection,
+  repeatSelection,
   rotateSelection,
   setSelectionFlag,
+  shadowSelection,
   startPen,
+  styleSelection,
   switchArtboard,
   ungroupSelection,
   zoomToSelection,
@@ -274,6 +290,50 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
         : [{ id: 'sel-show', label: 'Show', keywords: 'visible on', icon: Eye, run: () => setSelectionFlag('visible', true) }]),
       ...(twoShown ? [{ id: 'sel-zoom', label: 'Zoom to selection', keywords: 'focus magnify close', icon: ZoomIn, keys: 'Shift+2', run: zoomToSelection }] : []),
       ...(!area ? [{ id: 'sel-wrap', label: 'Wrap across seams', keywords: 'garment 3d projection seam all over sublimation cut sew', icon: Spline, run: wrapSelectionAcrossSeams }] : []),
+      // Effects, all of them printed.
+      { id: 'fx-shadow', label: 'Drop shadow', keywords: 'effect shadow depth 3d', icon: Layers2, searchOnly: true, run: () => shadowSelection({ color: '#000000', offsetXmm: 1.5, offsetYmm: 2, blurMm: 1.5 }, 'Drop shadow') },
+      {
+        id: 'fx-glow',
+        label: 'Glow',
+        keywords: 'effect neon light halo shadow',
+        icon: SunDim,
+        searchOnly: true,
+        run: () => shadowSelection({ color: layers[0].content.kind === 'image' ? '#FFFFFF' : layers[0].content.fill, offsetXmm: 0, offsetYmm: 0, blurMm: 4 }, 'Glow'),
+      },
+      { id: 'fx-sticker', label: 'Sticker outline', keywords: 'effect border die cut contour double outline badge patch', icon: Sticker, searchOnly: true, run: () => styleSelection({ outline: { color: '#FFFFFF', widthMm: 3 } }, 'Sticker outline') },
+      {
+        id: 'fx-halftone',
+        label: 'Halftone',
+        keywords: 'effect dots screen print pop art comic retro',
+        icon: Grip,
+        searchOnly: true,
+        run: () => styleSelection({ halftone: { cellMm: 1.5, angleDeg: 45, shape: 'dot', by: layers[0].content.kind === 'image' ? 'tone' : 'fade' } }, 'Halftone'),
+      },
+      ...(layers.some((l) => l.content.kind !== 'image')
+        ? [
+            layers.every((l) => l.content.kind === 'image' || l.content.hollow)
+              ? { id: 'fx-filled', label: 'Filled', keywords: 'fill solid', icon: PaintBucket, searchOnly: true, run: () => outlineOnlySelection(false) }
+              : { id: 'fx-hollow', label: 'Outline only', keywords: 'hollow lines stroke no fill', icon: CircleDashed, searchOnly: true, run: () => outlineOnlySelection(true) },
+          ]
+        : []),
+      ...(layers.some((l) => l.style.shadow || l.style.outline || l.style.halftone || (l.content.kind === 'text' && l.content.shadow))
+        ? [{ id: 'fx-clear', label: 'Remove effects', keywords: 'clear plain shadow glow outline halftone', icon: Eraser, searchOnly: true, run: clearEffects }]
+        : []),
+      // Step and repeat.
+      ...(layers.length === 1
+        ? [
+            {
+              id: 'copies-circle',
+              label: 'Copies round a circle',
+              keywords: 'repeat radial ring step array duplicate',
+              icon: Orbit,
+              searchOnly: true,
+              run: () => repeatSelection({ mode: 'circle', count: 6, gapMm: 5, radiusMm: Math.round(Math.max(20, Math.max(layers[0].transform.widthMm, layers[0].transform.heightMm) * 1.3)), turn: true }),
+            },
+            { id: 'copies-row', label: 'Copies in a row', keywords: 'repeat step array duplicate line', icon: Rows3, searchOnly: true, run: () => repeatSelection({ mode: 'row', count: 3, gapMm: 5, radiusMm: 0, turn: false }) },
+            { id: 'copies-grid', label: 'Copies in a grid', keywords: 'repeat step array duplicate tile', icon: Grid3x3, searchOnly: true, run: () => repeatSelection({ mode: 'grid', count: 4, gapMm: 5, radiusMm: 0, turn: false }) },
+          ]
+        : []),
       ...ALIGN.map((a) => ({ id: `align:${a.mode}`, label: a.label, note: units === 1 ? 'on the print area' : undefined, keywords: 'align arrange line up position', icon: a.icon, searchOnly: true, run: () => alignSelection(a.mode) })),
       ...(units >= 3
         ? [
@@ -357,6 +417,10 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
     { mode: '3d', label: 'Show the 3D garment', icon: Box, keywords: 'view model preview 3d' },
   ];
   const current: ViewMode = mobile ? (c.viewMode === '2d' ? '2d' : '3d') : c.viewMode === 'split' && !c.wide ? '2d' : c.viewMode;
+  const scene = sceneOf(doc);
+  const setScene = (patch: Parameters<typeof cmd.updateScene>[1], label: string) => s().dispatch(cmd.updateScene(scene, patch, label));
+  // A GLB shell keeps its own modelled folds.
+  const ownFolds = doc.garment.shape?.kind === 'shell' && doc.garment.shape.modelId === doc.garment.modelId;
   add('View', [
     ...modes
       .filter((m) => m.mode !== current && (m.mode !== 'split' || (!mobile && c.wide)))
@@ -370,6 +434,33 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
       searchOnly: !MAIN_VIEWS.includes(v),
       run: () => showView(v, threeShown, c),
     })),
+    // The 3D scene by name: lighting looks, colour tone, motion, drape and the floor shadow.
+    ...SCENE_PRESETS.filter((p) => p.id !== scene.presetId).map((p) => ({
+      id: `look:${p.id}`,
+      label: `Lighting: ${p.label}`,
+      keywords: `3d scene look light mood backdrop studio ${p.id}`,
+      icon: Sun,
+      searchOnly: true,
+      run: () => setScene({ presetId: p.id, ...p.defaults }, `Scene: ${p.label}`),
+    })),
+    ...TONES.filter((t) => t.id !== toneOf(scene)).map((t) => ({ id: `tone:${t.id}`, label: `Colour: ${t.label}`, keywords: '3d tone mapping grade film colour color', icon: Palette, searchOnly: true, run: () => setScene({ tone: t.id }, `Tone: ${t.label.toLowerCase()}`) })),
+    ...MOTIONS.filter((m) => m.id !== motionOf(scene).kind).map((m) => ({
+      id: `motion:${m.id}`,
+      label: `Motion: ${m.label}`,
+      keywords: '3d animate move animation video',
+      icon: Orbit,
+      searchOnly: true,
+      run: () => setScene({ motion: { ...motionOf(scene), kind: m.id } }, `Motion: ${m.label.toLowerCase()}`),
+    })),
+    ...(ownFolds ? [] : DRAPES.filter((d) => d.id !== drapeOf(scene))).map((d) => ({ id: `drape:${d.id}`, label: `Drape: ${d.label}`, keywords: '3d folds cloth wrinkles fabric', icon: Shirt, searchOnly: true, run: () => setScene({ drape: d.id }, `Drape: ${d.label.toLowerCase()}`) })),
+    {
+      id: 'floor-shadow',
+      label: scene.shadows ? 'Hide the floor shadow' : 'Show the floor shadow',
+      keywords: '3d scene ground contact shadow',
+      icon: Layers2,
+      searchOnly: true,
+      run: () => setScene({ shadows: !scene.shadows }, scene.shadows ? 'Hide floor shadow' : 'Show floor shadow'),
+    },
   ]);
 
   // ---- Garment: colourways first, then style, model, size and fabric ----

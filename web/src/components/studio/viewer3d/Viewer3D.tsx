@@ -2171,7 +2171,7 @@ function PhotorealView({ enabled, overlay, onStatus }: { enabled: boolean; overl
       if (s.document !== p.document || s.selectedLayerIds !== p.selectedLayerIds || s.selectedProjectionId !== p.selectedProjectionId || s.activeZoneId !== p.activeZoneId) arm();
     });
     const unLive = useLive.subscribe((s, p) => {
-      if (s.overrides !== p.overrides || s.projection !== p.projection || s.colorwayOverride !== p.colorwayOverride || s.colorwayPreview !== p.colorwayPreview) arm();
+      if (s.overrides !== p.overrides || s.projection !== p.projection || s.colorwayOverride !== p.colorwayOverride || s.colorwayPreview !== p.colorwayPreview || s.sceneOverride !== p.sceneOverride) arm();
     });
     stage.stopLive = stop;
     arm();
@@ -2223,7 +2223,10 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
   const hasSelection = useStudio((s) => s.selectedLayerIds.length > 0 || !!s.selectedProjectionId);
   const projectionSelected = useStudio((s) => !!s.selectedProjectionId);
   const doc = useStudio((s) => s.document);
-  const scene = sceneOf(doc);
+  // A render batch (every lighting look) can show other scene settings without changing the design.
+  const sceneOverride = useLive((s) => s.sceneOverride);
+  const docScene = sceneOf(doc);
+  const scene = useMemo(() => (sceneOverride ? { ...docScene, ...sceneOverride } : docScene), [docScene, sceneOverride]);
   const [supported] = useState(hasWebGL);
   const [quality] = useState<Quality>(detectQuality);
   const [mode, setMode] = useState<Mode>('orbit');

@@ -1,13 +1,13 @@
 'use client';
 /** Studio actions shared by the tool rail, mobile sheets, keyboard shortcuts and drag-and-drop. */
-import { alignUnits, distributeUnits, expandToGroups, selectionUnits, type AlignMode, type DistributeAxis } from '@/domain/arrange';
+import { alignUnits, arrangeCopies, distributeUnits, expandToGroups, selectionUnits, type AlignMode, type CopyPlan, type DistributeAxis } from '@/domain/arrange';
 import * as cmd from '@/domain/commands';
 import { contrastInk, createGraphicLayer, createImageLayer, createShapeLayer, createTextLayer, newId } from '@/domain/factory';
 import { artboardOf, artboardSpec, designAreas } from '@/domain/areas';
 import { getGarment, partColor } from '@/domain/garments';
 import { normalizeDeg } from '@/domain/geometry';
 import type { Graphic } from '@/domain/graphics';
-import { isAreaId, type AreaId, type ArtboardId, type ArtworkLayer, type ShapeContent } from '@/domain/schema';
+import { isAreaId, type AreaId, type ArtboardId, type ArtworkLayer, type LayerShadow, type LayerStyle, type ShapeContent } from '@/domain/schema';
 import { AssetError, importImageFile } from '@/lib/assets';
 import { textAspect } from '@/lib/render/zone-renderer';
 import { toast } from '@/components/ui/primitives';
@@ -392,6 +392,39 @@ export function rotateSelection(deg: number) {
   if (Object.keys(changes).length) dispatch(cmd.coalescing(cmd.updateTransforms(activeZoneId, changes, 'Rotate'), `rotate:${Object.keys(changes).join()}`));
 }
 
+/**
+ * Step and repeat the selected layer: copies in a row, a grid or round a circle, arranged round
+ * where it was and grouped with it, so the set moves as one. One undo step.
+ */
+export function repeatSelection(plan: CopyPlan) {
+  const { document, selectedLayerIds, activeZoneId, dispatch, select } = useStudio.getState();
+  const zone = document ? artboardOf(document, activeZoneId) : undefined;
+  const layer = zone?.layers[selectedLayerIds[0]];
+  if (!zone || !layer || selectedLayerIds.length !== 1 || layer.locked) return;
+  const places = arrangeCopies(layer.transform, plan);
+  if (zone.orderedLayerIds.length + places.length - 1 > 200) {
+    toast('A print area holds up to 200 layers. Make fewer copies.', 'error');
+    return;
+  }
+  const copies = places.slice(1).map((p, i): ArtworkLayer => {
+    const copy = JSON.parse(JSON.stringify(layer)) as ArtworkLayer;
+    copy.id = newId();
+    copy.name = `${layer.name} ${i + 2}`;
+    delete copy.groupId;
+    Object.assign(copy.transform, p);
+    return copy;
+  });
+  const label = `${places.length} × ${layer.name} ${plan.mode === 'circle' ? 'round a circle' : plan.mode === 'grid' ? 'in a grid' : 'in a row'}`;
+  dispatch(
+    cmd.batch(label, [
+      cmd.updateTransforms(activeZoneId, { [layer.id]: places[0] }, label),
+      cmd.addLayers(activeZoneId, copies, label),
+      cmd.groupLayers(activeZoneId, [layer.id, ...copies.map((c) => c.id)], `g-${newId()}`),
+    ]),
+  );
+  select(expandToGroups(artboardOf(useStudio.getState().document!, activeZoneId)!, [layer.id]));
+}
+
 /** Mirror each selected layer across its own centre, left to right (x) or top to bottom (y). */
 export function flipSelection(axis: 'x' | 'y') {
   const { document, selectedLayerIds, activeZoneId, dispatch } = useStudio.getState();
@@ -400,6 +433,48 @@ export function flipSelection(axis: 'x' | 'y') {
   const key = axis === 'x' ? 'flipX' : 'flipY';
   const changes = Object.fromEntries(selectedLayerIds.filter((id) => zone.layers[id] && !zone.layers[id].locked).map((id) => [id, { [key]: !zone.layers[id].transform[key] }]));
   if (Object.keys(changes).length) dispatch(cmd.updateTransforms(activeZoneId, changes, 'Flip'));
+}
+
+/** The selected layers that can be edited, with where they live. */
+function editableSelection() {
+  const { document, selectedLayerIds, activeZoneId, dispatch } = useStudio.getState();
+  const zone = document ? artboardOf(document, activeZoneId) : undefined;
+  const layers = zone ? selectedLayerIds.map((id) => zone.layers[id]).filter((l) => l && !l.locked) : [];
+  return { layers, zoneId: activeZoneId, dispatch };
+}
+
+/** Give the selected layers an effect (or take it off with undefined): sticker outline, halftone. One undo step. */
+export function styleSelection(style: Partial<LayerStyle>, label: string) {
+  const { layers, zoneId, dispatch } = editableSelection();
+  if (layers.length) dispatch(cmd.batch(label, layers.map((l) => cmd.updateLayer(zoneId, l.id, { style }, label))));
+}
+
+/** A drop shadow or glow on the selected layers (text keeps its shadow in its content), or none. */
+export function shadowSelection(shadow: LayerShadow | undefined, label: string) {
+  const { layers, zoneId, dispatch } = editableSelection();
+  if (!layers.length) return;
+  dispatch(cmd.batch(label, layers.map((l) => cmd.updateLayer(zoneId, l.id, l.content.kind === 'text' ? { content: { shadow } } : { style: { shadow } }, label))));
+}
+
+/** Take every effect off the selected layers (shadow or glow, sticker outline, halftone). One undo step. */
+export function clearEffects() {
+  const { layers, zoneId, dispatch } = editableSelection();
+  const label = 'Remove effects';
+  if (!layers.length) return;
+  dispatch(
+    cmd.batch(
+      label,
+      layers.map((l) => cmd.updateLayer(zoneId, l.id, { style: { shadow: undefined, outline: undefined, halftone: undefined }, ...(l.content.kind === 'text' ? { content: { shadow: undefined } } : {}) }, label)),
+    ),
+  );
+}
+
+/** Draw the selected text and shapes as lines only (or filled again). */
+export function outlineOnlySelection(on: boolean) {
+  const { layers, zoneId, dispatch } = editableSelection();
+  const lined = layers.filter((l) => l.content.kind !== 'image');
+  const label = on ? 'Outline only' : 'Filled';
+  if (lined.length) dispatch(cmd.batch(label, lined.map((l) => cmd.updateLayer(zoneId, l.id, { content: on ? { hollow: true, strokeWidthMm: (l.content as { strokeWidthMm?: number }).strokeWidthMm || 1.5 } : { hollow: undefined } }, label))));
 }
 
 /** Lock or hide the selected layers (or show and unlock them again), as one undo step. */

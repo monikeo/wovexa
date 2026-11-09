@@ -14,6 +14,7 @@ import {
   ArrowDownToLine,
   ArrowUpToLine,
   Copy,
+  CopyPlus,
   Dices,
   Eraser,
   FlipHorizontal2,
@@ -32,11 +33,26 @@ import {
   Ungroup,
 } from 'lucide-react';
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { selectionUnits, type AlignMode } from '@/domain/arrange';
+import { selectionUnits, type AlignMode, type CopyPlan } from '@/domain/arrange';
 import * as cmd from '@/domain/commands';
+import { changeCase, isCase, type LetterCase } from '@/domain/letter-case';
 import { checkLayer, checkProjectedLayer, DEFAULT_PREFLIGHT, effectiveDpi } from '@/domain/preflight';
 import { projectedAsArtwork } from '@/domain/projected';
-import { isAreaId, type ArtworkLayer, type DesignArea, type ImageAdjust, type ImageContent, type ImageRepeat, type LayerStyle, type LayerTransform, type ProjectedLayer, type ProjectedTransform, type ShapeContent, type TextContent } from '@/domain/schema';
+import {
+  isAreaId,
+  type ArtworkLayer,
+  type DesignArea,
+  type ImageAdjust,
+  type ImageContent,
+  type ImageRepeat,
+  type LayerHalftone,
+  type LayerStyle,
+  type LayerTransform,
+  type ProjectedLayer,
+  type ProjectedTransform,
+  type ShapeContent,
+  type TextContent,
+} from '@/domain/schema';
 import { AssetError, getLoadedImage, importImageFile, loadAssetImage } from '@/lib/assets';
 import { ARTWORK_FONTS, fontWeights, loadFontStylesheets } from '@/lib/fonts';
 import { extractPalette, removeBackground, type PaletteColour } from '@/lib/image-ops';
@@ -45,7 +61,7 @@ import { usePreference } from '@/lib/preferences';
 import { DEFAULT_REPEAT, effectiveDistress, isCurved, isNeutralAdjust, isWarped, NEUTRAL_ADJUST, textAspect } from '@/lib/render/zone-renderer';
 import { ColorField, NumberField, toast } from '@/components/ui/primitives';
 import { useActiveArtboard, useActiveZoneSpec, useStudio } from '@/stores/studio-store';
-import { alignSelection, deleteSelection, distributeSelection, duplicateSelection, groupSelection, placementsFor, placeSelection, ungroupSelection } from './actions';
+import { alignSelection, deleteSelection, distributeSelection, duplicateSelection, groupSelection, placementsFor, placeSelection, repeatSelection, ungroupSelection } from './actions';
 import { useBrandKit } from './brand-context';
 import { FontPicker } from './FontPicker';
 import { AreaPanel } from './AreaPanel';
@@ -206,6 +222,35 @@ function TextStyles({ content, onApply }: { content: TextContent; onApply: (patc
   );
 }
 
+const CASES: { id: LetterCase; label: string; sample: string }[] = [
+  { id: 'upper', label: 'Capitals', sample: 'AB' },
+  { id: 'title', label: 'Title case', sample: 'Ab' },
+  { id: 'lower', label: 'Lower case', sample: 'ab' },
+];
+
+/** Letters or a shape as lines only: the fill paints the line, at the outline width. */
+function OutlineOnly({ hollow, width, onChange }: { hollow: boolean; width: number | undefined; onChange: (patch: { hollow?: boolean; strokeWidthMm?: number }, label: string) => void }) {
+  return (
+    <>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="h-4 w-4 accent-[var(--accent)]"
+          checked={hollow}
+          onChange={(e) => onChange(e.target.checked ? { hollow: true, strokeWidthMm: width || 1.5 } : { hollow: undefined }, e.target.checked ? 'Outline only' : 'Filled')}
+        />
+        Outline only
+      </label>
+      {hollow ? (
+        <>
+          <NumberField label="Line" suffix="mm" decimals={1} step={0.25} min={0.25} max={20} value={width || 1.5} onCommit={(v) => onChange({ strokeWidthMm: v }, 'Line width')} />
+          <p className="text-[11px] text-fg-3">Drawn as lines in the fill above: a colour, a gradient or a pattern.</p>
+        </>
+      ) : null}
+    </>
+  );
+}
+
 function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextContent }) {
   const edit = useLayerEdit();
   const dispatch = useStudio((s) => s.dispatch);
@@ -305,6 +350,16 @@ function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextCon
         </div>
       </div>
       <div className="grid grid-cols-[52px_1fr] items-center gap-2">
+        <span className="label">Case</span>
+        <div className="seg w-fit" role="group" aria-label="Letter case">
+          {CASES.map((c) => (
+            <button key={c.id} aria-pressed={isCase(content.value, c.id)} onClick={() => update({ value: changeCase(content.value, c.id) }, c.label)} aria-label={c.label} title={c.label}>
+              {c.sample}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="grid grid-cols-[52px_1fr] items-center gap-2">
         <label htmlFor={`curve-${layer.id}`} className="label">
           Curve
         </label>
@@ -342,8 +397,13 @@ function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextCon
     </Section>
     <Section title="Fill and effects">
       <FillControls fill={content.fill} fillStyle={content.fillStyle} swatches={kit?.colors} onChange={(patch, label, gesture) => update(patch, label, gesture)} />
-      <ColorField label="Outline" value={content.strokeColor ?? '#FFFFFF'} onChange={(strokeColor) => update({ strokeColor, strokeWidthMm: content.strokeWidthMm || 1 }, 'Outline colour')} swatches={kit?.colors} />
-      <NumberField label="Outline" suffix="mm" decimals={1} step={0.5} min={0} max={20} value={content.strokeWidthMm ?? 0} onCommit={(v) => update({ strokeWidthMm: v, strokeColor: content.strokeColor ?? '#FFFFFF' }, 'Outline width')} />
+      <OutlineOnly hollow={!!content.hollow} width={content.strokeWidthMm} onChange={(patch, label) => update(patch, label)} />
+      {content.hollow ? null : (
+        <>
+          <ColorField label="Outline" value={content.strokeColor ?? '#FFFFFF'} onChange={(strokeColor) => update({ strokeColor, strokeWidthMm: content.strokeWidthMm || 1 }, 'Outline colour')} swatches={kit?.colors} />
+          <NumberField label="Outline" suffix="mm" decimals={1} step={0.5} min={0} max={20} value={content.strokeWidthMm ?? 0} onCommit={(v) => update({ strokeWidthMm: v, strokeColor: content.strokeColor ?? '#FFFFFF' }, 'Outline width')} />
+        </>
+      )}
       <label className="flex items-center gap-2 pt-1 text-sm">
         <input
           type="checkbox"
@@ -393,8 +453,13 @@ function ShapeSection({ layer, content }: { layer: ArtworkLayer; content: ShapeC
       {content.shape === 'star' ? (
         <RangeField label="Inner" value={Math.round((content.innerRatio ?? 0.45) * 100)} min={10} max={95} format={(v) => `${v}%`} onChange={(v) => update({ innerRatio: v / 100 }, 'Star depth', 'inner')} />
       ) : null}
-      <ColorField label="Outline" value={content.strokeColor ?? '#000000'} onChange={(strokeColor) => update({ strokeColor, strokeWidthMm: content.strokeWidthMm || 1 }, 'Outline colour')} swatches={kit?.colors} />
-      <NumberField label="Outline" suffix="mm" decimals={1} step={0.5} min={0} max={50} value={content.strokeWidthMm ?? 0} onCommit={(v) => update({ strokeWidthMm: v, strokeColor: content.strokeColor ?? '#000000' }, 'Outline width')} />
+      <OutlineOnly hollow={!!content.hollow} width={content.strokeWidthMm} onChange={(patch, label) => update(patch, label)} />
+      {content.hollow ? null : (
+        <>
+          <ColorField label="Outline" value={content.strokeColor ?? '#000000'} onChange={(strokeColor) => update({ strokeColor, strokeWidthMm: content.strokeWidthMm || 1 }, 'Outline colour')} swatches={kit?.colors} />
+          <NumberField label="Outline" suffix="mm" decimals={1} step={0.5} min={0} max={50} value={content.strokeWidthMm ?? 0} onCommit={(v) => update({ strokeWidthMm: v, strokeColor: content.strokeColor ?? '#000000' }, 'Outline width')} />
+        </>
+      )}
     </Section>
   );
 }
@@ -509,26 +574,25 @@ function ImageSection({ layer }: { layer: ArtworkLayer }) {
             Size for 300 dpi ({Math.round(at300.widthMm)} mm wide)
           </button>
         ) : null}
-        {!c.repeat ? (
-          <div>
-            <span className="label">Shape</span>
-            <div className="mt-1 flex flex-wrap gap-1" role="group" aria-label="Image shape">
-              {IMAGE_MASKS.map((m) => (
-                <button
-                  key={m.id}
-                  className="flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-xs font-medium text-fg-2 hover:border-line-strong hover:text-fg aria-pressed:border-[var(--accent)] aria-pressed:text-fg"
-                  aria-pressed={(c.mask ?? 'none') === m.id}
-                  onClick={() => dispatch(edit(layer.id, { content: { mask: m.id === 'none' ? undefined : m.id } }, m.id === 'none' ? 'Remove image shape' : `Image shape: ${m.label.toLowerCase()}`))}
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden className="flex-none">
-                    <path d={m.icon} fill="currentColor" fillRule="evenodd" />
-                  </svg>
-                  {m.label}
-                </button>
-              ))}
-            </div>
+        {/* The shape also clips a repeat pattern: a pattern inside a heart or a badge. */}
+        <div>
+          <span className="label">Shape</span>
+          <div className="mt-1 flex flex-wrap gap-1" role="group" aria-label="Image shape">
+            {IMAGE_MASKS.map((m) => (
+              <button
+                key={m.id}
+                className="flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-xs font-medium text-fg-2 hover:border-line-strong hover:text-fg aria-pressed:border-[var(--accent)] aria-pressed:text-fg"
+                aria-pressed={(c.mask ?? 'none') === m.id}
+                onClick={() => dispatch(edit(layer.id, { content: { mask: m.id === 'none' ? undefined : m.id } }, m.id === 'none' ? 'Remove image shape' : `Image shape: ${m.label.toLowerCase()}`))}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden className="flex-none">
+                  <path d={m.icon} fill="currentColor" fillRule="evenodd" />
+                </svg>
+                {m.label}
+              </button>
+            ))}
           </div>
-        ) : null}
+        </div>
         <BackgroundRemoval layer={layer} />
         <ImagePalette content={c} />
       </Section>
@@ -777,6 +841,175 @@ function AppearanceSection({ layer }: { layer: ArtworkLayer }) {
   );
 }
 
+const HALFTONE_SHAPES: { id: LayerHalftone['shape']; label: string }[] = [
+  { id: 'dot', label: 'Dots' },
+  { id: 'square', label: 'Squares' },
+  { id: 'line', label: 'Lines' },
+];
+
+/**
+ * Effects any layer can have, all of them printed: a drop shadow or glow, a sticker outline round
+ * its shape, and a halftone screen. Text keeps its own shadow under Fill and effects.
+ */
+function EffectsSection({ layer }: { layer: ArtworkLayer }) {
+  const edit = useLayerEdit();
+  const dispatch = useStudio((s) => s.dispatch);
+  const kit = useBrandKit();
+  const { shadow, outline, halftone: ht } = layer.style;
+  const c = layer.content;
+  const ink = c.kind === 'image' ? '#FFFFFF' : c.fill;
+  const set = (style: Partial<LayerStyle>, label: string, gesture?: string) => {
+    const command = edit(layer.id, { style }, label);
+    dispatch(gesture ? cmd.coalescing(command, `${gesture}:${layer.id}`) : command);
+  };
+  return (
+    <Section title="Effects">
+      {c.kind === 'text' ? null : (
+        <>
+          <div className="grid grid-cols-[52px_1fr] items-center gap-2">
+            <span className="label">Shadow</span>
+            <div className="seg w-fit" role="group" aria-label="Shadow">
+              <button aria-pressed={!shadow} onClick={() => shadow && set({ shadow: undefined }, 'Remove shadow')}>
+                None
+              </button>
+              <button aria-pressed={!!shadow && !!(shadow.offsetXmm || shadow.offsetYmm)} onClick={() => set({ shadow: { color: '#000000', offsetXmm: 1.5, offsetYmm: 2, blurMm: 1.5 } }, 'Drop shadow')}>
+                Drop
+              </button>
+              <button aria-pressed={!!shadow && !shadow.offsetXmm && !shadow.offsetYmm} onClick={() => set({ shadow: { color: ink, offsetXmm: 0, offsetYmm: 0, blurMm: 4 } }, 'Glow')}>
+                Glow
+              </button>
+            </div>
+          </div>
+          {shadow ? (
+            <>
+              <ColorField label="Colour" value={shadow.color} onChange={(color) => set({ shadow: { ...shadow, color } }, 'Shadow colour')} swatches={kit?.colors} />
+              <RangeField label="Across" value={shadow.offsetXmm} min={-20} max={20} step={0.5} format={(v) => `${v} mm`} onChange={(offsetXmm) => set({ shadow: { ...shadow, offsetXmm } }, 'Shadow offset', 'fx-shadow-x')} />
+              <RangeField label="Down" value={shadow.offsetYmm} min={-20} max={20} step={0.5} format={(v) => `${v} mm`} onChange={(offsetYmm) => set({ shadow: { ...shadow, offsetYmm } }, 'Shadow offset', 'fx-shadow-y')} />
+              <RangeField label="Blur" value={shadow.blurMm} min={0} max={15} step={0.5} format={(v) => `${v} mm`} onChange={(blurMm) => set({ shadow: { ...shadow, blurMm } }, 'Shadow blur', 'fx-shadow-blur')} />
+            </>
+          ) : null}
+        </>
+      )}
+      <label className="flex items-center gap-2 pt-1 text-sm">
+        <input
+          type="checkbox"
+          className="h-4 w-4 accent-[var(--accent)]"
+          checked={!!outline}
+          onChange={(e) => set({ outline: e.target.checked ? { color: '#FFFFFF', widthMm: 3 } : undefined }, e.target.checked ? 'Sticker outline' : 'Remove sticker outline')}
+        />
+        {c.kind === 'text' ? 'Second outline' : 'Sticker outline'}
+      </label>
+      {outline ? (
+        <>
+          <ColorField label="Colour" value={outline.color} onChange={(color) => set({ outline: { ...outline, color } }, 'Sticker outline colour')} swatches={kit?.colors} />
+          <RangeField label="Width" value={outline.widthMm} min={0.5} max={15} step={0.5} format={(v) => `${v} mm`} onChange={(widthMm) => set({ outline: { ...outline, widthMm } }, 'Sticker outline width', 'fx-outline')} />
+          <p className="text-[11px] text-fg-3">
+            {c.kind === 'image'
+              ? 'A border round the artwork’s shape, like a die-cut sticker. Remove the background first so it follows the artwork.'
+              : c.kind === 'text'
+                ? 'A band round the whole word: with the letter outline above, the varsity double outline.'
+                : 'A band round the shape, past its own outline: badges and patches.'}
+          </p>
+        </>
+      ) : null}
+      <label className="flex items-center gap-2 pt-1 text-sm">
+        <input
+          type="checkbox"
+          className="h-4 w-4 accent-[var(--accent)]"
+          checked={!!ht}
+          onChange={(e) => set({ halftone: e.target.checked ? { cellMm: 1.5, angleDeg: 45, shape: 'dot', by: c.kind === 'image' ? 'tone' : 'fade' } : undefined }, e.target.checked ? 'Halftone' : 'Remove halftone')}
+        />
+        Halftone
+      </label>
+      {ht ? (
+        <>
+          <div className="grid grid-cols-[52px_1fr] items-center gap-2">
+            <span className="label">Screen</span>
+            <div className="seg w-fit" role="group" aria-label="Halftone shape">
+              {HALFTONE_SHAPES.map((h) => (
+                <button key={h.id} aria-pressed={ht.shape === h.id} onClick={() => set({ halftone: { ...ht, shape: h.id } }, `Halftone ${h.label.toLowerCase()}`)}>
+                  {h.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <RangeField label="Cell" value={ht.cellMm} min={0.4} max={8} step={0.1} format={(v) => `${v.toFixed(1)} mm`} onChange={(cellMm) => set({ halftone: { ...ht, cellMm } }, 'Halftone size', 'fx-ht-cell')} />
+          <RangeField label="Angle" value={ht.angleDeg} min={-90} max={90} step={5} format={(v) => `${v}°`} onChange={(angleDeg) => set({ halftone: { ...ht, angleDeg } }, 'Halftone angle', 'fx-ht-angle')} />
+          <div className="grid grid-cols-[52px_1fr] items-center gap-2">
+            <span className="label">Size by</span>
+            <div className="seg w-fit" role="group" aria-label="Halftone size by">
+              <button aria-pressed={ht.by === 'tone'} onClick={() => set({ halftone: { ...ht, by: 'tone' } }, 'Halftone by tone')} title="Darker parts get bigger dots: photos">
+                Darkness
+              </button>
+              <button aria-pressed={ht.by === 'fade'} onClick={() => set({ halftone: { ...ht, by: 'fade' } }, 'Halftone by fade')} title="See-through parts get smaller dots: fades and gradients to clear">
+                Fade
+              </button>
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-[var(--accent)]"
+              checked={!!ht.color}
+              onChange={(e) => set({ halftone: e.target.checked ? { ...ht, color: c.kind === 'image' ? '#111111' : c.fill } : withoutKey(ht, 'color') }, e.target.checked ? 'Halftone in one ink' : 'Halftone in its own colours')}
+            />
+            One ink colour
+          </label>
+          {ht.color ? <ColorField label="Ink" value={ht.color} onChange={(color) => set({ halftone: { ...ht, color } }, 'Halftone ink')} swatches={kit?.colors} /> : null}
+          <p className="text-[11px] text-fg-3">About {Math.round(25.4 / ht.cellMm)} lines per inch. Screens hold dots from about 0.5 mm; big cells give a bold pop-art look.</p>
+        </>
+      ) : null}
+    </Section>
+  );
+}
+
+/** A copy of `obj` without `key`, so an option that is switched off isn't stored as undefined. */
+function withoutKey<T extends object, K extends keyof T>(obj: T, key: K): Omit<T, K> {
+  const copy = { ...obj };
+  delete copy[key];
+  return copy;
+}
+
+/** Step and repeat (spec ED2-08): copies in a row, a grid or round a circle, grouped with the original. */
+function CopiesSection({ layer }: { layer: ArtworkLayer }) {
+  const [mode, setMode] = useState<CopyPlan['mode']>('circle');
+  const [count, setCount] = useState(6);
+  const [gapMm, setGap] = useState(5);
+  const [radiusMm, setRadius] = useState(() => Math.round(Math.max(20, Math.max(layer.transform.widthMm, layer.transform.heightMm) * 1.3)));
+  const [turn, setTurn] = useState(true);
+  const where = mode === 'circle' ? 'round a circle' : mode === 'grid' ? 'in a grid' : 'in a row';
+  return (
+    <Section title="Copies">
+      <div className="grid grid-cols-[52px_1fr] items-center gap-2">
+        <span className="label">Layout</span>
+        <div className="seg w-fit" role="group" aria-label="Copies layout">
+          {(['row', 'grid', 'circle'] as const).map((m) => (
+            <button key={m} aria-pressed={mode === m} onClick={() => setMode(m)}>
+              {m === 'row' ? 'Row' : m === 'grid' ? 'Grid' : 'Circle'}
+            </button>
+          ))}
+        </div>
+      </div>
+      <RangeField label="Count" value={count} min={2} max={24} onChange={setCount} />
+      {mode === 'circle' ? (
+        <>
+          <RangeField label="Radius" value={radiusMm} min={5} max={250} format={(v) => `${v} mm`} onChange={setRadius} />
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]" checked={turn} onChange={(e) => setTurn(e.target.checked)} />
+            Turn each to face out
+          </label>
+        </>
+      ) : (
+        <RangeField label="Gap" value={gapMm} min={0} max={80} format={(v) => `${v} mm`} onChange={setGap} />
+      )}
+      <button className="btn btn-outline w-full text-xs" disabled={layer.locked} onClick={() => repeatSelection({ mode, count, gapMm, radiusMm, turn })}>
+        <CopyPlus size={14} /> Make {count} {where}
+      </button>
+      <p className="text-[11px] text-fg-3">Arranged round where this layer is and grouped with it, so the set moves as one. Undo takes them back.</p>
+    </Section>
+  );
+}
+
 function MultiSelection({ count, layers }: { count: number; layers: ArtworkLayer[] }) {
   const zone = useActiveArtboard();
   const ids = layers.map((l) => l.id);
@@ -921,6 +1154,7 @@ function ProjectionInspector({ layer }: { layer: ProjectedLayer }) {
       {art.content.kind === 'text' ? <TextSection key={layer.id} layer={art} content={art.content} /> : null}
       {art.content.kind === 'shape' ? <ShapeSection layer={art} content={art.content} /> : null}
       {art.content.kind === 'image' ? <ImageSection layer={art} /> : null}
+      <EffectsSection layer={art} />
       <AppearanceSection layer={art} />
       <Section title="Arrange">
         <div className="flex gap-2">
@@ -994,7 +1228,9 @@ export function Inspector() {
       {layer.content.kind === 'text' ? <TextSection key={layer.id} layer={layer} content={layer.content} /> : null}
       {layer.content.kind === 'shape' ? <ShapeSection layer={layer} content={layer.content} /> : null}
       {layer.content.kind === 'image' ? <ImageSection layer={layer} /> : null}
+      <EffectsSection layer={layer} />
       <AppearanceSection layer={layer} />
+      <CopiesSection key={`copies:${layer.id}`} layer={layer} />
       <WrapSection count={1} />
       <Section title="Arrange">
         <div className="flex gap-2">

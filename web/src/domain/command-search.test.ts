@@ -33,6 +33,13 @@ describe('command search', () => {
     expect(labels('gtl')).toEqual([]);
   });
 
+  it('ranks a whole word above the start of a longer one', () => {
+    const sizes = [{ label: 'Size: K2 (kids 2)' }, { label: 'Size: M' }, { label: 'Size: S' }];
+    expect(searchCommands(sizes, 'size: s')[0].label).toBe('Size: S');
+    expect(searchCommands(sizes, 'size m')[0].label).toBe('Size: M');
+    expect(searchCommands(sizes, 'kids')[0].label).toBe('Size: K2 (kids 2)');
+  });
+
   it('keeps the list in order with no query and ranks the start of a name first', () => {
     expect(labels('')).toEqual(items.map((i) => i.label));
     expect(commandScore('add', items[0])).toBeGreaterThan(commandScore('text', items[0]));

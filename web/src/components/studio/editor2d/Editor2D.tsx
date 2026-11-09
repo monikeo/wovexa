@@ -746,7 +746,8 @@ export function Editor2D() {
       } else {
         const ppm = Math.min(resolution(), 2048 / Math.max(layer.transform.widthMm, layer.transform.heightMm));
         const ready = layer.content.kind === 'image' ? !!getLoadedImage(layer.content.assetId) : true;
-        const key = JSON.stringify([layer.id, layer.content, layer.style.finish, layer.style.distress, ready, Math.round(layer.transform.widthMm * ppm), Math.round(layer.transform.heightMm * ppm)]);
+        const s = layer.style;
+        const key = JSON.stringify([layer.id, layer.content, s.finish, s.distress, s.shadow, s.outline, s.halftone, ready, Math.round(layer.transform.widthMm * ppm), Math.round(layer.transform.heightMm * ppm)]);
         if (obj.bitmapKey !== key || !obj.bitmap) {
           const rendered = renderLayerBitmap(layer, ppm);
           obj.bitmap = rendered.canvas;
@@ -841,6 +842,12 @@ export function Editor2D() {
         }
         const objs = item.ids.map((id) => {
           const obj = ensureObject(id);
+          // A selected layer that joins a new group (made copies, a paste) leaves the canvas for
+          // it: release it without clearing the store's selection, and select the group once built.
+          if (canvas.getActiveObjects().includes(obj)) {
+            quietly(() => canvas.discardActiveObject());
+            reselect = true;
+          }
           detach(obj);
           applyLayer(obj, zone.layers[id]);
           return obj;

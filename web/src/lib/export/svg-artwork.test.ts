@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ShapeContent } from '@/domain/schema';
-import { shapePathData, transformPathData } from './svg-artwork';
+import { Defs, shapePathData, shapeSvg, transformPathData } from './svg-artwork';
 
 const shape = (s: Partial<ShapeContent>): ShapeContent => ({ kind: 'shape', shape: 'rect', fill: '#000000', cornerRadiusMm: 0, ...s }) as ShapeContent;
 
@@ -37,5 +37,25 @@ describe('SVG print files: paths', () => {
       expect(nums(d).every((v) => Math.abs(v) <= 30)).toBe(true);
       expect(d.endsWith('Z')).toBe(true);
     }
+  });
+
+  it('draws outline-only shapes as lines in their fill, at the outline width or 1.5 mm', () => {
+    const ring = shapeSvg(shape({ shape: 'ellipse', fill: '#E63973', hollow: true }), 40, 40, new Defs(10));
+    expect(ring).toContain('fill="none"');
+    expect(ring).toContain('stroke="#E63973"');
+    expect(ring).toContain('stroke-width="1.5"');
+    expect(shapeSvg(shape({ shape: 'rect', hollow: true, strokeWidthMm: 3, strokeColor: '#000000' }), 40, 40, new Defs(10))).toContain('stroke-width="3"');
+  });
+
+  it('writes gradients with a middle colour, across or from the centre', () => {
+    const defs = new Defs(10);
+    const across = defs.paint('#FF0000', { kind: 'gradient', to: '#0000FF', angleDeg: 0, via: '#FFFF00' }, 100, 50);
+    const round = defs.paint('#FF0000', { kind: 'gradient', to: '#0000FF', angleDeg: 0, radial: true }, 30, 40);
+    expect(across).toBe('url(#p1)');
+    expect(round).toBe('url(#p2)');
+    expect(defs.svg).toContain('<linearGradient id="p1"');
+    expect(defs.svg).toContain('<stop offset="0.5" stop-color="#FFFF00"/>');
+    // From the centre to the corners: half the diagonal.
+    expect(defs.svg).toContain('<radialGradient id="p2" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="25">');
   });
 });

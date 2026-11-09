@@ -10,7 +10,7 @@
  * Browser only (it measures text and draws raster parts on a canvas).
  */
 import type { ArtworkLayer, FillStyle, LayerStack, ShapeContent, TextContent } from '@/domain/schema';
-import { layoutText, MAX_EXPORT_SIDE, needsEffectPass, patternTile, renderLayerBitmap, TEXT_REF_PX } from '@/lib/render/zone-renderer';
+import { layoutText, lineWidthMm, MAX_EXPORT_SIDE, needsEffectPass, patternTile, renderLayerBitmap, TEXT_REF_PX } from '@/lib/render/zone-renderer';
 
 /** An SVG print file and what a print shop should know about it. */
 export interface SvgArtwork {
@@ -128,7 +128,7 @@ export function shapePathData(c: ShapeContent, w: number, h: number): string {
 }
 
 /** Collects gradients and pattern tiles into one <defs>. */
-class Defs {
+export class Defs {
   private items: string[] = [];
   private count = 0;
   constructor(private readonly ppmTile: number) {}
@@ -144,13 +144,17 @@ class Defs {
     const id = `p${++this.count}`;
     const tf = toUser ? matrix(toUser) : '';
     if (style.kind === 'gradient') {
+      const stops = `<stop offset="0" stop-color="${esc(base)}"/>${style.via ? `<stop offset="0.5" stop-color="${esc(style.via)}"/>` : ''}<stop offset="1" stop-color="${esc(style.to)}"/>`;
+      const transform = tf ? ` gradientTransform="${tf}"` : '';
+      if (style.radial) {
+        this.items.push(`<radialGradient id="${id}" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="${n(Math.hypot(w, h) / 2)}"${transform}>${stops}</radialGradient>`);
+        return `url(#${id})`;
+      }
       const a = (style.angleDeg * Math.PI) / 180;
       const cos = Math.cos(a);
       const sin = Math.sin(a);
       const L = (Math.abs(w * cos) + Math.abs(h * sin)) / 2;
-      this.items.push(
-        `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${n(-L * cos)}" y1="${n(-L * sin)}" x2="${n(L * cos)}" y2="${n(L * sin)}"${tf ? ` gradientTransform="${tf}"` : ''}><stop offset="0" stop-color="${esc(base)}"/><stop offset="1" stop-color="${esc(style.to)}"/></linearGradient>`,
-      );
+      this.items.push(`<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${n(-L * cos)}" y1="${n(-L * sin)}" x2="${n(L * cos)}" y2="${n(L * sin)}"${transform}>${stops}</linearGradient>`);
       return `url(#${id})`;
     }
     // A pattern repeats one tile, drawn at print resolution.
@@ -178,13 +182,15 @@ function textSvg(c: TextContent, w: number, h: number, defs: Defs): string {
   const toText = new DOMMatrix([1 / sx, 0, 0, 1 / sy, m.cx, m.cy]);
   const font = `font-family="${esc(fontFamily(c))}" font-size="${TEXT_REF_PX}" font-weight="${c.fontWeight}"${c.italic ? ' font-style="italic"' : ''}`;
   // An outline sits outside the letter: twice as wide, painted under the fill.
-  const stroke = c.strokeColor && c.strokeWidthMm ? ` stroke="${esc(c.strokeColor)}" stroke-width="${n((c.strokeWidthMm * 2) / sy)}" stroke-linejoin="round" paint-order="stroke"` : '';
+  const stroke = !c.hollow && c.strokeColor && c.strokeWidthMm ? ` stroke="${esc(c.strokeColor)}" stroke-width="${n((c.strokeWidthMm * 2) / sy)}" stroke-linejoin="round" paint-order="stroke"` : '';
+  // Outline only: the letters as lines painted with the fill, centred on the glyph edge.
+  const ink = (paint: string) => (c.hollow ? `fill="none" stroke="${paint}" stroke-width="${n(lineWidthMm(c) / sy)}" stroke-linejoin="round"` : `fill="${paint}"${stroke}`);
   const parts: string[] = [];
   if (m.glyphs) {
     for (const g of m.glyphs) {
       // Gradients and patterns stay anchored to the layer, not to each turned letter.
       const fill = c.fillStyle ? defs.paint(c.fill, c.fillStyle, w, h, new DOMMatrix().rotate((-g.rot * 180) / Math.PI).translate(-g.x, -g.y).multiply(toText)) : esc(c.fill);
-      parts.push(`<text transform="translate(${n(g.x)} ${n(g.y)}) rotate(${n((g.rot * 180) / Math.PI)})" text-anchor="middle" dominant-baseline="central" fill="${fill}"${stroke}>${esc(g.g)}</text>`);
+      parts.push(`<text transform="translate(${n(g.x)} ${n(g.y)}) rotate(${n((g.rot * 180) / Math.PI)})" text-anchor="middle" dominant-baseline="central" ${ink(fill)}>${esc(g.g)}</text>`);
     }
   } else {
     const fill = defs.paint(c.fill, c.fillStyle, w, h, toText);
@@ -194,15 +200,17 @@ function textSvg(c: TextContent, w: number, h: number, defs: Defs): string {
     const spacing = c.letterSpacingEm ? ` letter-spacing="${n(c.letterSpacingEm * TEXT_REF_PX)}"` : '';
     m.lines.forEach((line, i) => {
       const y = -m.height / 2 + lineH * (i + 0.5);
-      parts.push(`<text x="${n(x)}" y="${n(y)}" text-anchor="${anchor}" dominant-baseline="central" fill="${fill}"${stroke}${spacing} xml:space="preserve">${esc(line)}</text>`);
+      parts.push(`<text x="${n(x)}" y="${n(y)}" text-anchor="${anchor}" dominant-baseline="central" ${ink(fill)}${spacing} xml:space="preserve">${esc(line)}</text>`);
     });
   }
   return `<g transform="scale(${n(sx)} ${n(sy)}) translate(${n(-m.cx)} ${n(-m.cy)})" ${font}>${parts.join('')}</g>`;
 }
 
-function shapeSvg(c: ShapeContent, w: number, h: number, defs: Defs): string {
+export function shapeSvg(c: ShapeContent, w: number, h: number, defs: Defs): string {
   const d = shapePathData(c, w, h);
   if (!d) return '';
+  // Outline only: the shape as a line painted with its fill.
+  if (c.hollow) return `<path d="${d}" fill="none" stroke="${defs.paint(c.fill, c.fillStyle, w, h)}" stroke-width="${n(lineWidthMm(c))}" stroke-linejoin="round"/>`;
   const stroke = c.strokeColor && c.strokeWidthMm ? ` stroke="${esc(c.strokeColor)}" stroke-width="${n(c.strokeWidthMm)}" stroke-linejoin="round"` : '';
   return `<path d="${d}" fill="${defs.paint(c.fill, c.fillStyle, w, h)}"${c.shape === 'path' ? ' fill-rule="evenodd"' : ''}${stroke}/>`;
 }

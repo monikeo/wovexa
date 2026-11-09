@@ -365,8 +365,11 @@ export function ExportPanel() {
         signal,
         onProgress: (l, fraction) => setProgress({ label: l, fraction }),
       });
-      downloadBlob(result.blob, result.fileName);
-      await record(kind, label, result.fileName, result.files.length + 1, result.blob.size, { dpi: opts.dpi, colorways: opts.colorways, include: opts.include, people: opts.roster?.rows.length ?? 0, ...(opts.include.marker ? { marker: opts.marker } : {}) });
+      // Name the zip after what it holds, so print files, team files and the full package are told apart in Downloads.
+      const tag = kind === 'team' ? 'team-files' : kind === 'print' ? 'print-files' : 'production';
+      const fileName = result.fileName.replace(/_production_(?=[^_]*\.zip$)/, `_${tag}_`);
+      downloadBlob(result.blob, fileName);
+      await record(kind, label, fileName, result.files.length + 1, result.blob.size, { dpi: opts.dpi, colorways: opts.colorways, include: opts.include, people: opts.roster?.rows.length ?? 0, ...(opts.include.marker ? { marker: opts.marker } : {}) });
       toast(`${label}: ${result.files.length + 1} files, ${formatBytes(result.blob.size)}.`, 'success');
       if (result.marker) toast(`Fabric marker: ${(result.marker.lengthMm / 1000).toFixed(2)} m of ${result.marker.rollWidthMm / 10} cm fabric for ${result.marker.garments} ${result.marker.garments === 1 ? 'garment' : 'garments'}, ${Math.round(result.marker.utilisation * 100)}% used.`, 'success');
       for (const w of result.warnings.slice(0, 2)) toast(w);

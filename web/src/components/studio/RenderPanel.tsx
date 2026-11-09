@@ -7,7 +7,8 @@
  */
 import { Clapperboard, Download, Images, Loader2, Sparkles, Square } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { sceneOf } from '@/domain/scene';
+import * as cmd from '@/domain/commands';
+import { MOTIONS, motionOf, SCENE_PRESETS, sceneOf } from '@/domain/scene';
 import { canvasToBlob, downloadBlob, slugify } from '@/lib/download';
 import { canEncodeAvif, encodePdf, encodeTiff } from '@/lib/export/image-formats';
 import { planVideo, recordTurntable, type VideoPlan } from '@/lib/video';
@@ -110,6 +111,7 @@ export function RenderPanel() {
   const [quality, setQuality] = useState(0.92);
   const [backdrop, setBackdrop] = useState<Backdrop>('scene');
   const [everyColorway, setEveryColorway] = useState(false);
+  const [everyLook, setEveryLook] = useState(false);
   const [layout, setLayout] = useState<'separate' | 'sheet'>('separate');
   const [stillProgress, setStillProgress] = useState<string | null>(null);
   const [engine, setEngine] = useState<Engine>('realtime');
@@ -163,8 +165,13 @@ export function RenderPanel() {
   const base = slugify(doc.title);
   const toggle = (key: string) => setShots((s) => (s.includes(key) ? s.filter((x) => x !== key) : [...s, key]));
   const colorways = everyColorway ? doc.colorways : doc.colorways.filter((c) => c.id === doc.activeColorwayId);
-  const total = specs.length * colorways.length;
+  // Each row of the batch: a colourway, under one lighting look or every one.
+  const looks = everyLook ? SCENE_PRESETS : [null];
+  const variants = colorways.flatMap((c) => looks.map((look) => ({ colorway: c, look, name: look ? (colorways.length > 1 ? `${c.name}, ${look.label}` : look.label) : c.name })));
+  const total = specs.length * variants.length;
   const busy = stillProgress !== null || videoProgress !== null;
+  const scene = sceneOf(doc);
+  const motion = motionOf(scene);
 
   const encode = async (canvas: HTMLCanvasElement) => {
     // JPEG and PDF have no transparency; flatten on white rather than let the encoder fill black.
@@ -188,15 +195,17 @@ export function RenderPanel() {
     const samples = PHOTOREAL_PRESETS.find((p) => p.id === preset)!.samples;
     try {
       await useStudio.getState().saveNow();
-      for (const [i, c] of colorways.entries()) {
-        if (everyColorway) {
-          live.setColorwayOverride(c.id);
+      for (const [i, v] of variants.entries()) {
+        if (everyColorway || v.look) {
+          if (everyColorway) live.setColorwayOverride(v.colorway.id);
+          // A look brings its own light, tone, exposure, backdrop and floor shadow, for this render only.
+          if (v.look) live.setSceneOverride({ presetId: v.look.id, ...v.look.defaults });
           await nextFrames();
         }
         const photoreal = traced
-          ? { samples, denoise, fStop: LENSES[lens], signal: controller.signal, onProgress: (f: number) => setTraceProgress((i + f) / colorways.length) }
+          ? { samples, denoise, fStop: LENSES[lens], signal: controller.signal, onProgress: (f: number) => setTraceProgress((i + f) / variants.length) }
           : undefined;
-        rows.push({ name: c.name, shots: await viewerApi.capture({ shots: specs, width: still.w, height: still.h, background, frameCurrent: true, photoreal }) });
+        rows.push({ name: v.name, shots: await viewerApi.capture({ shots: specs, width: still.w, height: still.h, background, frameCurrent: true, photoreal }) });
         setStillProgress(`${rows.length * specs.length} of ${total}`);
       }
     } catch (error) {
@@ -205,6 +214,7 @@ export function RenderPanel() {
       return;
     } finally {
       if (everyColorway) live.setColorwayOverride(null);
+      if (everyLook) live.setSceneOverride(null);
       setStillProgress(null);
       setTraceProgress(null);
       if (abortRef.current === controller) abortRef.current = null;
@@ -247,7 +257,8 @@ export function RenderPanel() {
         }
         row.shots.forEach((shot, i) => ctx.drawImage(shot.canvas, (i % cols) * w, y0 + labelH + Math.floor(i / cols) * h, w, h));
       });
-      downloadBlob(await encode(sheet), `${base}_${rows.length > 1 ? 'all-colourways' : 'views'}_${sheet.width}x${sheet.height}_r${doc.revision}.${ext}`);
+      const what = rows.length === 1 ? 'views' : everyLook && everyColorway ? 'colourways-and-looks' : everyLook ? 'lighting-looks' : 'all-colourways';
+      downloadBlob(await encode(sheet), `${base}_${what}_${sheet.width}x${sheet.height}_r${doc.revision}.${ext}`);
     }
     toast(`Rendered ${total} image${total === 1 ? '' : 's'} at ${still.w} × ${still.h} px.`, 'success');
   };
@@ -270,8 +281,9 @@ export function RenderPanel() {
         signal: controller.signal,
         onProgress: (f) => setVideoProgress(f),
       });
-      downloadBlob(result.blob, `${base}_turntable_${degrees}deg_${seconds}s_${result.width}x${result.height}_r${doc.revision}.${result.plan.extension}`);
-      toast(`Rendered a ${seconds}-second ${result.plan.label} turntable, ${(result.blob.size / 1048576).toFixed(1)} MB.`, 'success');
+      const kind = degrees ? `turntable_${degrees}deg` : `${motion.kind}_clip`;
+      downloadBlob(result.blob, `${base}_${kind}_${seconds}s_${result.width}x${result.height}_r${doc.revision}.${result.plan.extension}`);
+      toast(`Rendered a ${seconds}-second ${result.plan.label} ${degrees ? 'turntable' : `${motion.kind} clip`}, ${(result.blob.size / 1048576).toFixed(1)} MB.`, 'success');
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') toast('Video render cancelled.');
       else toast(error instanceof Error ? error.message : 'The video could not be rendered.', 'error');
@@ -431,6 +443,15 @@ export function RenderPanel() {
             Every colourway ({doc.colorways.length})
           </label>
         ) : null}
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]" checked={everyLook} onChange={(e) => setEveryLook(e.target.checked)} />
+          Every lighting look ({SCENE_PRESETS.length})
+        </label>
+        {everyLook ? (
+          <p className="text-[11px] text-fg-3">
+            The same shots under {SCENE_PRESETS.map((p) => p.label.toLowerCase()).join(', ')}: compare moods side by side. Your scene stays as it is. A contact sheet labels each look.
+          </p>
+        ) : null}
         <label className="grid grid-cols-[72px_1fr] items-center gap-2">
           <span className="label">Files</span>
           <select className="field" value={layout} onChange={(e) => setLayout(e.target.value as 'separate' | 'sheet')}>
@@ -476,6 +497,24 @@ export function RenderPanel() {
               <option value={360}>Full turn</option>
               <option value={180}>Half turn</option>
               <option value={90}>Quarter turn</option>
+              <option value={0}>No turn (still camera)</option>
+            </select>
+          </label>
+          <label className="col-span-2 grid gap-1">
+            <span className="label">Garment motion</span>
+            <select
+              className="field"
+              value={motion.kind}
+              onChange={(e) => {
+                const m = MOTIONS.find((x) => x.id === e.target.value)!;
+                useStudio.getState().dispatch(cmd.updateScene(scene, { motion: { ...motion, kind: m.id } }, `Motion: ${m.label.toLowerCase()}`));
+              }}
+            >
+              {MOTIONS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
             </select>
           </label>
           <label className="grid gap-1">
@@ -516,6 +555,8 @@ export function RenderPanel() {
             <option value="current">Current view</option>
           </select>
         </label>
+        <p className="text-[11px] text-fg-3">{MOTIONS.find((m) => m.id === motion.kind)?.description} It plays in the 3D view too.</p>
+        {!degrees && motion.kind === 'still' ? <p className="text-[11px] text-warning">With no turn and no motion the video stands still. Pick a motion, or a turn.</p> : null}
         <p className="text-[11px] text-fg-3">
           {plan === undefined
             ? 'Checking video support…'

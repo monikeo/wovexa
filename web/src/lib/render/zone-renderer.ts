@@ -3,12 +3,27 @@
  * used by the 2D editor (per-layer bitmaps), the 3D garment textures and print exports, so
  * all three always agree (spec §27, EXP-04).
  *
- * Artwork effects are part of the print: outlines, text shadows, gradient and pattern fills,
- * image adjustments and repeats, and distress. Finish simulation (puff relief, embroidery
- * thread, metallic sheen) is preview-only (spec TYP-06): callers opt in with `simulateFinish`,
- * and print files never do.
+ * Artwork effects are part of the print: outlines (and outline-only lines), shadows and glows,
+ * sticker outlines, halftone screens, gradient and pattern fills, image adjustments and repeats,
+ * and distress. Finish simulation (puff relief, embroidery thread, metallic sheen) is
+ * preview-only (spec TYP-06): callers opt in with `simulateFinish`, and print files never do.
  */
-import type { ArtworkLayer, FillStyle, ImageAdjust, ImageContent, ImageRepeat, LayerStack, LayerStyle, LayerTransform, PrintMethod, ShapeContent, Surface, TextContent } from '@/domain/schema';
+import type {
+  ArtworkLayer,
+  FillStyle,
+  ImageAdjust,
+  ImageContent,
+  ImageRepeat,
+  LayerHalftone,
+  LayerShadow,
+  LayerStack,
+  LayerStyle,
+  LayerTransform,
+  PrintMethod,
+  ShapeContent,
+  Surface,
+  TextContent,
+} from '@/domain/schema';
 import { getLoadedImage } from '@/lib/assets';
 import { ensureCustomFonts } from '@/lib/font-library';
 import { loadFontStylesheets, scriptFallbacks } from '@/lib/fonts';
@@ -567,10 +582,10 @@ export function paintFabric(ctx: Ctx, color: string, surface: Surface | undefine
   if (surface?.kind === 'gradient') {
     const a = (surface.angleDeg * Math.PI) / 180;
     const L = (Math.abs(w * Math.cos(a)) + Math.abs(h * Math.sin(a))) / 2;
-    const g = ctx.createLinearGradient(anchor.x - L * Math.cos(a), h / 2 - L * Math.sin(a), anchor.x + L * Math.cos(a), h / 2 + L * Math.sin(a));
-    g.addColorStop(0, color);
-    g.addColorStop(1, surface.to);
-    ctx.fillStyle = g;
+    const g = surface.radial
+      ? ctx.createRadialGradient(anchor.x, h / 2, 0, anchor.x, h / 2, Math.max(1, Math.hypot(w, h) / 2))
+      : ctx.createLinearGradient(anchor.x - L * Math.cos(a), h / 2 - L * Math.sin(a), anchor.x + L * Math.cos(a), h / 2 + L * Math.sin(a));
+    ctx.fillStyle = addStops(g, color, surface);
     ctx.fillRect(0, 0, w, h);
   } else if (surface?.kind === 'pattern') {
     const period = Math.max(2, surface.scaleMm * pxPerMm);
@@ -603,9 +618,27 @@ export function paintFabric(ctx: Ctx, color: string, surface: Surface | undefine
  * Paint for a fill, defined in the layer box (px, origin at its centre).
  * `toUser` maps box space into the current drawing space when that differs (scaled text).
  */
+/** A gradient's stops: from, an optional middle colour, to. */
+function addStops(g: CanvasGradient, from: string, style: Extract<FillStyle, { kind: 'gradient' }>) {
+  g.addColorStop(0, from);
+  if (style.via) g.addColorStop(0.5, style.via);
+  g.addColorStop(1, style.to);
+  return g;
+}
+
 function paint(ctx: Ctx, base: string, style: FillStyle | undefined, w: number, h: number, pxPerMm: number, toUser?: DOMMatrix): string | CanvasGradient | CanvasPattern {
   if (!style) return base;
   if (style.kind === 'gradient') {
+    if (style.radial) {
+      // From the centre of the box out to its corners.
+      let c: DOMPointInit = { x: 0, y: 0 };
+      let r = Math.hypot(w, h) / 2;
+      if (toUser) {
+        c = toUser.transformPoint(c);
+        r *= Math.sqrt(Math.abs(toUser.a * toUser.d - toUser.b * toUser.c));
+      }
+      return addStops(ctx.createRadialGradient(c.x!, c.y!, 0, c.x!, c.y!, Math.max(1, r)), base, style);
+    }
     const a = (style.angleDeg * Math.PI) / 180;
     const cos = Math.cos(a);
     const sin = Math.sin(a);
@@ -616,10 +649,7 @@ function paint(ctx: Ctx, base: string, style: FillStyle | undefined, w: number, 
       p0 = toUser.transformPoint(p0);
       p1 = toUser.transformPoint(p1);
     }
-    const g = ctx.createLinearGradient(p0.x!, p0.y!, p1.x!, p1.y!);
-    g.addColorStop(0, base);
-    g.addColorStop(1, style.to);
-    return g;
+    return addStops(ctx.createLinearGradient(p0.x!, p0.y!, p1.x!, p1.y!), base, style);
   }
   const period = Math.max(2, style.scaleMm * pxPerMm);
   const size = Math.max(2, Math.round(period));
@@ -643,31 +673,36 @@ function drawText(ctx: Ctx, c: TextContent, w: number, h: number, pxPerMm: numbe
   ctx.font = fontString(c, TEXT_REF_PX);
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
-  // The stroke is centred on the glyph edge and the fill covers its inner half,
-  // so draw it twice as wide to show the requested outline width outside the letter.
-  const stroke = c.strokeColor && c.strokeWidthMm ? { color: c.strokeColor, width: (c.strokeWidthMm * pxPerMm * 2) / sy } : null;
   // Box space (layer px, origin at its centre) → this scaled text space.
   const toText = new DOMMatrix([1 / sx, 0, 0, 1 / sy, m.cx, m.cy]);
   const fill = paint(ctx, c.fill, c.fillStyle, w, h, pxPerMm, toText);
+  // Outline only: the letters as lines in the fill (colour, gradient or pattern), centred on the glyph edge.
+  const hollow = c.hollow ? { width: (lineWidthMm(c) * pxPerMm) / sy } : null;
+  // An outline is centred on the glyph edge and the fill covers its inner half,
+  // so draw it twice as wide to show the requested outline width outside the letter.
+  const stroke = !hollow && c.strokeColor && c.strokeWidthMm ? { color: c.strokeColor, width: (c.strokeWidthMm * pxPerMm * 2) / sy } : null;
 
   if (m.glyphs) {
     setLetterSpacing(ctx, 0);
     ctx.textAlign = 'center';
-    for (const pass of stroke ? ['stroke', 'fill'] : ['fill']) {
+    for (const pass of hollow ? ['line'] : stroke ? ['stroke', 'fill'] : ['fill']) {
       for (const glyph of m.glyphs) {
         ctx.save();
         ctx.translate(glyph.x, glyph.y);
         ctx.rotate(glyph.rot);
+        // Gradients and patterns paint in the space current at fill time, so map the box into
+        // each rotated glyph's space: the fill stays anchored to the layer, not to the letter.
+        const glyphPaint = () => (c.fillStyle ? paint(ctx, c.fill, c.fillStyle, w, h, pxPerMm, new DOMMatrix().rotate((-glyph.rot * 180) / Math.PI).translate(-glyph.x, -glyph.y).multiply(toText)) : c.fill);
         if (pass === 'stroke' && stroke) {
           ctx.strokeStyle = stroke.color;
           ctx.lineWidth = stroke.width;
           ctx.strokeText(glyph.g, 0, 0);
+        } else if (pass === 'line' && hollow) {
+          ctx.strokeStyle = glyphPaint();
+          ctx.lineWidth = hollow.width;
+          ctx.strokeText(glyph.g, 0, 0);
         } else {
-          // Gradients and patterns paint in the space current at fill time, so map the box into
-          // each rotated glyph's space: the fill stays anchored to the layer, not to the letter.
-          ctx.fillStyle = c.fillStyle
-            ? paint(ctx, c.fill, c.fillStyle, w, h, pxPerMm, new DOMMatrix().rotate((-glyph.rot * 180) / Math.PI).translate(-glyph.x, -glyph.y).multiply(toText))
-            : c.fill;
+          ctx.fillStyle = glyphPaint();
           ctx.fillText(glyph.g, 0, 0);
         }
         ctx.restore();
@@ -680,6 +715,12 @@ function drawText(ctx: Ctx, c: TextContent, w: number, h: number, pxPerMm: numbe
     const lineH = TEXT_REF_PX * c.lineHeight;
     m.lines.forEach((line, i) => {
       const y = -m.height / 2 + lineH * (i + 0.5);
+      if (hollow) {
+        ctx.strokeStyle = fill;
+        ctx.lineWidth = hollow.width;
+        ctx.strokeText(line, x, y);
+        return;
+      }
       if (stroke) {
         ctx.strokeStyle = stroke.color;
         ctx.lineWidth = stroke.width;
@@ -690,6 +731,11 @@ function drawText(ctx: Ctx, c: TextContent, w: number, h: number, pxPerMm: numbe
     });
   }
   ctx.restore();
+}
+
+/** The line width of outline-only text and shapes, in mm: the outline width, else a bold 1.5 mm. */
+export function lineWidthMm(c: { strokeWidthMm?: number }) {
+  return c.strokeWidthMm || 1.5;
 }
 
 function shapePath(ctx: Ctx, c: ShapeContent, w: number, h: number, pxPerMm: number) {
@@ -807,6 +853,15 @@ function drawShape(ctx: Ctx, c: ShapeContent, w: number, h: number, pxPerMm: num
     path = graphicPath(c.path, w, h);
   } else {
     shapePath(ctx, c, w, h, pxPerMm);
+  }
+  if (c.hollow) {
+    // Outline only: the shape as a line in its fill (colour, gradient or pattern).
+    ctx.strokeStyle = paint(ctx, c.fill, c.fillStyle, w, h, pxPerMm);
+    ctx.lineWidth = lineWidthMm(c) * pxPerMm;
+    ctx.lineJoin = 'round';
+    if (path) ctx.stroke(path);
+    else ctx.stroke();
+    return;
   }
   ctx.fillStyle = paint(ctx, c.fill, c.fillStyle, w, h, pxPerMm);
   if (path) ctx.fill(path, 'evenodd');
@@ -1162,6 +1217,163 @@ function shadeFinish(canvas: HTMLCanvasElement, finish: LayerStyle['finish'], px
   ctx.restore();
 }
 
+// ---------------------------------------------------------------------------
+// Sticker outline and halftone: effects that print
+// ---------------------------------------------------------------------------
+
+/** One line of the squared Euclidean distance transform (Felzenszwalb and Huttenlocher), in place. */
+function edt1d(f: Float64Array, n: number, d: Float64Array, v: Int32Array, z: Float64Array) {
+  let k = 0;
+  v[0] = 0;
+  z[0] = -Infinity;
+  z[1] = Infinity;
+  for (let q = 1; q < n; q++) {
+    let s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+    while (s <= z[k]) {
+      k--;
+      s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+    }
+    k++;
+    v[k] = q;
+    z[k] = s;
+    z[k + 1] = Infinity;
+  }
+  k = 0;
+  for (let q = 0; q < n; q++) {
+    while (z[k + 1] < q) k++;
+    d[q] = (q - v[k]) * (q - v[k]) + f[v[k]];
+  }
+  for (let q = 0; q < n; q++) f[q] = d[q];
+}
+
+/** Squared distance from every cell to the nearest inside cell (0 inside), for a w × h grid. */
+export function distanceField(inside: (i: number) => boolean, w: number, h: number): Float64Array {
+  const INF = 1e20;
+  const grid = new Float64Array(w * h);
+  for (let i = 0; i < w * h; i++) grid[i] = inside(i) ? 0 : INF;
+  const n = Math.max(w, h);
+  const f = new Float64Array(n);
+  const d = new Float64Array(n);
+  const v = new Int32Array(n);
+  const z = new Float64Array(n + 1);
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) f[y] = grid[y * w + x];
+    edt1d(f, h, d, v, z);
+    for (let y = 0; y < h; y++) grid[y * w + x] = f[y];
+  }
+  for (let y = 0; y < h; y++) {
+    const row = grid.subarray(y * w, y * w + w);
+    f.set(row);
+    edt1d(f, w, d, v, z);
+    row.set(f.subarray(0, w));
+  }
+  return grid;
+}
+
+/**
+ * The silhouette of `src` grown by `radiusPx` in one colour: a sticker outline. Worked out on a
+ * distance field at up to 1024 px and drawn back smoothly, so it stays fast at print resolution.
+ */
+function contour(src: HTMLCanvasElement, radiusPx: number, color: string): HTMLCanvasElement {
+  const W = src.width;
+  const H = src.height;
+  const k = Math.max(1, Math.max(W, H) / 1024);
+  const w = Math.max(1, Math.round(W / k));
+  const h = Math.max(1, Math.round(H / k));
+  const small = makeCanvas(w, h);
+  const sc = small.getContext('2d', { willReadFrequently: true })!;
+  sc.drawImage(src, 0, 0, w, h);
+  const px = sc.getImageData(0, 0, w, h);
+  const field = distanceField((i) => px.data[i * 4 + 3] > 24, w, h);
+  const r = radiusPx / k;
+  const [R, G, B] = hexRgb(color);
+  for (let i = 0; i < w * h; i++) {
+    px.data[i * 4] = R;
+    px.data[i * 4 + 1] = G;
+    px.data[i * 4 + 2] = B;
+    px.data[i * 4 + 3] = Math.round(Math.max(0, Math.min(1, r - Math.sqrt(field[i]) + 0.5)) * 255);
+  }
+  sc.putImageData(px, 0, 0);
+  if (k === 1) return small;
+  const big = makeCanvas(W, H);
+  const bc = big.getContext('2d')!;
+  bc.imageSmoothingEnabled = true;
+  bc.imageSmoothingQuality = 'high';
+  bc.drawImage(small, 0, 0, W, H);
+  return big;
+}
+
+/** How much ink a halftone cell carries, 0–1, from its averaged colour and opacity. */
+export function halftoneCover(r: number, g: number, b: number, a: number, by: 'tone' | 'fade') {
+  const alpha = a / 255;
+  if (by === 'fade') return alpha;
+  const luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return Math.min(1, alpha * (1 - luma));
+}
+
+/**
+ * The artwork as a halftone screen: on a grid turned to the screen angle, each cell becomes a dot,
+ * square or line sized by how much ink the artwork puts there. Dots of one colour share one path.
+ */
+function halftoneCanvas(src: HTMLCanvasElement, ht: LayerHalftone, pxPerMm: number): HTMLCanvasElement {
+  const W = src.width;
+  const H = src.height;
+  const cell = Math.max(1.5, ht.cellMm * pxPerMm);
+  // Average the artwork down to about three pixels a cell, then sample one value per cell on the
+  // turned grid, so each dot reflects its whole cell rather than one pixel.
+  const mw = Math.max(1, Math.round((W / cell) * 3));
+  const mh = Math.max(1, Math.round((H / cell) * 3));
+  const mid = makeCanvas(mw, mh);
+  const mc = mid.getContext('2d')!;
+  mc.imageSmoothingEnabled = true;
+  mc.imageSmoothingQuality = 'high';
+  mc.drawImage(src, 0, 0, mw, mh);
+  const n = Math.ceil(Math.hypot(W, H) / cell) + 2;
+  const sample = makeCanvas(n, n);
+  const sc = sample.getContext('2d', { willReadFrequently: true })!;
+  sc.imageSmoothingEnabled = true;
+  sc.imageSmoothingQuality = 'high';
+  // Sample pixel (u, v) is cell (u, v) of the turned grid centred on the artwork.
+  sc.setTransform(new DOMMatrix().translate(n / 2, n / 2).scale(1 / cell).rotate(-ht.angleDeg).translate(-W / 2, -H / 2).scale(W / mw, H / mh));
+  sc.drawImage(mid, 0, 0);
+  const data = sc.getImageData(0, 0, n, n).data;
+  const paths = new Map<string, Path2D>();
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const p = (j * n + i) * 4;
+      if (data[p + 3] < 3) continue;
+      const cover = halftoneCover(data[p], data[p + 1], data[p + 2], data[p + 3], ht.by);
+      if (cover < 0.015) continue;
+      // Dots in their own colour share a path per colour, rounded so a photo needs few paths.
+      const color = ht.color ?? `#${[data[p], data[p + 1], data[p + 2]].map((x) => ((x >> 3) << 3).toString(16).padStart(2, '0')).join('')}`;
+      let path = paths.get(color);
+      if (!path) paths.set(color, (path = new Path2D()));
+      const x = (i - n / 2 + 0.5) * cell;
+      const y = (j - n / 2 + 0.5) * cell;
+      if (ht.shape === 'dot') {
+        // Area true to the ink: a full cell's dot just overlaps its neighbours into solid.
+        const rad = cell * Math.sqrt(cover / Math.PI);
+        path.moveTo(x + rad, y);
+        path.arc(x, y, rad, 0, Math.PI * 2);
+      } else if (ht.shape === 'square') {
+        const s = cell * Math.sqrt(cover);
+        path.rect(x - s / 2, y - s / 2, s, s);
+      } else {
+        const t = cell * cover;
+        path.rect(x - cell / 2 - 0.25, y - t / 2, cell + 0.5, t);
+      }
+    }
+  }
+  const out = makeCanvas(W, H);
+  const o = out.getContext('2d')!;
+  o.setTransform(new DOMMatrix().translate(W / 2, H / 2).rotate(ht.angleDeg));
+  for (const [color, path] of paths) {
+    o.fillStyle = color;
+    o.fill(path);
+  }
+  return out;
+}
+
 /** Draw only the shadow of `src` (the source itself lands outside the canvas). */
 function castShadow(o: CanvasRenderingContext2D, src: HTMLCanvasElement, color: string, blurPx: number, dx: number, dy: number) {
   const far = src.width + 64;
@@ -1175,15 +1387,23 @@ function castShadow(o: CanvasRenderingContext2D, src: HTMLCanvasElement, color: 
 }
 
 /** Millimetres an effect paints outside the layer box: outlines, shadows, glyph overhangs, raised finishes. */
+/** The drop shadow a layer casts: text keeps its own in its content, every other layer in its style. */
+export function layerShadow(layer: Pick<ArtworkLayer, 'content' | 'style'>): LayerShadow | undefined {
+  return (layer.content.kind === 'text' ? layer.content.shadow : undefined) ?? layer.style.shadow;
+}
+
 export function layerBleedMm(layer: ArtworkLayer, simulate = false): number {
   const c = layer.content;
   let mm = 0;
   if (c.kind === 'text') {
-    mm = layer.transform.heightMm * 0.12 + (c.strokeColor && c.strokeWidthMm ? c.strokeWidthMm + 0.5 : 0);
-    if (c.shadow) mm += Math.max(Math.abs(c.shadow.offsetXmm), Math.abs(c.shadow.offsetYmm)) + c.shadow.blurMm * 1.5;
-  } else if (c.kind === 'shape' && c.strokeColor && c.strokeWidthMm) {
-    mm = c.strokeWidthMm / 2 + 0.5;
+    const outline = c.hollow ? lineWidthMm(c) / 2 + 0.5 : c.strokeColor && c.strokeWidthMm ? c.strokeWidthMm + 0.5 : 0;
+    mm = layer.transform.heightMm * 0.12 + outline;
+  } else if (c.kind === 'shape' && (c.hollow || (c.strokeColor && c.strokeWidthMm))) {
+    mm = (c.hollow ? lineWidthMm(c) : c.strokeWidthMm!) / 2 + 0.5;
   }
+  if (layer.style.outline) mm += layer.style.outline.widthMm + 0.5;
+  const shadow = layerShadow(layer);
+  if (shadow) mm += Math.max(Math.abs(shadow.offsetXmm), Math.abs(shadow.offsetYmm)) + shadow.blurMm * 1.5;
   if (simulate && RAISED[layer.style.finish]) mm += 2.5;
   return Math.min(mm, 150);
 }
@@ -1194,7 +1414,8 @@ function bleedPx(layer: ArtworkLayer, pxPerMm: number, simulate: boolean) {
 
 /** Whether a layer needs the offscreen effect pass rather than drawing straight onto the target. */
 export function needsEffectPass(layer: ArtworkLayer, simulate = false) {
-  return !!effectiveDistress(layer) || layer.style.finish === 'cracked' || (layer.content.kind === 'text' && !!layer.content.shadow) || (simulate && SIMULATED.has(layer.style.finish));
+  const s = layer.style;
+  return !!effectiveDistress(layer) || s.finish === 'cracked' || !!layerShadow(layer) || !!s.outline || !!s.halftone || (simulate && SIMULATED.has(s.finish));
 }
 
 function drawRaw(ctx: Ctx, layer: ArtworkLayer, w: number, h: number, pxPerMm: number): boolean {
@@ -1222,7 +1443,9 @@ const fxCache = new CanvasCache(32e6, 8e6);
 function renderEffects(layer: ArtworkLayer, w: number, h: number, pxPerMm: number, simulate: boolean): { canvas: HTMLCanvasElement; bleed: number } | null {
   const bleed = bleedPx(layer, pxPerMm, simulate);
   const distress = effectiveDistress(layer);
-  const key = JSON.stringify([layer.content, layer.style.finish, distress, Math.round(w * 2), Math.round(h * 2), Math.round(pxPerMm * 1000), simulate]);
+  const { halftone, outline } = layer.style;
+  const shadow = layerShadow(layer);
+  const key = JSON.stringify([layer.content, layer.style.finish, distress, halftone, outline, shadow, Math.round(w * 2), Math.round(h * 2), Math.round(pxPerMm * 1000), simulate]);
   const hit = fxCache.get(key);
   if (hit) return { canvas: hit, bleed };
   const W = Math.ceil(w) + 2 * bleed;
@@ -1232,32 +1455,54 @@ function renderEffects(layer: ArtworkLayer, w: number, h: number, pxPerMm: numbe
   b.translate(bleed + w / 2, bleed + h / 2);
   if (!drawRaw(b, layer, w, h, pxPerMm)) return null;
   b.setTransform(1, 0, 0, 1, 0, 0);
+  // The artwork as it prints: screened into a halftone, then ringed by its outline (traced
+  // round the solid artwork, so it stays one clean band), then worn.
+  let art = base;
+  if (halftone) art = halftoneCanvas(base, halftone, pxPerMm);
+  if (outline) {
+    const ring = contour(base, outline.widthMm * pxPerMm, outline.color);
+    const both = makeCanvas(W, H);
+    const bc = both.getContext('2d')!;
+    bc.drawImage(ring, 0, 0);
+    bc.drawImage(art, 0, 0);
+    if (art !== base) release(art);
+    release(ring);
+    art = both;
+  }
+  if (art !== base) release(base);
+  const a = art.getContext('2d')!;
   if (distress) {
     const mask = distressMask(w / pxPerMm, h / pxPerMm, bleed / pxPerMm, distress, pxPerMm);
-    b.globalCompositeOperation = 'destination-out';
-    b.drawImage(mask, 0, 0, w + 2 * bleed, h + 2 * bleed);
-    b.globalCompositeOperation = 'source-over';
+    a.globalCompositeOperation = 'destination-out';
+    a.drawImage(mask, 0, 0, w + 2 * bleed, h + 2 * bleed);
+    a.globalCompositeOperation = 'source-over';
   }
   // Cracks remove ink, so like distress they are part of the print, not a preview effect.
   if (layer.style.finish === 'cracked') {
     const mask = crackMask(w / pxPerMm, h / pxPerMm, bleed / pxPerMm, hashString(layer.id) % 100000, pxPerMm);
-    b.globalCompositeOperation = 'destination-out';
-    b.drawImage(mask, 0, 0, w + 2 * bleed, h + 2 * bleed);
-    b.globalCompositeOperation = 'source-over';
+    a.globalCompositeOperation = 'destination-out';
+    a.drawImage(mask, 0, 0, w + 2 * bleed, h + 2 * bleed);
+    a.globalCompositeOperation = 'source-over';
   }
-  if (simulate && SIMULATED.has(layer.style.finish)) shadeFinish(base, layer.style.finish, pxPerMm);
-  const textShadow = layer.content.kind === 'text' ? layer.content.shadow : undefined;
+  if (simulate && SIMULATED.has(layer.style.finish)) shadeFinish(art, layer.style.finish, pxPerMm);
   const raised = simulate ? RAISED[layer.style.finish] : undefined;
-  let out = base;
-  if (textShadow || raised) {
+  let out = art;
+  if (shadow || raised) {
     out = makeCanvas(W, H);
     const o = out.getContext('2d')!;
-    if (textShadow) castShadow(o, base, textShadow.color, textShadow.blurMm * pxPerMm, textShadow.offsetXmm * pxPerMm, textShadow.offsetYmm * pxPerMm);
-    if (raised) castShadow(o, base, raised.color, raised.blurMm * pxPerMm, raised.dxMm * pxPerMm, raised.dyMm * pxPerMm);
-    o.drawImage(base, 0, 0);
+    if (shadow) castShadow(o, art, shadow.color, shadow.blurMm * pxPerMm, shadow.offsetXmm * pxPerMm, shadow.offsetYmm * pxPerMm);
+    if (raised) castShadow(o, art, raised.color, raised.blurMm * pxPerMm, raised.dxMm * pxPerMm, raised.dyMm * pxPerMm);
+    o.drawImage(art, 0, 0);
+    release(art);
   }
   fxCache.set(key, out);
   return { canvas: out, bleed };
+}
+
+/** Free a canvas's pixels now rather than when it is collected (big print-resolution intermediates). */
+function release(canvas: HTMLCanvasElement) {
+  canvas.width = 0;
+  canvas.height = 0;
 }
 
 export interface LayerDrawOptions {
@@ -1435,7 +1680,8 @@ export function drawZoneSurface(ctx: CanvasRenderingContext2D, zone: LayerStack,
 
 /** Whether the 2D editor must draw an image layer through the renderer rather than show the decoded file. */
 export function imageNeedsBitmap(layer: ArtworkLayer) {
-  return layer.content.kind === 'image' && (!!layer.content.repeat || !!effectiveDistress(layer));
+  // A crop shape, a repeat or any effect is drawn by the renderer; a plain image shows its own pixels.
+  return layer.content.kind === 'image' && (!!layer.content.repeat || !!layer.content.mask || needsEffectPass(layer));
 }
 
 /**

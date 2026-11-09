@@ -10,7 +10,7 @@ import { artboardOf, artboardSpec, hasArtboard } from '@/domain/areas';
 import type { Command } from '@/domain/commands';
 import { getGarment } from '@/domain/garments';
 import { applyCommand, emptyHistory, redo as redoHistory, undo as undoHistory, type History } from '@/domain/history';
-import { isAreaId, type ArtboardId, type Colorway, type DesignDocument, type LayerTransform, type ProjectedTransform, type ProjectorSpec } from '@/domain/schema';
+import { isAreaId, type ArtboardId, type Colorway, type DesignDocument, type LayerTransform, type ProjectedTransform, type ProjectorSpec, type Scene } from '@/domain/schema';
 import { getProject, loadDocument, saveDocument, type ProjectMeta } from '@/lib/local-db';
 import { renderThumbnail } from '@/lib/thumbnail';
 
@@ -264,12 +264,15 @@ interface LiveState {
   colorwayOverride: string | null;
   /** A colourway not in the design yet (an idea being looked at), shown on the garment over everything else. */
   colorwayPreview: Colorway | null;
+  /** Scene settings shown instead of the design's while rendering a batch (every lighting look). */
+  sceneOverride: Partial<Scene> | null;
   /** Output aspect (width / height) the render studio is set to; the 3D view frames it. */
   renderAspect: number | null;
   setOverrides: (zoneId: ArtboardId, overrides: Record<string, Partial<LayerTransform>>, source?: '2d' | '3d') => void;
   setProjection: (projection: LiveProjection | null) => void;
   setColorwayOverride: (id: string | null) => void;
   setColorwayPreview: (colorway: Colorway | null) => void;
+  setSceneOverride: (scene: Partial<Scene> | null) => void;
   setRenderAspect: (aspect: number | null) => void;
   clear: () => void;
 }
@@ -281,11 +284,13 @@ export const useLive = create<LiveState>((set) => ({
   source: null,
   colorwayOverride: null,
   colorwayPreview: null,
+  sceneOverride: null,
   renderAspect: null,
   setOverrides: (zoneId, overrides, source = '2d') => set({ zoneId, overrides, source }),
   setProjection: (projection) => set({ projection, source: projection ? '3d' : null }),
   setColorwayOverride: (colorwayOverride) => set({ colorwayOverride }),
   setColorwayPreview: (colorwayPreview) => set({ colorwayPreview }),
+  setSceneOverride: (sceneOverride) => set({ sceneOverride }),
   setRenderAspect: (renderAspect) => set({ renderAspect }),
   clear: () => set({ zoneId: null, overrides: {}, projection: null, source: null }),
 }));
