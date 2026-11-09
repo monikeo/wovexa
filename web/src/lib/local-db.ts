@@ -23,6 +23,8 @@ export interface ProjectMeta {
   createdAt: number;
   updatedAt: number;
   archivedAt?: number;
+  /** In Recently deleted since then; deleted for good after TRASH_DAYS (spec PRJ-03). */
+  deletedAt?: number;
   /** Last revision the server accepted (0 = never synced). */
   serverRevision: number;
   syncState: SyncState;
@@ -214,9 +216,14 @@ function metaFromDocument(doc: DesignDocument, hash: string, previous?: ProjectM
   };
 }
 
-export async function listProjects(opts: { includeArchived?: boolean } = {}): Promise<ProjectMeta[]> {
+/**
+ * Projects, most recently edited first. By default the ones in use (archived ones with
+ * `includeArchived`); `deleted: 'only'` lists Recently deleted, `deleted: 'include'` everything.
+ */
+export async function listProjects(opts: { includeArchived?: boolean; deleted?: 'exclude' | 'only' | 'include' } = {}): Promise<ProjectMeta[]> {
   const all = await (await db()).getAllFromIndex('projects', 'updatedAt');
-  return all.reverse().filter((p) => opts.includeArchived || !p.archivedAt);
+  const deleted = opts.deleted ?? 'exclude';
+  return all.reverse().filter((p) => (deleted === 'include' || (deleted === 'only') === !!p.deletedAt) && (deleted === 'only' || opts.includeArchived || !p.archivedAt));
 }
 
 export async function getProject(id: string) {
@@ -314,6 +321,32 @@ export async function duplicateProject(id: string): Promise<ProjectMeta | null> 
 
 export async function archiveProject(id: string, archived: boolean) {
   await updateProjectMeta(id, { archivedAt: archived ? Date.now() : undefined });
+}
+
+/** Days a deleted project stays in Recently deleted before it is gone for good. */
+export const TRASH_DAYS = 30;
+
+/** Move a project to Recently deleted: out of every list, restorable for TRASH_DAYS. */
+export async function trashProject(id: string) {
+  await updateProjectMeta(id, { deletedAt: Date.now() });
+}
+
+/** Bring a project back from Recently deleted, as it was. */
+export async function restoreProject(id: string) {
+  await updateProjectMeta(id, { deletedAt: undefined });
+}
+
+/** Delete for good the projects in Recently deleted longer than TRASH_DAYS. Returns how many went. */
+export async function purgeDeletedProjects(now = Date.now()): Promise<number> {
+  const cutoff = now - TRASH_DAYS * 86400000;
+  const expired = (await listProjects({ deleted: 'only' })).filter((p) => p.deletedAt! < cutoff);
+  for (const p of expired) await deleteProject(p.id);
+  return expired.length;
+}
+
+/** Days left before a project in Recently deleted is deleted for good. */
+export function daysLeft(meta: Pick<ProjectMeta, 'deletedAt'>, now = Date.now()) {
+  return meta.deletedAt ? Math.max(0, Math.ceil((meta.deletedAt + TRASH_DAYS * 86400000 - now) / 86400000)) : TRASH_DAYS;
 }
 
 /** Permanent local delete, including the project's version history. Callers confirm first. */
