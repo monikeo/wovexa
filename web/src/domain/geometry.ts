@@ -65,6 +65,28 @@ export function normalizeDeg(deg: number) {
   return ((((deg + 180) % 360) + 360) % 360) - 180;
 }
 
+/**
+ * A layer's box after its image is cropped to `crop` (pixels of a `natW` × `natH` image): a tighter
+ * box with the artwork exactly where it was, turned and mirrored as the layer is.
+ */
+export function croppedTransform(t: LayerTransform, natW: number, natH: number, crop: { x: number; y: number; w: number; h: number }): Pick<LayerTransform, 'centerXmm' | 'centerYmm' | 'widthMm' | 'heightMm'> {
+  const sx = t.widthMm / natW;
+  const sy = t.heightMm / natH;
+  // The crop's centre from the image's centre, in the layer's own millimetres...
+  let dx = (crop.x + crop.w / 2 - natW / 2) * sx;
+  let dy = (crop.y + crop.h / 2 - natH / 2) * sy;
+  // ...mirrored and turned as the layer draws (translate, rotate, then flip).
+  if (t.flipX) dx = -dx;
+  if (t.flipY) dy = -dy;
+  const a = (t.rotationDeg * Math.PI) / 180;
+  return {
+    centerXmm: t.centerXmm + dx * Math.cos(a) - dy * Math.sin(a),
+    centerYmm: t.centerYmm + dx * Math.sin(a) + dy * Math.cos(a),
+    widthMm: crop.w * sx,
+    heightMm: crop.h * sy,
+  };
+}
+
 type Box = Pick<LayerTransform, 'centerXmm' | 'centerYmm' | 'widthMm' | 'heightMm' | 'rotationDeg'>;
 
 /**

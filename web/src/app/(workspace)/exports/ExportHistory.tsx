@@ -45,7 +45,7 @@ export function ExportHistory() {
 
   useEffect(() => {
     let alive = true;
-    Promise.all([listAllExports().catch(() => []), listProjects({ includeArchived: true }).catch(() => [])]).then(([list, metas]) => {
+    Promise.all([listAllExports().catch(() => []), listProjects({ includeArchived: true, deleted: 'include' }).catch(() => [])]).then(([list, metas]) => {
       if (!alive) return;
       setRecords(list);
       setProjects(new Map(metas.map((m) => [m.id, m])));
@@ -132,7 +132,7 @@ export function ExportHistory() {
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">
                           {r.label}
-                          <span className="font-normal text-fg-2"> · {project ? project.title : 'Deleted project'}</span>
+                          <span className="font-normal text-fg-2"> · {project ? `${project.title}${project.deletedAt ? ' (in Recently deleted)' : ''}` : 'Deleted project'}</span>
                         </p>
                         <p className="num truncate text-xs text-fg-2" title={r.fileName}>
                           {r.fileName}
@@ -146,7 +146,7 @@ export function ExportHistory() {
                           {changed ? <span className="rounded bg-warning/15 px-1.5 py-px font-medium text-warning">Design changed since</span> : null}
                         </p>
                       </div>
-                      {project && !project.archivedAt ? (
+                      {project && !project.archivedAt && !project.deletedAt ? (
                         <Link href={`/studio/${r.projectId}`} className="btn btn-outline min-h-8 flex-none px-2.5 text-xs" title={changed ? 'Open the project to export the current design' : 'Open the project'}>
                           Open <ArrowUpRight size={13} />
                         </Link>

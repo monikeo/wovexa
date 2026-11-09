@@ -328,6 +328,19 @@ export function renameColorway(colorwayId: string, name: string): Command {
   };
 }
 
+/** Move a colourway to `toIndex` in the list: the order the panel, exports and renders use. */
+export function reorderColorway(colorwayId: string, toIndex: number): Command {
+  return {
+    label: 'Reorder colourways',
+    recipe: (d) => {
+      const from = d.colorways.findIndex((c) => c.id === colorwayId);
+      if (from < 0) return;
+      const [colorway] = d.colorways.splice(from, 1);
+      d.colorways.splice(Math.max(0, Math.min(d.colorways.length, toIndex)), 0, colorway);
+    },
+  };
+}
+
 export function setActiveColorway(colorwayId: string): Command {
   return { label: 'Switch colourway', recipe: (d) => void (d.activeColorwayId = colorwayId) };
 }

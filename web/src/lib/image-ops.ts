@@ -135,6 +135,28 @@ export async function removeBackground(source: HTMLImageElement | ImageBitmap, o
   return { blob, removed: removed / n, background: toHex(Math.round(br), Math.round(bg), Math.round(bb)) };
 }
 
+/**
+ * The smallest box holding every pixel more opaque than `threshold` (0–255), in pixels, or null
+ * when the image is empty. Pure over RGBA pixels, so it is unit-tested.
+ */
+export function alphaBounds(data: Uint8ClampedArray, w: number, h: number, threshold = 8): { x: number; y: number; w: number; h: number } | null {
+  let minX = w;
+  let minY = h;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < h; y++) {
+    const row = y * w * 4;
+    for (let x = 0; x < w; x++) {
+      if (data[row + x * 4 + 3] <= threshold) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      maxY = y;
+    }
+  }
+  return maxX < 0 ? null : { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+}
+
 export interface PaletteColour {
   hex: string;
   /** Share of the image's opaque pixels, 0–1. */

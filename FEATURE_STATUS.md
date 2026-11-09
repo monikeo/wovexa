@@ -12,11 +12,11 @@ Nothing here has been run against a live Supabase project: the app works fully i
 
 | Priority | Features | Done | Partial | Not started |
 | --- | ---: | ---: | ---: | ---: |
-| P0 | 34 | 26 | 8 | 0 |
-| P1 | 88 | 39 | 31 | 18 |
+| P0 | 34 | 27 | 7 | 0 |
+| P1 | 88 | 41 | 29 | 18 |
 | P2 | 59 | 4 | 12 | 43 |
 | Platform requirements (no priority) | 80 | 41 | 22 | 17 |
-| **All** | 261 | 110 | 73 | 78 |
+| **All** | 261 | 113 | 70 | 78 |
 
 ## Accounts and onboarding
 
@@ -37,7 +37,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | --- | --- | --- | --- | --- |
 | PRJ-01 | P0 | Create projects | Done | Blank project or from built-in/user templates; garment and colourway chosen at creation. |
 | PRJ-02 | P0 | Project cards | Done | Cards with rendered thumbnail, garment, last edited and approval status. |
-| PRJ-03 | P0 | CRUD | Partial | Rename, duplicate, archive/restore and confirmed delete. Delete is permanent (no retention bin). |
+| PRJ-03 | P0 | CRUD | Done | Rename, duplicate, archive/restore, and delete into Recently deleted: restorable for 30 days (with a countdown, and a banner if the project is opened), then deleted for good; or delete forever at once, confirmed. |
 | PRJ-04 | P0 | Autosave / status | Partial | Saved / Saving / Unsaved / Offline / Failed-with-retry. "Sync conflict" waits for server sync. |
 | PRJ-05 | P1 | Collections / folders | Not started |  |
 | PRJ-06 | P1 | Search and filtering | Partial | Title search and sort. No tag, collaborator or date filters yet. |
@@ -58,7 +58,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | GAR-06 | P1 | Fabric presets | Partial | Fabric presets per garment with GSM and their own surface (jersey, piqué, fleece, mesh, rib, diamond weave). All-over fabric prints: gradient, 8 patterns, image tiles and dye effects (spiral and crumple tie-dye, acid wash, heather, dip-dye, marble). |
 | GAR-07 | P1 | Size variants | Partial | Sizes from real charts (shirts K2 to 8XL, singlets, dobok 100 to 210) grade chest, length, sleeve and pants separately; a custom shape grades with them. Print areas are fixed per model, not per size. |
 | GAR-08 | P1 | Tag customization | Not started |  |
-| GAR-09 | P1 | Colorway manager | Partial | Create from presets, custom or colourway ideas, rename, recolour, delete, compare, switch from the command palette with a live preview. No reorder or duplicate. |
+| GAR-09 | P1 | Colorway manager | Done | Create from presets, custom or colourway ideas, duplicate, reorder, rename, recolour, delete, compare, switch from the command palette with a live preview. |
 | GAR-10 | P2 | Material library (new) | Not started |  |
 | GAR-11 | P2 | Custom garment intake | Partial | A brand's own garment GLB loads over a style as a shell for the look; its pattern, sizes and print areas stay the style's. The 3D model library is the app's `3d_models` folder: every GLB in it (and two levels of subfolders) is listed by file name as soon as it is added, grouped by subfolder or by the garment its name says, with its credit, and wearable from the Garment panel or as a new project. Each model shows front and back 2D views drawn from the model itself (saved beside it as Name.front.png and Name.back.png, or the designer's own flats). No intake of new patterns or zones. |
 | GAR-12 | P1 | Garment compatibility warnings | Done | Preflight blocks print methods a zone does not support. |
@@ -101,7 +101,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | ED3-09 | P1 | Studio light controls | Done | Seven lighting looks (key/fill/rim rigs, including golden hour and neon), tone (true colour, filmic AgX, cinematic ACES), exposure, light rotation, floor shadow. |
 | ED3-10 | P1 | Background / stage | Done | Transparent, solid, gradient or uploaded-image backdrop; preset scenes; contact floor shadow. |
 | ED3-11 | P1 | Position aids | Done | Print-area outlines and selection box on the garment; never in renders. |
-| ED3-12 | P1 | 2D/3D split view | Partial | Split view; the 2D editor follows 3D drags live. No draggable divider. |
+| ED3-12 | P1 | 2D/3D split view | Done | Split view; the 2D editor follows 3D drags live. A divider resizes the two (drag, arrow keys, double-click to centre), remembered on this device. |
 | ED3-13 | P1 | Animation presets | Partial | Motion presets: turntable, walk (an invisible walker: body bob and turn, sleeves and uniform legs swing from shoulder and hip), wind in gusts (pinned at the shoulders), hanger sway from the neck on a wooden hanger, float, and a knit reveal, with speed; all play in video, frame-exact. Procedural, not baked cloth simulation; no retail fold state. |
 | ED3-14 | P2 | Cross-seam artwork | Done | Text, images and shapes projected straight onto the 3D garment, like a texture painter's decal: wrap any zone layer across seams, then drag it over the shoulder or round a side seam in Place mode (or click the garment to place it), resize and turn it like other layers, all undoable. Back faces and cloth hidden behind nearer cloth are skipped; the print fades where the cloth turns edge-on. Painted on the pressed garment so it folds with the drape, and split at each seam in the cut-and-sew panels with real bleed. Preflight says it needs sublimation or cut-and-sew. |
 | ED3-15 | P2 | Side-by-side comparison (new) | Partial | Colourway comparison and batch renders use one camera. No live side-by-side 3D. |
@@ -132,7 +132,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | AST-02 | P0 | Safe file intake | Partial | Signature sniffing, size and megapixel limits, SVG sanitization, font validation by loading. No antivirus scanning (no server yet). |
 | AST-03 | P0 | Original + proxy | Partial | Originals are immutable and kept when derived copies are made. No separate proxy textures. |
 | AST-04 | P1 | Upload progress and recovery | Not started | Local storage only so far. |
-| AST-05 | P1 | Image operations | Partial | Background removal, adjustments and greyscale non-destructively. No trim or crop. |
+| AST-05 | P1 | Image operations | Partial | Background removal, adjustments and greyscale non-destructively, and trimming empty edges (the box hugs the artwork, which stays in place; the original is kept and restorable). No free crop. |
 | AST-06 | P1 | Vector cleanup | Not started |  |
 | AST-07 | P1 | Font vault | Partial | Upload TTF/OTF/WOFF/WOFF2 with a licence statement; stored on this device; fonts and licences listed in the manifest. No glyph coverage check. |
 | AST-08 | P1 | Palette extraction | Done | Dominant colours from an image, copyable, labelled as suggestions. |

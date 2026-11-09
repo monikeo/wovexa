@@ -3,18 +3,35 @@ import { Search } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { NewProjectButton, ProjectCard, useProjects } from '@/components/workspace/projects';
 import { PageHeader } from '@/components/workspace/WorkspaceShell';
+import { TRASH_DAYS } from '@/lib/local-db';
+
+type View = 'active' | 'archived' | 'deleted';
+
+const VIEWS: { id: View; label: string }[] = [
+  { id: 'active', label: 'In use' },
+  { id: 'archived', label: 'Archived' },
+  { id: 'deleted', label: 'Recently deleted' },
+];
 
 export function ProjectsList() {
-  const [showArchived, setShowArchived] = useState(false);
+  const [view, setView] = useState<View>('active');
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<'updated' | 'name'>('updated');
-  const { projects, error, refresh } = useProjects(showArchived);
+  const { projects, error, refresh } = useProjects(view);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = (projects ?? []).filter((p) => (showArchived ? !!p.archivedAt : true) && (!q || p.title.toLowerCase().includes(q)));
+    const list = (projects ?? []).filter((p) => (view === 'archived' ? !!p.archivedAt : true) && (!q || p.title.toLowerCase().includes(q)));
     return sort === 'name' ? [...list].sort((a, b) => a.title.localeCompare(b.title)) : list;
-  }, [projects, query, sort, showArchived]);
+  }, [projects, query, sort, view]);
+
+  const empty = query
+    ? { title: `Nothing matches “${query}”`, body: 'Try a shorter search.' }
+    : view === 'archived'
+      ? { title: 'No archived projects', body: 'Archive a project from its menu to put it away without deleting it.' }
+      : view === 'deleted'
+        ? { title: 'Nothing in Recently deleted', body: `Deleted projects wait here for ${TRASH_DAYS} days, so you can restore them.` }
+        : { title: 'No projects yet', body: 'New projects appear here as soon as you create them.' };
 
   return (
     <>
@@ -28,11 +45,17 @@ export function ProjectsList() {
           <option value="updated">Last edited</option>
           <option value="name">Name</option>
         </select>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} className="h-4 w-4 accent-[var(--accent)]" />
-          Show archived
-        </label>
+        <div className="seg" role="group" aria-label="Show projects">
+          {VIEWS.map((v) => (
+            <button key={v.id} aria-pressed={view === v.id} onClick={() => setView(v.id)}>
+              {v.label}
+            </button>
+          ))}
+        </div>
       </div>
+      {view === 'deleted' && visible.length ? (
+        <p className="mb-4 text-sm text-fg-2">Deleted projects stay here for {TRASH_DAYS} days, then go for good. Restore one from its menu.</p>
+      ) : null}
       {error ? (
         <p role="alert" className="rounded-xl border border-danger/40 p-4 text-sm">
           {error}
@@ -41,8 +64,8 @@ export function ProjectsList() {
         <p className="text-sm text-fg-2">Loading projects…</p>
       ) : visible.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-line p-8 text-center">
-          <p className="font-semibold">{query ? `Nothing matches “${query}”` : showArchived ? 'No archived projects' : 'No projects yet'}</p>
-          <p className="mt-1 text-sm text-fg-2">{query ? 'Try a shorter search.' : 'New projects appear here as soon as you create them.'}</p>
+          <p className="font-semibold">{empty.title}</p>
+          <p className="mt-1 text-sm text-fg-2">{empty.body}</p>
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">

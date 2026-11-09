@@ -15,6 +15,7 @@ import {
   ArrowUpToLine,
   Copy,
   CopyPlus,
+  Crop,
   Dices,
   Eraser,
   FlipHorizontal2,
@@ -55,7 +56,9 @@ import {
 } from '@/domain/schema';
 import { AssetError, getLoadedImage, importImageFile, loadAssetImage } from '@/lib/assets';
 import { ARTWORK_FONTS, fontWeights, loadFontStylesheets } from '@/lib/fonts';
-import { extractPalette, removeBackground, type PaletteColour } from '@/lib/image-ops';
+import { alphaBounds, extractPalette, removeBackground, type PaletteColour } from '@/lib/image-ops';
+import { canvasToBlob } from '@/lib/download';
+import { croppedTransform } from '@/domain/geometry';
 import { getAsset } from '@/lib/local-db';
 import { usePreference } from '@/lib/preferences';
 import { DEFAULT_REPEAT, effectiveDistress, isCurved, isNeutralAdjust, isWarped, NEUTRAL_ADJUST, textAspect } from '@/lib/render/zone-renderer';
@@ -504,7 +507,18 @@ function BackgroundRemoval({ layer }: { layer: ArtworkLayer }) {
     const original = await getAsset(content.originalAssetId);
     if (!original) return toast('The original image is no longer on this device.', 'error');
     if (!getLoadedImage(original.id)) await loadAssetImage(original.id);
-    dispatch(edit(layer.id, { content: { assetId: original.id, mime: original.mime, originalAssetId: undefined } }, 'Restore original image'));
+    // A trimmed copy has its own proportions: the original comes back at the layer's width, in its own.
+    const sameShape = original.width === content.naturalWidthPx && original.height === content.naturalHeightPx;
+    dispatch(
+      edit(
+        layer.id,
+        {
+          content: { assetId: original.id, mime: original.mime, originalAssetId: undefined, naturalWidthPx: original.width, naturalHeightPx: original.height },
+          ...(sameShape ? {} : { transform: { heightMm: (layer.transform.widthMm * original.height) / original.width } }),
+        },
+        'Restore original image',
+      ),
+    );
   };
 
   return (
@@ -537,6 +551,66 @@ function BackgroundRemoval({ layer }: { layer: ArtworkLayer }) {
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Trim the empty (transparent) edges off an image (spec AST-05): after a background removal, the
+ * layer box hugs the artwork, so placement, alignment and the sticker outline follow what you see.
+ * The artwork stays exactly where it was; the untrimmed original is kept.
+ */
+function TrimEdges({ layer }: { layer: ArtworkLayer }) {
+  const edit = useLayerEdit();
+  const dispatch = useStudio((s) => s.dispatch);
+  const [busy, setBusy] = useState(false);
+  if (layer.content.kind !== 'image' || layer.content.mime === 'image/svg+xml') return null;
+  const content = layer.content;
+  const trim = async () => {
+    setBusy(true);
+    try {
+      const img = getLoadedImage(content.assetId) ?? (await loadAssetImage(content.assetId));
+      const w = img.naturalWidth || content.naturalWidthPx;
+      const h = img.naturalHeight || content.naturalHeightPx;
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+      ctx.drawImage(img, 0, 0);
+      const box = alphaBounds(ctx.getImageData(0, 0, w, h).data, w, h);
+      if (!box) return toast('This image is empty: nothing to trim to.', 'error');
+      if (box.w >= w - 1 && box.h >= h - 1) return toast('No empty edges to trim. Remove the background first, then trim.');
+      const out = document.createElement('canvas');
+      out.width = box.w;
+      out.height = box.h;
+      out.getContext('2d')!.drawImage(canvas, box.x, box.y, box.w, box.h, 0, 0, box.w, box.h);
+      const blob = await canvasToBlob(out);
+      const original = await getAsset(content.assetId);
+      const base = (original?.name ?? layer.name).replace(/\.[a-z0-9]+$/i, '').replace(/ \((trimmed|no background)\)$/, '');
+      const asset = await importImageFile(new File([blob], `${base} (trimmed).png`, { type: 'image/png' }));
+      await loadAssetImage(asset.id);
+      const scale = (content.naturalWidthPx || w) / w;
+      const crop = { x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale };
+      dispatch(
+        edit(
+          layer.id,
+          {
+            content: { assetId: asset.id, mime: 'image/png', naturalWidthPx: box.w, naturalHeightPx: box.h, originalAssetId: content.originalAssetId ?? content.assetId },
+            transform: croppedTransform(layer.transform, content.naturalWidthPx || w, content.naturalHeightPx || h, crop),
+          },
+          'Trim empty edges',
+        ),
+      );
+      toast(`Trimmed to ${box.w} × ${box.h} px; ${Math.round((1 - (box.w * box.h) / (w * h)) * 100)}% of the image was empty. The original is kept.`, 'success');
+    } catch (error) {
+      toast(error instanceof AssetError ? error.message : 'The image could not be trimmed.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button className="btn btn-outline w-full text-xs" disabled={busy} onClick={() => void trim()} title="Crop the box to the visible artwork, leaving it where it is">
+      {busy ? <Loader2 size={14} className="animate-spin" /> : <Crop size={14} />} Trim empty edges
+    </button>
   );
 }
 
@@ -594,6 +668,7 @@ function ImageSection({ layer }: { layer: ArtworkLayer }) {
           </div>
         </div>
         <BackgroundRemoval layer={layer} />
+        <TrimEdges layer={layer} />
         <ImagePalette content={c} />
       </Section>
       <ImageAdjustments layer={layer} content={c} />

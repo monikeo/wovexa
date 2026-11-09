@@ -46,7 +46,7 @@ import { getGarment } from '@/domain/garments';
 import { summarize } from '@/domain/preflight';
 import type { AreaId, ShapeContent } from '@/domain/schema';
 import { ACCEPTED_TYPES } from '@/lib/assets';
-import { approvalState } from '@/lib/local-db';
+import { approvalState, daysLeft, restoreProject } from '@/lib/local-db';
 import { WovexaSymbol } from '@/components/brand/Logo';
 import { Sheet, toast, Toaster, useLayoutMode, useMenuKeyboard } from '@/components/ui/primitives';
 import { useStudio, type StudioPanel, type ViewMode } from '@/stores/studio-store';
@@ -75,18 +75,12 @@ import { deleteProjection, duplicateProjection, moveProjectionBy, nudgeProjectio
 import { activeBareArea, addDesignArea, nudgeArea } from './area-actions';
 import { BrandKitProvider } from './brand-context';
 import { BrandPanel } from './BrandPanel';
-import { ColorwayCompare } from './ColorwayCompare';
 import { CommandPalette, openCommandPalette, useModKey } from './CommandPalette';
-import { ExportPanel } from './ExportDialog';
 import { GarmentPanel } from './GarmentPanel';
 import { GraphicsGrid, GraphicsMenu } from './GraphicsLibrary';
-import { HistoryPanel } from './HistoryPanel';
 import { Inspector } from './Inspector';
 import { LayerPanel } from './LayerPanel';
 import { PreflightPanel, usePreflight } from './PreflightPanel';
-import { RenderPanel } from './RenderPanel';
-import { SaveTemplatePanel } from './SaveTemplatePanel';
-import { ShortcutsPanel } from './ShortcutsPanel';
 import { StudioTour } from './StudioTour';
 
 const Editor2D = dynamic(() => import('./editor2d/Editor2D').then((m) => m.Editor2D), {
@@ -106,6 +100,46 @@ function StageLoading({ label }: { label: string }) {
       </span>
     </div>
   );
+}
+
+function PanelLoading() {
+  return (
+    <p className="flex items-center gap-2 p-4 text-sm text-fg-2">
+      <Loader2 size={15} className="animate-spin" /> Loading…
+    </p>
+  );
+}
+
+// Panels opened on demand (export, render, versions, compare, templates, keys) load their code
+// when first needed, and are fetched in the background once the studio is idle: the studio
+// starts lighter, and the first open is still instant.
+const loadExport = () => import('./ExportDialog');
+const loadRender = () => import('./RenderPanel');
+const loadHistory = () => import('./HistoryPanel');
+const loadCompare = () => import('./ColorwayCompare');
+const loadTemplate = () => import('./SaveTemplatePanel');
+const loadShortcuts = () => import('./ShortcutsPanel');
+const ExportPanel = dynamic(() => loadExport().then((m) => m.ExportPanel), { ssr: false, loading: PanelLoading });
+const RenderPanel = dynamic(() => loadRender().then((m) => m.RenderPanel), { ssr: false, loading: PanelLoading });
+const HistoryPanel = dynamic(() => loadHistory().then((m) => m.HistoryPanel), { ssr: false, loading: PanelLoading });
+const ColorwayCompare = dynamic(() => loadCompare().then((m) => m.ColorwayCompare), { ssr: false, loading: PanelLoading });
+const SaveTemplatePanel = dynamic(() => loadTemplate().then((m) => m.SaveTemplatePanel), { ssr: false, loading: PanelLoading });
+const ShortcutsPanel = dynamic(() => loadShortcuts().then((m) => m.ShortcutsPanel), { ssr: false, loading: PanelLoading });
+
+/** Fetch the on-demand panels while nothing else is happening, so opening one never waits. */
+function usePrefetchPanels() {
+  useEffect(() => {
+    const fetchAll = () => {
+      for (const load of [loadExport, loadRender, loadHistory, loadCompare, loadTemplate, loadShortcuts]) void load().catch(() => {});
+    };
+    const idle = (window as Window & { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number }).requestIdleCallback;
+    if (idle) {
+      const id = idle(fetchAll, { timeout: 8000 });
+      return () => (window as Window & { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback?.(id);
+    }
+    const t = setTimeout(fetchAll, 3000);
+    return () => clearTimeout(t);
+  }, []);
 }
 
 // ---- Top bar ----
@@ -376,6 +410,31 @@ function Topbar({ mode, onOpenChecks }: { mode: 'desktop' | 'tablet' | 'mobile';
   );
 }
 
+/** A project opened while it is in Recently deleted says so, with the way back. */
+function DeletedBanner() {
+  const meta = useStudio((s) => s.meta);
+  const refreshMeta = useStudio((s) => s.refreshMeta);
+  if (!meta?.deletedAt) return null;
+  const days = daysLeft(meta);
+  return (
+    <div className="flex flex-none items-center gap-3 border-b border-line bg-warning/10 px-3 py-1.5 text-xs" role="status">
+      <span className="flex-1">
+        This project is in Recently deleted and goes for good in {days} {days === 1 ? 'day' : 'days'}.
+      </span>
+      <button
+        className="btn btn-outline min-h-7 px-2.5 text-xs"
+        onClick={async () => {
+          await restoreProject(meta.id);
+          await refreshMeta();
+          toast(`Restored ${meta.title}.`, 'success');
+        }}
+      >
+        Restore
+      </button>
+    </div>
+  );
+}
+
 /** Layers and the brand kit share the left panel. */
 function LeftPanel() {
   const [tab, setTab] = useState<'layers' | 'brand'>('layers');
@@ -415,6 +474,8 @@ function FileButton({ children, className, label }: { children: React.ReactNode;
         multiple
         className="sr-only"
         tabIndex={-1}
+        // The labelled button opens it; screen readers skip the bare file field.
+        aria-hidden
         onChange={(e) => {
           if (e.target.files?.length) void addImages(e.target.files);
           e.target.value = '';
@@ -590,23 +651,111 @@ function ZoneBar() {
 
 // ---- Stage ----
 
+// Split view's share for the 2D artboard, remembered on this device.
+const SPLIT_KEY = 'wovexa.split';
+const SPLIT_MIN = 0.25;
+const SPLIT_MAX = 0.75;
+const clampSplit = (v: number) => Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, v));
+function readSplit() {
+  try {
+    const v = Number(localStorage.getItem(SPLIT_KEY));
+    return v ? clampSplit(v) : 0.5;
+  } catch {
+    return 0.5;
+  }
+}
+function saveSplit(v: number) {
+  try {
+    localStorage.setItem(SPLIT_KEY, String(Math.round(v * 1000) / 1000));
+  } catch {}
+}
+
+/** The divider between the 2D artboard and the 3D view: drag it, use the arrow keys, or double-click to centre it. */
+function SplitDivider({ split, onChange, stageRef }: { split: number; onChange: (v: number, save: boolean) => void; stageRef: React.RefObject<HTMLElement | null> }) {
+  const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    const stage = stageRef.current;
+    if (!stage || e.button !== 0) return;
+    e.preventDefault();
+    const el = e.currentTarget;
+    try {
+      // Keep the drag when the pointer runs over the canvases on either side.
+      el.setPointerCapture(e.pointerId);
+    } catch {}
+    const rect = stage.getBoundingClientRect();
+    let last = split;
+    const move = (ev: PointerEvent) => {
+      last = clampSplit((ev.clientX - rect.left) / rect.width);
+      onChange(last, false);
+    };
+    const up = () => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+      onChange(last, true);
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  };
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize the 2D and 3D views"
+      aria-valuemin={SPLIT_MIN * 100}
+      aria-valuemax={SPLIT_MAX * 100}
+      aria-valuenow={Math.round(split * 100)}
+      aria-valuetext={`2D artboard ${Math.round(split * 100)}%`}
+      tabIndex={0}
+      title="Drag to resize; double-click to centre"
+      className="group relative z-10 w-px flex-none cursor-col-resize touch-none bg-line outline-none focus-visible:bg-[var(--accent)]"
+      onPointerDown={startDrag}
+      onDoubleClick={() => onChange(0.5, true)}
+      onKeyDown={(e) => {
+        const step = e.shiftKey ? 0.1 : 0.05;
+        const next = e.key === 'ArrowLeft' ? split - step : e.key === 'ArrowRight' ? split + step : e.key === 'Home' ? SPLIT_MIN : e.key === 'End' ? SPLIT_MAX : null;
+        if (next === null) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onChange(clampSplit(next), true);
+      }}
+    >
+      {/* A wider grip than the 1 px line, and a handle that shows on hover and focus. */}
+      <span className="absolute inset-y-0 -left-2 -right-2" aria-hidden />
+      <span className="pointer-events-none absolute left-1/2 top-1/2 h-12 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-line-strong opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:bg-[var(--accent)] group-focus-visible:opacity-100" aria-hidden />
+    </div>
+  );
+}
+
 function Stage({ mode }: { mode: 'desktop' | 'tablet' | 'mobile' }) {
   const viewMode = useStudio((s) => s.viewMode);
   const wide = useWideStage();
   const effective: ViewMode = mode === 'mobile' ? (viewMode === '2d' ? '2d' : '3d') : viewMode === 'split' && !wide ? '2d' : viewMode;
+  const [split, setSplit] = useState(readSplit);
+  const stageRef = useRef<HTMLElement>(null);
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
     if (e.dataTransfer.files.length) void addImages(e.dataTransfer.files);
   };
   return (
-    <main className="relative flex min-h-0 min-w-0 flex-1" onDragOver={(e) => e.preventDefault()} onDrop={onDrop} aria-label="Design stage">
+    <main ref={stageRef} className="relative flex min-h-0 min-w-0 flex-1" onDragOver={(e) => e.preventDefault()} onDrop={onDrop} aria-label="Design stage">
       {effective !== '3d' ? (
-        <div className={`relative min-w-0 ${effective === 'split' ? 'w-1/2 border-r border-line' : 'flex-1'}`}>
+        <div className={`relative min-w-0 ${effective === 'split' ? 'flex-none' : 'flex-1'}`} style={effective === 'split' ? { width: `${split * 100}%` } : undefined}>
           <Editor2D />
         </div>
       ) : null}
+      {effective === 'split' ? (
+        <SplitDivider
+          split={split}
+          stageRef={stageRef}
+          onChange={(v, save) => {
+            setSplit(v);
+            if (save) saveSplit(v);
+          }}
+        />
+      ) : null}
       {effective !== '2d' ? (
-        <div className={`relative min-w-0 ${effective === 'split' ? 'w-1/2' : 'flex-1'}`}>
+        <div className="relative min-w-0 flex-1">
           <Viewer3D compact={mode === 'mobile'} />
         </div>
       ) : null}
@@ -823,6 +972,7 @@ function MobileRail() {
 export function StudioShell() {
   const mode = useLayoutMode();
   useShortcuts();
+  usePrefetchPanels();
   const exportOpen = useStudio((s) => s.exportOpen);
   const setExportOpen = useStudio((s) => s.setExportOpen);
   const sheet = useStudio((s) => s.mobileSheet);
@@ -875,6 +1025,7 @@ export function StudioShell() {
         instead of stretching the page and letting the whole studio scroll. */}
     <div className="relative flex h-dvh flex-col overflow-hidden bg-canvas">
       <Topbar mode={mode} onOpenChecks={() => setChecksOpen(true)} />
+      <DeletedBanner />
 
       {mode === 'mobile' ? (
         <div className="flex flex-none items-center justify-between gap-2 border-b border-line bg-panel px-2 py-1.5">

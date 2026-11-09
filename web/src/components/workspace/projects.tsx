@@ -1,5 +1,5 @@
 'use client';
-import { Archive, ArchiveRestore, Copy, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Archive, ArchiveRestore, Copy, MoreHorizontal, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -12,22 +12,32 @@ import {
   approvalState,
   archiveProject,
   createProject,
+  daysLeft,
   deleteProject,
   duplicateProject,
   listProjects,
+  purgeDeletedProjects,
   renameProject,
+  restoreProject,
+  trashProject,
+  TRASH_DAYS,
   type ProjectMeta,
 } from '@/lib/local-db';
 import { ConfirmDialog, toast, useMenuKeyboard } from '@/components/ui/primitives';
 
-export function useProjects(includeArchived = false) {
+/** Projects in use (`active`), with the archived ones (`archived`), or in Recently deleted (`deleted`). */
+export function useProjects(view: 'active' | 'archived' | 'deleted' = 'active') {
   const [projects, setProjects] = useState<ProjectMeta[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
   const refresh = useCallback(() => setVersion((v) => v + 1), []);
   useEffect(() => {
     let alive = true;
-    listProjects({ includeArchived }).then(
+    // Projects past their time in Recently deleted go for good whenever the list loads.
+    purgeDeletedProjects()
+      .catch(() => 0)
+      .then(() => listProjects(view === 'deleted' ? { deleted: 'only' } : { includeArchived: view === 'archived' }))
+      .then(
       (list) => {
         if (!alive) return;
         setProjects(list);
@@ -42,7 +52,7 @@ export function useProjects(includeArchived = false) {
     return () => {
       alive = false;
     };
-  }, [includeArchived, version]);
+  }, [view, version]);
   return { projects, error, refresh };
 }
 
@@ -136,7 +146,23 @@ export function ProjectActions({ meta, onChanged }: { meta: ProjectMeta; onChang
       >
         <MoreHorizontal size={18} />
       </button>
-      {open ? (
+      {open && meta.deletedAt ? (
+        <div ref={menuRef} role="menu" aria-label={`Actions for ${meta.title}`} className="absolute right-0 top-full z-30 mt-1 w-48 rounded-xl border border-line bg-floating p-1 shadow-xl">
+          <button role="menuitem" className={item} onClick={act(() => restoreProject(meta.id), `Restored ${meta.title}.`)}>
+            <RotateCcw size={15} /> Restore
+          </button>
+          <button
+            role="menuitem"
+            className={`${item} text-danger`}
+            onClick={() => {
+              setOpen(false);
+              setConfirm(true);
+            }}
+          >
+            <Trash2 size={15} /> Delete forever…
+          </button>
+        </div>
+      ) : open ? (
         <div ref={menuRef} role="menu" aria-label={`Actions for ${meta.title}`} className="absolute right-0 top-full z-30 mt-1 w-48 rounded-xl border border-line bg-floating p-1 shadow-xl">
           <button
             role="menuitem"
@@ -165,28 +191,21 @@ export function ProjectActions({ meta, onChanged }: { meta: ProjectMeta; onChang
               <Archive size={15} /> Archive
             </button>
           )}
-          <button
-            role="menuitem"
-            className={`${item} text-danger`}
-            onClick={() => {
-              setOpen(false);
-              setConfirm(true);
-            }}
-          >
-            <Trash2 size={15} /> Delete…
+          <button role="menuitem" className={`${item} text-danger`} onClick={act(() => trashProject(meta.id), `Moved ${meta.title} to Recently deleted. Restore it there within ${TRASH_DAYS} days.`)}>
+            <Trash2 size={15} /> Delete
           </button>
         </div>
       ) : null}
       <ConfirmDialog
         open={confirm}
-        title={`Delete ${meta.title}?`}
-        body="This removes the project from this browser permanently. Archive it instead if you might need it again."
-        confirmLabel="Delete project"
+        title={`Delete ${meta.title} forever?`}
+        body="This removes the project, its versions and its export history from this browser for good. It can't be undone."
+        confirmLabel="Delete forever"
         onCancel={() => setConfirm(false)}
         onConfirm={async () => {
           setConfirm(false);
           await deleteProject(meta.id);
-          toast('Project deleted.');
+          toast('Project deleted for good.');
           onChanged();
         }}
       />
@@ -203,10 +222,16 @@ export function ProjectCard({ meta, onChanged }: { meta: ProjectMeta; onChanged:
       <div className="flex items-start gap-2 p-3">
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-sm font-semibold">{meta.title}</h3>
-          <p className="mt-0.5 text-xs text-fg-2">
-            Edited {relativeTime(meta.updatedAt)}, {meta.layerCount} {meta.layerCount === 1 ? 'layer' : 'layers'}
-          </p>
-          {meta.approvedHash ? (
+          {meta.deletedAt ? (
+            <p className="mt-0.5 text-xs text-warning">
+              Deleted {relativeTime(meta.deletedAt)}. Gone for good in {daysLeft(meta)} {daysLeft(meta) === 1 ? 'day' : 'days'}.
+            </p>
+          ) : (
+            <p className="mt-0.5 text-xs text-fg-2">
+              Edited {relativeTime(meta.updatedAt)}, {meta.layerCount} {meta.layerCount === 1 ? 'layer' : 'layers'}
+            </p>
+          )}
+          {meta.approvedHash && !meta.deletedAt ? (
             <p className={`mt-1 text-xs font-semibold ${approvalState(meta) === 'approved' ? 'text-success' : 'text-warning'}`}>
               {approvalState(meta) === 'approved' ? `Approved, v${meta.approvedVersionNumber}` : 'Changed since approval'}
             </p>

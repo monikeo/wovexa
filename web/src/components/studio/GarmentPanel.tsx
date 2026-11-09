@@ -3,7 +3,7 @@
  * Garment panel (spec GAR-02/05/06/07/09, VAR-01/02): style, size, fabric, colourways with a
  * colour for every part the garment has, and all-over fabric prints per part.
  */
-import { Check, Dices, Download, GitCompare, ImagePlus, Loader2, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, Copy, Dices, Download, GitCompare, ImagePlus, Loader2, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { useBrandKit } from './brand-context';
 import * as cmd from '@/domain/commands';
@@ -532,6 +532,14 @@ export function GarmentPanel() {
   if (!doc || !colorway) return null;
   const model = getGarment(doc.garment.modelId);
   const unused = colorwayPresetsFor(model).filter((p) => !doc.colorways.some((c) => c.name === p.name));
+  // Where the colourway being edited sits in the list, to move it up or down.
+  const at = doc.colorways.findIndex((c) => c.id === colorway.id);
+  const duplicate = () => {
+    const taken = new Set(doc.colorways.map((c) => c.name));
+    let name = `${colorway.name} copy`;
+    for (let n = 2; taken.has(name); n++) name = `${colorway.name} copy ${n}`;
+    dispatch(cmd.addColorway(createColorway({ name, parts: { ...colorway.parts }, surfaces: colorway.surfaces })));
+  };
 
   return (
     <div className="relative space-y-6 px-4 pb-6 pt-3">
@@ -618,16 +626,30 @@ export function GarmentPanel() {
           })}
         </ul>
         <div className="mt-3 space-y-2">
-          <label className="grid grid-cols-[52px_1fr] items-center gap-2">
-            <span className="label">Name</span>
+          <div className="grid grid-cols-[52px_1fr_auto] items-center gap-2">
+            <label htmlFor={`colourway-name-${colorway.id}`} className="label">
+              Name
+            </label>
             <input
+              id={`colourway-name-${colorway.id}`}
               key={colorway.id}
               className="field"
               defaultValue={colorway.name}
               onBlur={(e) => e.target.value.trim() && e.target.value !== colorway.name && dispatch(cmd.renameColorway(colorway.id, e.target.value.trim()))}
               onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
             />
-          </label>
+            <div className="flex">
+              <button className="icon-btn h-8 w-8" disabled={at <= 0} onClick={() => dispatch(cmd.reorderColorway(colorway.id, at - 1))} aria-label={`Move ${colorway.name} up`} title="Move up">
+                <ChevronUp size={15} />
+              </button>
+              <button className="icon-btn h-8 w-8" disabled={at >= doc.colorways.length - 1} onClick={() => dispatch(cmd.reorderColorway(colorway.id, at + 1))} aria-label={`Move ${colorway.name} down`} title="Move down">
+                <ChevronDown size={15} />
+              </button>
+              <button className="icon-btn h-8 w-8" onClick={duplicate} aria-label={`Duplicate ${colorway.name}`} title="Duplicate">
+                <Copy size={14} />
+              </button>
+            </div>
+          </div>
           {model.colorParts.map(({ part, label }) => (
             <ColorField
               key={part}
