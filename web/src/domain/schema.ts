@@ -17,8 +17,8 @@
  *   4  Projected layers: artwork placed straight onto the 3D garment that runs across seams
  *      (over the shoulder, round the side seams), printed by sublimation or cut-and-sew.
  *      Upgrading adds an empty list. Optional, additive fields within version 4: design areas
- *      (print areas the person places anywhere on the 3D garment) and 3D shapes from the app's
- *      model library.
+ *      (print areas the person places anywhere on the 3D garment), 3D shapes from the app's
+ *      model library, text on a path and reusable lockups (with their placements as layers).
  */
 import { z } from 'zod';
 
@@ -214,7 +214,22 @@ export const textContentSchema = z.object({
    * They take the place of the fill colour and any gradient or pattern.
    */
   letterColors: z.array(hex).min(1).max(40).optional(),
+  /**
+   * Text along a path (spec TYP-02), single-line text only: the path in a 0–100 box with that box's
+   * width ÷ height; where along it the text starts and how much of it the text covers (0–1); and
+   * whether the letters sit above the line, on it or below it.
+   */
+  onPath: z
+    .object({
+      d: z.string().max(20000).regex(/^[MmLlHhVvCcSsQqTtAaZz0-9.,\s+eE-]*$/, 'Expected SVG path data'),
+      aspect: finite.min(0.001).max(1000),
+      start: finite.min(0).max(1),
+      span: finite.min(0.05).max(1),
+      side: z.enum(['above', 'on', 'below']),
+    })
+    .optional(),
 });
+export type TextPath = NonNullable<z.infer<typeof textContentSchema>['onPath']>;
 
 export const SHAPES = ['rect', 'ellipse', 'triangle', 'star', 'polygon', 'heart', 'line', 'path'] as const;
 
@@ -230,21 +245,21 @@ export const shapeContentSchema = z.object({
   /** Star inner radius as a share of the outer radius. */
   innerRatio: finite.min(0.1).max(0.95).optional(),
   fillStyle: fillStyleSchema.optional(),
-  /** Graphic shapes: SVG path data in a 0–100 box, drawn with the even-odd rule. Path commands and numbers only. */
-  path: z.string().max(8000).regex(/^[MmLlHhVvCcSsQqTtAaZz0-9.,\s+-]*$/, 'Expected SVG path data').optional(),
+  /**
+   * Graphic shapes: SVG path data in a 0–100 box, drawn with the even-odd rule. Path commands and
+   * numbers only. Room for combined shapes and outlined text.
+   */
+  path: z.string().max(120000).regex(/^[MmLlHhVvCcSsQqTtAaZz0-9.,\s+eE-]*$/, 'Expected SVG path data').optional(),
   /** The graphic library item this came from, for naming. */
   graphicId: z.string().max(40).optional(),
   /** Outline only: rings, frames and line art (the outline colour and width, else the fill colour at 1 mm), no fill. */
   hollow: z.boolean().optional(),
 });
 
-export const layerContentSchema = z.discriminatedUnion('kind', [imageContentSchema, textContentSchema, shapeContentSchema]);
-export type ImageContent = z.infer<typeof imageContentSchema>;
-export type TextContent = z.infer<typeof textContentSchema>;
-export type ShapeContent = z.infer<typeof shapeContentSchema>;
-export type LayerContent = z.infer<typeof layerContentSchema>;
+/** What a layer inside a lockup can be: anything but another lockup. */
+export const plainContentSchema = z.discriminatedUnion('kind', [imageContentSchema, textContentSchema, shapeContentSchema]);
 
-export const artworkLayerSchema = z.object({
+const layerFields = {
   id,
   name: z.string().min(1).max(120),
   visible: z.boolean(),
@@ -258,8 +273,44 @@ export const artworkLayerSchema = z.object({
   clip: z.boolean().optional(),
   transform: transformSchema,
   style: layerStyleSchema,
-  content: layerContentSchema,
+};
+
+/** A layer of a lockup's own artwork. */
+export const plainLayerSchema = z.object({ ...layerFields, content: plainContentSchema });
+export type PlainLayer = z.infer<typeof plainLayerSchema>;
+
+/** Lockup ids start with `lockup_`, apart from zones and design areas. */
+export const LOCKUP_ID_PREFIX = 'lockup_';
+export const lockupIdSchema = z.string().regex(/^lockup_[A-Za-z0-9_-]{1,48}$/, 'Expected a lockup id');
+export type LockupId = `lockup_${string}`;
+
+export function isLockupId(id: string | null | undefined): id is LockupId {
+  return typeof id === 'string' && id.startsWith(LOCKUP_ID_PREFIX);
+}
+
+/**
+ * One placement of a reusable lockup (spec ED2-12): the lockup's artwork, a `widthMm` × `heightMm`
+ * board of layers, drawn into this layer's box. It carries a copy of that artwork, kept in step
+ * with the lockup on every edit, so it draws and prints on its own.
+ */
+export const lockupContentSchema = z.object({
+  kind: z.literal('lockup'),
+  lockupId: lockupIdSchema,
+  name: z.string().min(1).max(60),
+  widthMm: finite.min(0.5).max(3000),
+  heightMm: finite.min(0.5).max(3000),
+  orderedLayerIds: z.array(id).max(60),
+  layers: z.record(id, plainLayerSchema),
 });
+
+export const layerContentSchema = z.discriminatedUnion('kind', [imageContentSchema, textContentSchema, shapeContentSchema, lockupContentSchema]);
+export type ImageContent = z.infer<typeof imageContentSchema>;
+export type TextContent = z.infer<typeof textContentSchema>;
+export type ShapeContent = z.infer<typeof shapeContentSchema>;
+export type LockupContent = z.infer<typeof lockupContentSchema>;
+export type LayerContent = z.infer<typeof layerContentSchema>;
+
+export const artworkLayerSchema = z.object({ ...layerFields, content: layerContentSchema });
 export type ArtworkLayer = z.infer<typeof artworkLayerSchema>;
 
 /** Ruler guides on a print area (spec ED2-08): vertical lines at these x, horizontal ones at these y, in mm. */
@@ -323,8 +374,8 @@ export type Projections = z.infer<typeof projectionsSchema>;
 export const AREA_ID_PREFIX = 'area_';
 export const areaIdSchema = z.string().regex(/^area_[A-Za-z0-9_-]{1,48}$/, 'Expected a design area id');
 export type AreaId = `area_${string}`;
-/** Where artwork is designed: one of the garment's print zones, or a design area the person placed. */
-export type ArtboardId = ZoneId | AreaId;
+/** Where artwork is designed: one of the garment's print zones, a design area the person placed, or a lockup's own board. */
+export type ArtboardId = ZoneId | AreaId | LockupId;
 
 export function isAreaId(id: string | null | undefined): id is AreaId {
   return typeof id === 'string' && id.startsWith(AREA_ID_PREFIX);
@@ -362,6 +413,29 @@ export type DesignAreas = z.infer<typeof designAreasSchema>;
 
 /** What a zone and a design area share: layers in stacking order, bottom first. */
 export type LayerStack = Pick<ZoneDesign, 'orderedLayerIds' | 'layers' | 'guides'>;
+
+/**
+ * A reusable lockup (spec ED2-12): a crest, a sponsor block, a name-and-number set, designed once
+ * on its own `widthMm` × `heightMm` board and placed on any zone or area as one layer. Editing the
+ * lockup updates every placement. Optional and additive within format 4.
+ */
+export const lockupSchema = z.object({
+  id: lockupIdSchema,
+  name: z.string().min(1).max(60),
+  widthMm: finite.min(0.5).max(3000),
+  heightMm: finite.min(0.5).max(3000),
+  orderedLayerIds: z.array(id).max(60),
+  layers: z.record(id, artworkLayerSchema),
+  guides: guidesSchema.optional(),
+});
+export type Lockup = z.infer<typeof lockupSchema>;
+
+/** The design's lockups, in the order they were made. */
+export const lockupsSchema = z.object({
+  orderedIds: z.array(lockupIdSchema).max(40),
+  items: z.record(lockupIdSchema, lockupSchema),
+});
+export type Lockups = z.infer<typeof lockupsSchema>;
 
 export const colorwaySchema = z.object({
   id,
@@ -479,6 +553,8 @@ export const designDocumentSchema = z.object({
   projections: projectionsSchema,
   /** Design areas the person placed anywhere on the 3D garment, beyond the style's zones (optional in format 4). */
   areas: designAreasSchema.optional(),
+  /** Reusable lockups placed on the zones and areas (optional in format 4). */
+  lockups: lockupsSchema.optional(),
 });
 export type DesignDocument = z.infer<typeof designDocumentSchema>;
 
@@ -529,6 +605,20 @@ export function checkDocumentInvariants(doc: DesignDocument): string[] {
       if (layers.size !== area.orderedLayerIds.length) problems.push(`design area ${areaId} lists a layer twice`);
       for (const layerId of area.orderedLayerIds) if (!area.layers[layerId]) problems.push(`design area ${areaId} orders missing layer ${layerId}`);
       for (const layerId of Object.keys(area.layers)) if (!layers.has(layerId)) problems.push(`design area ${areaId} has unordered layer ${layerId}`);
+    }
+  }
+  const lockups = doc.lockups;
+  if (lockups) {
+    const ids = new Set(lockups.orderedIds);
+    if (ids.size !== lockups.orderedIds.length) problems.push('lockups list a lockup twice');
+    for (const lockupId of lockups.orderedIds) if (!lockups.items[lockupId]) problems.push(`lockups order missing lockup ${lockupId}`);
+    for (const [lockupId, lockup] of Object.entries(lockups.items)) {
+      if (!ids.has(lockupId)) problems.push(`lockups have unordered lockup ${lockupId}`);
+      if (lockup.id !== lockupId) problems.push(`lockup ${lockupId} has mismatched id ${lockup.id}`);
+      const layers = new Set(lockup.orderedLayerIds);
+      if (layers.size !== lockup.orderedLayerIds.length) problems.push(`lockup ${lockupId} lists a layer twice`);
+      for (const layerId of lockup.orderedLayerIds) if (!lockup.layers[layerId]) problems.push(`lockup ${lockupId} orders missing layer ${layerId}`);
+      for (const layerId of Object.keys(lockup.layers)) if (!layers.has(layerId)) problems.push(`lockup ${lockupId} has unordered layer ${layerId}`);
     }
   }
   return problems;

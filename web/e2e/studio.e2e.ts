@@ -111,3 +111,77 @@ test('undoes a clip with Ctrl+Z', async ({ page }) => {
   await page.keyboard.press('Control+Z');
   await expect.poll(async () => (await frontLayers(page))[1].clip ?? false).toBe(false);
 });
+
+test('makes a lockup, places it on the back, and edits it once for both', async ({ page }) => {
+  await addText(page, 'CREST');
+  await palette(page, 'make a lockup');
+  await expect.poll(async () => (await frontLayers(page))[0]?.content.kind).toBe('lockup');
+  const lockupId = Object.keys((await designOf(page)).lockups!.items)[0];
+  await page.getByRole('tab', { name: 'Back' }).click();
+  await palette(page, 'place lockup');
+  await expect.poll(async () => Object.values((await designOf(page)).zones.back.layers).filter((l) => l.content.kind === 'lockup').length).toBe(1);
+  // Edit the words on the lockup's own board: both placements follow.
+  await palette(page, 'edit lockup');
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __wovexaStudio: { getState: () => { activeZoneId: string } } }).__wovexaStudio.getState().activeZoneId)).toBe(lockupId);
+  const textId = (await designOf(page)).lockups!.items[lockupId].orderedLayerIds[0];
+  await selectLayers(page, [textId]);
+  const box = page.getByRole('textbox', { name: 'Text content' });
+  await box.fill('CLUB CREST');
+  await box.press('Enter');
+  await expect
+    .poll(async () => {
+      const doc = await designOf(page);
+      return [...Object.values(doc.zones.front.layers), ...Object.values(doc.zones.back.layers)].map((l) => (l.content.kind === 'lockup' && l.content.layers[textId].content.kind === 'text' ? l.content.layers[textId].content.value : null));
+    })
+    .toEqual(['CLUB CREST', 'CLUB CREST']);
+  // Back on the front, one placement comes apart into its own layers.
+  await palette(page, 'done editing the lockup');
+  // In development Next's tools badge sits over the first tab, so the tab is clicked directly.
+  await page.getByRole('tab', { name: 'Front' }).dispatchEvent('click');
+  await selectLayers(page, [(await frontLayers(page))[0].id]);
+  await palette(page, 'detach from lockup');
+  await expect.poll(async () => (await frontLayers(page)).map((l) => l.content.kind)).toEqual(['text']);
+});
+
+test('runs text round a circle and keeps its letter size as the words change', async ({ page }) => {
+  await addText(page, 'TEAM');
+  await palette(page, 'add ellipse');
+  const [text, circle] = await frontLayers(page);
+  await selectLayers(page, [text.id, circle.id]);
+  await palette(page, 'put the text on the shape');
+  await expect.poll(async () => {
+    const c = (await frontLayers(page))[0].content;
+    return c.kind === 'text' ? c.onPath?.span : undefined;
+  }).toBe(0.4);
+  await selectLayers(page, [text.id]);
+  const box = page.getByRole('textbox', { name: 'Text content' });
+  await box.fill('TEAM WOVEXA');
+  await box.press('Enter');
+  // Longer words run further round instead of shrinking.
+  await expect.poll(async () => {
+    const c = (await frontLayers(page))[0].content;
+    return c.kind === 'text' ? (c.onPath?.span ?? 0) > 0.6 : false;
+  }).toBe(true);
+});
+
+test('subtracts one shape from another into a single path', async ({ page }) => {
+  await palette(page, 'add rectangle');
+  await palette(page, 'add ellipse');
+  const ids = (await frontLayers(page)).map((l) => l.id);
+  await selectLayers(page, ids);
+  await palette(page, 'subtract front shapes');
+  await expect.poll(async () => (await frontLayers(page)).map((l) => (l.content.kind === 'shape' ? l.content.shape : l.content.kind))).toEqual(['path']);
+});
+
+test('exports a CMYK PDF/X-1a print file', async ({ page }) => {
+  await addText(page, 'PRINT');
+  await palette(page, 'export files');
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: /CMYK PDF\/X/ }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toMatch(/_cmyk-pdfx_\d+dpi_.*\.pdf$/);
+  const pdf = (await readFile((await file.path())!)).toString('latin1');
+  expect(pdf).toContain('/GTS_PDFXVersion (PDF/X-1a:2003)');
+  expect(pdf).toContain('/ColorSpace /DeviceCMYK');
+  expect(pdf).not.toContain('/DeviceRGB');
+});

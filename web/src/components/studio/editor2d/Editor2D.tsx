@@ -6,13 +6,14 @@
  * World units are millimetres from the top-left of the active print zone.
  */
 import { ActiveSelection, Canvas as FabricCanvas, FabricImage, Group, Point, type FabricObject, type TPointerEventInfo } from 'fabric';
-import { Focus, Maximize, Minus, PenTool, Plus, Shirt } from 'lucide-react';
+import { Check, Component, Focus, Maximize, Minus, PenTool, Plus, Shirt } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { expandToGroups, unionBounds } from '@/domain/arrange';
 import { EditorContextMenu } from './ContextMenu';
-import { setGuides as updateGuides, updateTransforms } from '@/domain/commands';
+import { setGuides as updateGuides, updateLayer, updateTransforms } from '@/domain/commands';
 import { getGarment, getSize, partColor } from '@/domain/garments';
-import { formatLength, rotatedBounds, type Rect } from '@/domain/geometry';
+import { croppedTransform, formatLength, rotatedBounds, type Rect } from '@/domain/geometry';
+import { pathData, refitToBox, type Subpath } from '@/domain/path-edit';
 import { artboardOf } from '@/domain/areas';
 import { clipBases } from '@/domain/clipping';
 import type { ArtboardId, ArtworkLayer, DesignDocument, LayerStack, LayerTransform } from '@/domain/schema';
@@ -22,9 +23,32 @@ import { ensureFonts, imageNeedsBitmap, imageSource, renderLayerBitmap } from '@
 import { useActiveColorway, useActiveZoneSpec, useLive, useStudio } from '@/stores/studio-store';
 import { drawRuler, GUIDE_COLOR, GUIDE_GRAB_PX, RULER_SIZE } from './rulers';
 import { drawSketch, sketchForZone } from './flat-sketch';
+import { PathEditOverlay } from './PathEditOverlay';
 import { PenOverlay } from './PenOverlay';
 import { penShape } from '@/domain/pen';
-import { addDrawnShape } from '../actions';
+import { layerAssetIds, placementsOf } from '@/domain/lockups';
+import { addDrawnShape, addTextOnPath, editLockup, finishLockupEdit } from '../actions';
+
+/**
+ * Shown while a lockup's own board is open (spec ED2-12): what is being edited, how many places
+ * it updates, and the way back.
+ */
+function LockupBar({ doc, lockupId }: { doc: DesignDocument; lockupId: string }) {
+  const lockup = doc.lockups?.items[lockupId as `lockup_${string}`];
+  if (!lockup) return null;
+  const count = placementsOf(doc, lockupId).length;
+  return (
+    <div className="absolute bottom-3 left-8 z-20 flex max-w-[calc(100%-15rem)] items-center gap-2 rounded-xl border border-line bg-floating/95 p-1 pl-2.5 text-xs shadow-sm backdrop-blur">
+      <Component size={14} className="flex-none text-[var(--accent)]" aria-hidden />
+      <span className="min-w-0 truncate text-fg-2" title={`Editing the lockup ${lockup.name}. Changes show on every placement as you make them.`}>
+        <span className="font-semibold text-fg">{lockup.name}</span> {count ? `updates ${count === 1 ? 'its placement' : `all ${count} placements`}` : 'is not placed yet'}
+      </span>
+      <button className="btn btn-primary min-h-8 flex-none px-2.5 text-xs" onClick={finishLockupEdit} title="Back to where you were">
+        <Check size={14} /> Done
+      </button>
+    </div>
+  );
+}
 
 /**
  * A layer's Fabric object. Its width and height are the layer box; the bitmap may carry extra
@@ -198,12 +222,26 @@ export function Editor2D() {
     if (restoreFocus) hostRef.current?.focus();
   }, []);
   // The pen: draw a shape of your own over the artboard (P, the toolbar, or the Add menu).
-  const [penOn, setPenOn] = useState(false);
+  // The pen: a closed shape, or ('path') the line a new text runs along.
+  const [penMode, setPenMode] = useState<'shape' | 'path' | null>(null);
   const getFabric = useCallback(() => fabricRef.current, []);
   useEffect(() => {
-    const toggle = (e: Event) => setPenOn((on) => ((e as CustomEvent).detail === 'on' ? true : !on));
+    const toggle = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      setPenMode((m) => (detail === 'path' ? 'path' : detail === 'on' ? 'shape' : m ? null : 'shape'));
+    };
     window.addEventListener('wovexa:pen', toggle);
     return () => window.removeEventListener('wovexa:pen', toggle);
+  }, []);
+  // Editing a shape's points: the layer whose points are shown, if any.
+  const [pointsLayerId, setPointsLayerId] = useState<string | null>(null);
+  useEffect(() => {
+    const start = (e: Event) => {
+      setPenMode(null);
+      setPointsLayerId((e as CustomEvent<{ layerId: string }>).detail.layerId);
+    };
+    window.addEventListener('wovexa:edit-points', start);
+    return () => window.removeEventListener('wovexa:edit-points', start);
   }, []);
 
   const doc = useStudio((s) => s.document);
@@ -213,6 +251,20 @@ export function Editor2D() {
   const colorway = useActiveColorway();
   const units = usePreference('units');
   const zone = doc ? artboardOf(doc, zoneId) : undefined;
+  // The shape whose points are being edited: only while it is still a selected, unlocked shape here.
+  const editing = pointsLayerId ? zone?.layers[pointsLayerId] : undefined;
+  const pointsLayer = editing?.content.kind === 'shape' && !editing.locked && selected.includes(editing.id) ? editing : undefined;
+  const commitPoints = useCallback(
+    (subs: Subpath[]) => {
+      const layer = pointsLayer;
+      if (!layer || !subs.length) return;
+      // The box hugs the edited shape, which stays exactly where it is on the artboard.
+      const { subpaths, crop } = refitToBox(subs);
+      const transform = croppedTransform(layer.transform, 1, 1, crop);
+      useStudio.getState().dispatch(updateLayer(zoneId, layer.id, { content: { shape: 'path', path: pathData(subpaths) }, transform }, 'Edit points'));
+    },
+    [pointsLayer, zoneId],
+  );
 
   // Latest values for event handlers registered once; refreshed after every render.
   const seams = usePreference('seamGuides');
@@ -343,8 +395,9 @@ export function Editor2D() {
       const v = canvas.viewportTransform;
       ctx.save();
       ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
-      if (spec.areaId) {
-        // A design area sits on the 3D garment, not on the flat: plain fabric round its print area.
+      if (spec.areaId || spec.lockupId) {
+        // A design area sits on the 3D garment, not on the flat, and a lockup goes wherever it is
+        // placed: plain fabric round the board.
         const m = Math.max(20, 0.15 * Math.max(spec.printableWidthMm, spec.printableHeightMm));
         ctx.fillStyle = partColor(cw, 'body');
         ctx.strokeStyle = 'rgba(0,0,0,0.12)';
@@ -573,7 +626,13 @@ export function Editor2D() {
 
     canvas.on('mouse:dblclick', (e) => {
       const id = e.target ? leaves(e.target)[0]?.layerId : undefined;
-      if (id) window.dispatchEvent(new CustomEvent('wovexa:edit-layer', { detail: { layerId: id } }));
+      if (!id) return;
+      // A shape opens its points for editing, a lockup its own board; text and images open their settings.
+      const zn = latest.current.doc ? artboardOf(latest.current.doc, zoneRef.current) : undefined;
+      const layer = zn?.layers[id];
+      if (layer?.content.kind === 'shape' && !layer.locked) window.dispatchEvent(new CustomEvent('wovexa:edit-points', { detail: { layerId: id } }));
+      else if (layer?.content.kind === 'lockup') editLockup(layer.content.lockupId);
+      else window.dispatchEvent(new CustomEvent('wovexa:edit-layer', { detail: { layerId: id } }));
     });
 
     // ---- Context menu: right-click (spec DSK-03), long-press (MOB-05), Shift+F10 / Menu key ----
@@ -876,7 +935,7 @@ export function Editor2D() {
         element = (imageSource(layer.content) as HTMLCanvasElement | HTMLImageElement | undefined) ?? placeholder();
       } else {
         const ppm = Math.min(resolution(), 2048 / Math.max(layer.transform.widthMm, layer.transform.heightMm));
-        const ready = layer.content.kind === 'image' ? !!getLoadedImage(layer.content.assetId) : true;
+        const ready = layerAssetIds(layer).every((asset) => !!getLoadedImage(asset));
         const s = layer.style;
         const key = JSON.stringify([layer.id, layer.content, s.finish, s.distress, s.shadow, s.outline, s.halftone, ready, Math.round(layer.transform.widthMm * ppm), Math.round(layer.transform.heightMm * ppm)]);
         if (obj.bitmapKey !== key || !obj.bitmap) {
@@ -932,10 +991,15 @@ export function Editor2D() {
     const liveKeys = new Set(items.map((i) => i.key));
     const liveIds = new Set(zone.orderedLayerIds);
 
-    // Remove groups and layers that no longer exist.
+    // Remove groups and layers that no longer exist. A selected one leaves quietly: the store's
+    // selection may already name what replaced it (a combined shape, a detached lockup), and is
+    // put back on the canvas once it is drawn.
     for (const [key, group] of groups) {
       if (!liveKeys.has(key)) {
-        if (canvas.getActiveObject() === group) quietly(() => canvas.discardActiveObject());
+        if (canvas.getActiveObject() === group) {
+          quietly(() => canvas.discardActiveObject());
+          reselect = true;
+        }
         group.removeAll();
         canvas.remove(group);
         groups.delete(key);
@@ -943,7 +1007,11 @@ export function Editor2D() {
     }
     for (const [id, obj] of objects) {
       if (!liveIds.has(id)) {
-        detach(obj);
+        if (canvas.getActiveObjects().includes(obj)) {
+          quietly(() => canvas.discardActiveObject());
+          reselect = true;
+        }
+        quietly(() => detach(obj));
         objects.delete(id);
       }
     }
@@ -960,7 +1028,7 @@ export function Editor2D() {
         continue;
       }
       const members = item.ids.map((id) => zone.layers[id]);
-      const signature = JSON.stringify([members, zoomBucket, members.map((m) => (m.content.kind === 'image' ? !!getLoadedImage(m.content.assetId) : 1))]);
+      const signature = JSON.stringify([members, zoomBucket, members.map((m) => layerAssetIds(m).every((asset) => !!getLoadedImage(asset)))]);
       let group = groups.get(item.key);
       if (!group || group.signature !== signature) {
         if (group) {
@@ -1010,9 +1078,9 @@ export function Editor2D() {
 
     // Images decode asynchronously; redraw once they're ready.
     for (const id of zone.orderedLayerIds) {
-      const layer = zone.layers[id];
-      if (layer.content.kind === 'image' && !getLoadedImage(layer.content.assetId)) {
-        loadAssetImage(layer.content.assetId).then(
+      for (const asset of layerAssetIds(zone.layers[id])) {
+        if (getLoadedImage(asset)) continue;
+        loadAssetImage(asset).then(
           () => !cancelled && setRefreshTick((t) => t + 1),
           () => {},
         );
@@ -1186,10 +1254,10 @@ export function Editor2D() {
         <button className="icon-btn" onClick={fit} aria-label="Fit print area to screen" title="Fit (Shift+1)">
           <Maximize size={15} />
         </button>
-        <button className="icon-btn" onClick={() => setPenOn((on) => !on)} aria-pressed={penOn} aria-label="Pen: draw a shape" title="Pen: draw your own shape (P)">
+        <button className="icon-btn" onClick={() => setPenMode((m) => (m === 'shape' ? null : 'shape'))} aria-pressed={penMode === 'shape'} aria-label="Pen: draw a shape" title="Pen: draw your own shape (P)">
           <PenTool size={15} />
         </button>
-        {zoneSpec?.areaId ? null : (
+        {zoneSpec?.areaId || zoneSpec?.lockupId ? null : (
           <button
             className="icon-btn"
             onClick={() => setPreference('seamGuides', seams === 'on' ? 'off' : 'on')}
@@ -1201,16 +1269,22 @@ export function Editor2D() {
           </button>
         )}
       </div>
-      {penOn && zone ? (
+      {zoneSpec?.lockupId && doc ? <LockupBar doc={doc} lockupId={zoneSpec.lockupId} /> : null}
+      {pointsLayer ? <PathEditOverlay key={pointsLayer.id} fabric={getFabric} layer={pointsLayer} onCommit={commitPoints} onDone={() => setPointsLayerId(null)} /> : null}
+      {penMode && zone ? (
         <PenOverlay
-          key={zoneId}
+          key={`${zoneId}:${penMode}`}
           fabric={getFabric}
+          open={penMode === 'path'}
           onFinish={(points) => {
-            const shape = penShape(points);
-            if (shape) addDrawnShape(shape.path, shape.box);
-            setPenOn(false);
+            if (penMode === 'path') addTextOnPath(points);
+            else {
+              const shape = penShape(points);
+              if (shape) addDrawnShape(shape.path, shape.box);
+            }
+            setPenMode(null);
           }}
-          onCancel={() => setPenOn(false)}
+          onCancel={() => setPenMode(null)}
         />
       ) : null}
     </div>

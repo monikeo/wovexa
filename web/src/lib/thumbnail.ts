@@ -5,6 +5,7 @@
  */
 import { drawSketch, sketchBounds, sketchForZone } from '@/components/studio/editor2d/flat-sketch';
 import { getGarment, getSize, zoneSpecOrFirst } from '@/domain/garments';
+import { layerAssetIds } from '@/domain/lockups';
 import type { DesignDocument, ZoneId } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from './assets';
 import { canvasToBlob } from './download';
@@ -18,7 +19,7 @@ export async function renderZoneSketch(doc: DesignDocument, zoneId: ZoneId, size
   const zone = doc.zones[spec.id];
 
   const assetIds = new Set<string>();
-  for (const l of Object.values(zone.layers)) if (l.content.kind === 'image') assetIds.add(l.content.assetId);
+  for (const l of Object.values(zone.layers)) for (const id of layerAssetIds(l)) assetIds.add(id);
   for (const s of Object.values(colorway.surfaces ?? {})) if (s?.kind === 'image') assetIds.add(s.assetId);
   await Promise.all([...assetIds].map((id) => (getLoadedImage(id) ? null : loadAssetImage(id).catch(() => null))));
   await ensureFonts([zone]);

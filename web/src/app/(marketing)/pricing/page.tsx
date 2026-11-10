@@ -7,7 +7,14 @@ const TIERS = [
   {
     name: 'Starter',
     who: 'For trying ideas and one-off shirts',
-    items: ['Wovexa Studio and Wovexa 3D', 'Front, back and sleeve print zones', 'Mockup stills and true-size print files', 'Projects saved in your browser'],
+    items: [
+      'Wovexa Studio and Wovexa 3D',
+      'Every print zone, plus design areas anywhere on the garment',
+      'Product images, turntables and video',
+      'Print files as PNG, SVG and CMYK PDF/X',
+      'Production package with tech sheet and client proof',
+      'Projects saved on this device',
+    ],
     available: true,
   },
   {
@@ -19,7 +26,7 @@ const TIERS = [
   {
     name: 'Studio',
     who: 'For brands and print shops',
-    items: ['Everything in Creator', 'Team workspace with roles', 'Client review and approval', 'Wovexa Production tech packs'],
+    items: ['Everything in Creator', 'Team workspace with roles', 'Client review and approval'],
     available: false,
   },
   {

@@ -6,11 +6,11 @@
  */
 import { useMemo } from 'react';
 import { create } from 'zustand';
-import { artboardOf, artboardSpec, hasArtboard } from '@/domain/areas';
+import { artboardOf, artboardSpec, hasArtboard, lockupSpec } from '@/domain/areas';
 import type { Command } from '@/domain/commands';
 import { getGarment } from '@/domain/garments';
 import { applyCommand, emptyHistory, redo as redoHistory, undo as undoHistory, type History } from '@/domain/history';
-import { isAreaId, type ArtboardId, type Colorway, type DesignDocument, type LayerTransform, type ProjectedTransform, type ProjectorSpec, type Scene } from '@/domain/schema';
+import { isAreaId, isLockupId, type ArtboardId, type Colorway, type DesignDocument, type LayerTransform, type ProjectedTransform, type ProjectorSpec, type Scene } from '@/domain/schema';
 import { getProject, loadDocument, saveDocument, type ProjectMeta } from '@/lib/local-db';
 import { renderThumbnail } from '@/lib/thumbnail';
 
@@ -233,7 +233,17 @@ export function useActiveZoneSpec() {
   const modelId = useStudio((s) => s.document?.garment.modelId);
   const zoneId = useStudio((s) => s.activeZoneId);
   const area = useStudio((s) => (isAreaId(s.activeZoneId) ? s.document?.areas?.items[s.activeZoneId] : undefined));
-  return useMemo(() => artboardSpec(getGarment(modelId ?? 'tee-classic'), area ? { areas: { orderedIds: [area.id], items: { [area.id]: area } } } : null, zoneId), [modelId, zoneId, area]);
+  // Only what the spec reads (name and size), so editing a lockup's layers doesn't make a new spec.
+  const lockupName = useStudio((s) => (isLockupId(s.activeZoneId) ? s.document?.lockups?.items[s.activeZoneId]?.name : undefined));
+  const lockupW = useStudio((s) => (isLockupId(s.activeZoneId) ? s.document?.lockups?.items[s.activeZoneId]?.widthMm : undefined));
+  const lockupH = useStudio((s) => (isLockupId(s.activeZoneId) ? s.document?.lockups?.items[s.activeZoneId]?.heightMm : undefined));
+  return useMemo(() => {
+    const model = getGarment(modelId ?? 'tee-classic');
+    if (isLockupId(zoneId) && lockupName !== undefined && lockupW && lockupH) {
+      return lockupSpec({ id: zoneId, name: lockupName, widthMm: lockupW, heightMm: lockupH, orderedLayerIds: [], layers: {} });
+    }
+    return artboardSpec(model, area ? { areas: { orderedIds: [area.id], items: { [area.id]: area } } } : null, zoneId);
+  }, [modelId, zoneId, area, lockupName, lockupW, lockupH]);
 }
 
 /** The layers of the active zone or design area. */

@@ -1,6 +1,7 @@
 /** Turning templates into projects in the browser, where fonts can be measured. */
 import { allStacks } from '@/domain/areas';
 import { newId } from '@/domain/factory';
+import { refreshPlacements } from '@/domain/lockups';
 import { migrateDesignDocument, type DesignDocument } from '@/domain/schema';
 import { documentFromSnapshot, instantiateTemplate, type TemplateDef } from '@/domain/templates';
 import { createProjectFromDocument, type ProjectMeta, type StoredTemplate } from './local-db';
@@ -16,6 +17,8 @@ export async function fitTextBoxes(doc: DesignDocument): Promise<DesignDocument>
       if (layer.content.kind === 'text') layer.transform.heightMm = layer.transform.widthMm / textAspect(layer.content);
     }
   }
+  // Lockup placements carry copies of their lockups' layers: give them the fitted ones.
+  refreshPlacements(out);
   return out;
 }
 

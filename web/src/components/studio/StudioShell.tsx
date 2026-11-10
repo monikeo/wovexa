@@ -9,6 +9,7 @@ import {
   BadgeCheck,
   Circle,
   Clapperboard,
+  Component,
   Download,
   Ellipsis,
   FileText,
@@ -43,6 +44,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { renameDocument } from '@/domain/commands';
 import { designAreas } from '@/domain/areas';
 import { getGarment } from '@/domain/garments';
+import { lockupsOf } from '@/domain/lockups';
 import { summarize } from '@/domain/preflight';
 import type { AreaId, ShapeContent } from '@/domain/schema';
 import { ACCEPTED_TYPES } from '@/lib/assets';
@@ -58,6 +60,7 @@ import {
   copySelection,
   deleteSelection,
   duplicateSelection,
+  editLockup,
   groupSelection,
   isOwnClipboard,
   moveSelectionInStack,
@@ -621,7 +624,7 @@ function ZoneBar() {
           >
             {model.zones[z]?.label}
             {count ? <span className={`num text-xs ${active === z ? 'opacity-70' : 'text-fg-3'}`}>{count}</span> : null}
-            {errs ? <span className="h-1.5 w-1.5 rounded-full bg-danger" aria-label={`${errs} issues`} /> : null}
+            {errs ? <span className="h-1.5 w-1.5 rounded-full bg-danger" aria-label={errs === 1 ? '1 issue' : `${errs} issues`} /> : null}
           </button>
         );
       })}
@@ -646,6 +649,23 @@ function ZoneBar() {
       <button className="flex min-h-9 flex-none items-center gap-1 rounded-lg px-2.5 text-[13px] font-medium text-fg-2 hover:bg-hover" onClick={addDesignArea} title="Add a design area anywhere on the garment: a hood, a side panel, across a seam" aria-label="Add a design area">
         <Plus size={14} /> Area
       </button>
+      {lockupsOf(doc).length ? <span className="mx-1 h-5 w-px flex-none bg-line" aria-hidden /> : null}
+      {lockupsOf(doc).map((l) => {
+        const on = active === l.id;
+        return (
+          <button
+            key={l.id}
+            role="tab"
+            aria-selected={on}
+            onClick={() => editLockup(l.id)}
+            title={`${l.name}: a lockup. Edit it here and every placement follows.`}
+            className={`flex min-h-9 flex-none items-center gap-1.5 rounded-lg px-3 text-[13px] font-medium ${on ? 'bg-inverse text-fg-inverse' : 'text-fg-2 hover:bg-hover'}`}
+          >
+            <Component size={13} aria-hidden />
+            {l.name}
+          </button>
+        );
+      })}
     </div>
   );
 }

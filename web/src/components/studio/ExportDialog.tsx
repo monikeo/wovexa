@@ -13,17 +13,16 @@ import { createTextLayer } from '@/domain/factory';
 import { getGarment, getSize, hasZone, partColor, PRINT_METHOD_LABELS, sizeLabel, zoneSpecOrFirst } from '@/domain/garments';
 import { documentHash } from '@/domain/hash';
 import { runPreflight, summarize } from '@/domain/preflight';
-import type { DesignDocument, ZoneId } from '@/domain/schema';
-import { canvasToBlob, downloadBlob } from '@/lib/download';
+import type { DesignDocument, LayerStack, ZoneId } from '@/domain/schema';
+import { downloadBlob } from '@/lib/download';
 import { compareRollWidthsOffThread } from '@/lib/export/marker-compare';
 import { DEFAULT_MARKER, FILE_LENGTHS_M, ROLL_WIDTHS_CM, type MarkerSettings, type RollEstimate } from '@/lib/export/marker-layout';
 import { DEFAULT_PRINT_NAME, fileSafe, formatName, isoDate, NAME_TOKENS, revisionLabel, unknownTokens } from '@/lib/export/naming';
 import { areasWithArtwork, buildClientProof, buildProductionPackage, designRevision, prepareDocument, zonesWithArtwork, type PackageOptions, type ProductRenderOptions, type ProductShot } from '@/lib/export/package';
 import { revisionText } from '@/lib/export/proof';
-import { pngBlobWithDpi } from '@/lib/export/png-dpi';
 import { designPlaceholders, parseRoster, sizeBreakdown, type Roster } from '@/lib/export/roster';
 import { addExportRecord, approvalState, clearExports, listExports, type ExportKind, type ExportRecord, type ProjectMeta } from '@/lib/local-db';
-import { renderZoneArtwork } from '@/lib/render/zone-renderer';
+import { buildPrintPdfX, renderPrintPng } from '@/lib/render/print-render';
 import { zoneSvg } from '@/lib/export/svg-artwork';
 import { ZipWriter } from '@/lib/export/zip';
 import { toast } from '@/components/ui/primitives';
@@ -432,6 +431,31 @@ export function ExportPanel() {
       toast(`Exported ${out.length} vector print ${out.length === 1 ? 'file' : 'files'} (SVG, true size).${fonts.size ? ` Live text in ${[...fonts].join(', ')}: the printer needs these fonts or outlined text.` : ''}`, 'success');
     });
 
+  /** Every print area as one CMYK PDF/X-1a file, a page each at true size, for print shops that take PDF. */
+  const cmykPdf = () =>
+    run(async (signal) => {
+      const current = useStudio.getState().document!;
+      const model = getGarment(current.garment.modelId);
+      setProgress({ label: 'Loading images and fonts', fraction: 0.1 });
+      await prepareDocument(current, zonesWithArtwork(current));
+      const label = await designRevision(current, approvalOf(useStudio.getState().meta));
+      const areas = [
+        ...zonesWithArtwork(current).map((z) => {
+          const spec = zoneSpecOrFirst(model, z);
+          return { stack: current.zones[z], widthMm: spec.printableWidthMm, heightMm: spec.printableHeightMm, label: spec.label };
+        }),
+        ...areasWithArtwork(current).map((a) => ({ stack: a as LayerStack, widthMm: a.widthMm, heightMm: a.heightMm, label: a.name })),
+      ];
+      const { blob, dpi } = await buildPrintPdfX(areas, prefs.dpi, `${current.title}, print files`, (i) => {
+        if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
+        setProgress({ label: `CMYK page, ${areas[i].label}`, fraction: 0.2 + (0.75 * i) / areas.length });
+      });
+      const fileName = `${fileSafe(current.title)}_cmyk-pdfx_${dpi}dpi_${label}.pdf`;
+      downloadBlob(blob, fileName);
+      await record('print', 'CMYK PDF/X', fileName, areas.length, blob.size, { dpi, format: 'pdf-x' });
+      toast(`Exported ${areas.length === 1 ? 'a PDF/X-1a page' : `${areas.length} PDF/X-1a pages`} in CMYK at ${dpi} dpi. The colours are a plain conversion, not colour-managed: for exact colour, ask your printer to convert the PNG with their profile.`, 'success');
+    });
+
   const printFiles = () => {
     if (!printCount) {
       toast('There is no artwork to export yet.', 'error');
@@ -444,8 +468,7 @@ export function ExportPanel() {
         if (!area) return;
         setProgress({ label: `Rendering ${area.name} at ${prefs.dpi} dpi`, fraction: 0.3 });
         await prepareDocument(current, []);
-        const { canvas, dpi } = renderZoneArtwork(area, area.widthMm, area.heightMm, prefs.dpi);
-        const blob = await pngBlobWithDpi(await canvasToBlob(canvas), dpi);
+        const { blob, dpi } = await renderPrintPng(area, area.widthMm, area.heightMm, prefs.dpi);
         const label = await designRevision(current, approvalOf(useStudio.getState().meta));
         const fileName = `${formatName(prefs.naming, { project: current.title, zone: fileSafe(area.name), colorway: current.colorways[0]?.name, size: current.garment.sizeCode, method: PRINT_METHOD_LABELS[area.printMethod], w: Math.round(area.widthMm), h: Math.round(area.heightMm), dpi, rev: label, date: isoDate() })}.png`;
         downloadBlob(blob, fileName);
@@ -468,8 +491,7 @@ export function ExportPanel() {
       const spec = zoneSpecOrFirst(model, zoneId);
       setProgress({ label: `Rendering ${spec.label.toLowerCase()} at ${prefs.dpi} dpi`, fraction: 0.3 });
       await prepareDocument(current, [zoneId]);
-      const { canvas, dpi } = renderZoneArtwork(current.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, prefs.dpi);
-      const blob = await pngBlobWithDpi(await canvasToBlob(canvas), dpi);
+      const { blob, dpi } = await renderPrintPng(current.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, prefs.dpi);
       const label = await designRevision(current, approvalOf(useStudio.getState().meta));
       const fileName = `${formatName(prefs.naming, { project: current.title, zone: zoneId, colorway: current.colorways[0]?.name, size: current.garment.sizeCode, method: PRINT_METHOD_LABELS[current.zones[zoneId].printMethod], w: spec.printableWidthMm, h: spec.printableHeightMm, dpi, rev: label, date: isoDate() })}.png`;
       downloadBlob(blob, fileName);
@@ -645,6 +667,17 @@ export function ExportPanel() {
             <PenTool size={14} /> Vector files
           </span>
           <span className="text-[11px] font-normal text-fg-2">{printCount > 1 ? `${printCount} SVGs in a ZIP` : 'True-size SVG'}, for films, vinyl and embroidery</span>
+        </button>
+        <button
+          className="btn btn-outline h-auto flex-col items-start gap-0.5 px-3 py-2.5 text-left"
+          disabled={busy || !printCount}
+          onClick={() => void cmykPdf()}
+          title="PDF/X-1a in CMYK with a FOGRA39 output intent, for print shops that take PDF. White prints as no ink, so for dark garments send the PNG for a white underbase."
+        >
+          <span className="flex items-center gap-2 text-[13px] font-semibold">
+            <FileText size={14} /> CMYK PDF/X
+          </span>
+          <span className="text-[11px] font-normal text-fg-2">PDF/X-1a, {printCount > 1 ? `${printCount} pages` : 'true size'}, {prefs.dpi} dpi</span>
         </button>
         <button className="btn btn-outline h-auto flex-col items-start gap-0.5 px-3 py-2.5 text-left" disabled={busy} onClick={() => void proof()}>
           <span className="flex items-center gap-2 text-[13px] font-semibold">

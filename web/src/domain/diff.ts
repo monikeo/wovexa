@@ -50,12 +50,16 @@ function describeLayerChange(a: ArtworkLayer, b: ArtworkLayer): string[] {
     if (ca.strokeColor !== cb.strokeColor || ca.strokeWidthMm !== cb.strokeWidthMm) out.push('outline changed');
     if (!!ca.hollow !== !!cb.hollow) out.push(cb.hollow ? 'outline only' : 'filled');
     if (ca.letterSpacingEm !== cb.letterSpacingEm || ca.lineHeight !== cb.lineHeight || ca.align !== cb.align) out.push('spacing or alignment changed');
+    if (JSON.stringify(ca.onPath ?? null) !== JSON.stringify(cb.onPath ?? null)) out.push(!cb.onPath ? 'taken off its path' : ca.onPath ? 'moved along its path' : 'put on a path');
   } else if (ca.kind === 'shape' && cb.kind === 'shape') {
     if (ca.fill !== cb.fill) out.push(`fill ${cb.fill}`);
     if (ca.cornerRadiusMm !== cb.cornerRadiusMm || ca.strokeColor !== cb.strokeColor || ca.strokeWidthMm !== cb.strokeWidthMm) out.push('shape style changed');
+    if (ca.shape !== cb.shape || ca.path !== cb.path || ca.points !== cb.points || ca.innerRatio !== cb.innerRatio) out.push('shape reshaped');
     if (!!ca.hollow !== !!cb.hollow) out.push(cb.hollow ? 'outline only' : 'filled');
   } else if (ca.kind === 'image' && cb.kind === 'image') {
     if (ca.assetId !== cb.assetId) out.push('image replaced');
+  } else if (ca.kind === 'lockup' && cb.kind === 'lockup') {
+    if (JSON.stringify([ca.orderedLayerIds, ca.layers, ca.widthMm, ca.heightMm]) !== JSON.stringify([cb.orderedLayerIds, cb.layers, cb.widthMm, cb.heightMm])) out.push(`lockup ${cb.name} edited`);
   }
   if ((a.groupId ?? null) !== (b.groupId ?? null)) out.push(b.groupId ? 'grouped' : 'ungrouped');
   return out;

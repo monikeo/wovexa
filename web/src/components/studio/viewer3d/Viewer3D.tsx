@@ -15,9 +15,10 @@ import { artboardOf, designAreas, NEW_AREA_MM } from '@/domain/areas';
 import { batch, coalescing, scaleArea, updateArea, updateProjectedLayer, updateTransforms, type Command } from '@/domain/commands';
 import { getGarment, getSize, partColor, zoneSpecOrFirst, type PartId } from '@/domain/garments';
 import { clamp, hitTestLayer, normalizeDeg, rotatedBounds, scaleRotateAbout } from '@/domain/geometry';
+import { layerAssetIds } from '@/domain/lockups';
 import { projectionsAsZone } from '@/domain/projected';
 import { backdropCss, drapeAmount, motionOf, presetOf, sceneOf, stageOf, toneOf, type MotionKind, type ToneId } from '@/domain/scene';
-import { emptyProjections, isAreaId, type AreaId, type ArtboardId, type DesignArea, type DesignDocument, type LayerTransform, type ProjectedLayer, type ProjectedTransform, type ProjectorSpec, type Scene, type ZoneId } from '@/domain/schema';
+import { emptyProjections, isAreaId, isLockupId, type AreaId, type ArtboardId, type DesignArea, type DesignDocument, type LayerTransform, type ProjectedLayer, type ProjectedTransform, type ProjectorSpec, type Scene, type ZoneId } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
 import { getAsset } from '@/lib/local-db';
 import { fetchLibraryModel } from '@/lib/model-library';
@@ -393,7 +394,7 @@ function AreaOnTrim({
   useEffect(() => {
     if (art) return;
     let alive = true;
-    const ids = Object.values(area.layers).flatMap((l) => (l.content.kind === 'image' && !getLoadedImage(l.content.assetId) ? [l.content.assetId] : []));
+    const ids = Object.values(area.layers).flatMap((l) => layerAssetIds(l).filter((id) => !getLoadedImage(id)));
     Promise.all([...ids.map((id) => loadAssetImage(id).catch(() => null)), ensureFonts([area])]).then(() => {
       if (alive) setLoads((n) => n + 1);
     });
@@ -956,7 +957,7 @@ function Garment({ geo, ownRest, quality, mode, guides, hanger, onOwnZone }: { g
     const loadMissing = () => {
       const ids = new Set<string>();
       for (const zone of [...Object.values(doc.zones), projectionsAsZone(doc), ...designAreas(doc)]) {
-        for (const layer of Object.values(zone.layers)) if (layer.content.kind === 'image') ids.add(layer.content.assetId);
+        for (const layer of Object.values(zone.layers)) for (const id of layerAssetIds(layer)) ids.add(id);
       }
       for (const surface of Object.values(colorway.surfaces ?? {})) if (surface?.kind === 'image') ids.add(surface.assetId);
       for (const id of ids) if (!getLoadedImage(id)) loadAssetImage(id).then(schedule, () => {});
@@ -1729,6 +1730,8 @@ const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 
 /** The camera shot that shows a zone (its preset view) or a design area (looking straight at it). */
 function shotForArtboard(doc: DesignDocument | null | undefined, layout: GarmentLayout, id: ArtboardId, fovDeg: number): ShotSpec {
+  // A lockup's own board is not on the garment: its placements are, wherever they are.
+  if (isLockupId(id)) return { kind: 'preset', view: 'front' };
   if (!isAreaId(id)) return { kind: 'preset', view: ZONE_VIEW[id] };
   const area = doc?.areas?.items[id];
   if (!area) return { kind: 'preset', view: 'front' };
@@ -2331,7 +2334,7 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
   const [supported] = useState(hasWebGL);
   const [quality] = useState<Quality>(detectQuality);
   const [mode, setMode] = useState<Mode>('orbit');
-  const [request, setRequest] = useState<ViewRequest>(() => ({ shot: { kind: 'preset', view: isAreaId(activeZone) ? 'front' : ZONE_VIEW[activeZone] }, nonce: 0 }));
+  const [request, setRequest] = useState<ViewRequest>(() => ({ shot: { kind: 'preset', view: isAreaId(activeZone) || isLockupId(activeZone) ? 'front' : ZONE_VIEW[activeZone] }, nonce: 0 }));
   const [turntable, setTurntable] = useState(false);
   const [guides, setGuides] = useState(() => readFlag('wovexa.guides3d', true));
   const [sceneOpen, setSceneOpen] = useState(false);
@@ -2450,6 +2453,7 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
         if (!area) return null;
         return closeUp(toStage(area.projector.point), [...area.projector.normal], distanceToFit(Math.max(area.widthMm, area.heightMm) / 1000, fovDeg), fovDeg);
       }
+      if (isLockupId(id)) return null;
       const spec = getGarment(d.garment.modelId).zones[id];
       const zone = d.zones[id];
       const part = geo.parts.find((p) => p.id === partForZone(id));

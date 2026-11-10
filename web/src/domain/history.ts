@@ -4,6 +4,7 @@
  */
 import { applyPatches, enablePatches, produceWithPatches, type Patch } from 'immer';
 import type { Command } from './commands';
+import { syncPlacements } from './lockups';
 import type { DesignDocument } from './schema';
 
 enablePatches();
@@ -35,8 +36,18 @@ export interface ApplyResult {
 }
 
 export function applyCommand(doc: DesignDocument, history: History, command: Command, now = Date.now()): ApplyResult {
-  const [next, patches, inverse] = produceWithPatches(doc, command.recipe);
+  let [next, patches, inverse] = produceWithPatches(doc, command.recipe);
   if (patches.length === 0) return { document: doc, history, changed: false };
+  // An edit to a lockup reaches every placement of it in the same undo step.
+  if (next.lockups !== doc.lockups) {
+    const edited = next;
+    const [synced, syncPatches, syncInverse] = produceWithPatches(edited, (d) => syncPlacements(d, doc, edited));
+    if (syncPatches.length) {
+      next = synced;
+      patches = [...patches, ...syncPatches];
+      inverse = [...syncInverse, ...inverse];
+    }
+  }
   const last = history.past[history.past.length - 1];
   if (command.coalesceKey && last?.coalesceKey === command.coalesceKey && now - last.at < COALESCE_MS && history.future.length === 0) {
     // Slider drags and key repeats: one undo step returns to the state before the gesture.

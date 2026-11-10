@@ -4,7 +4,8 @@
  * files per person, plus a size breakdown for production.
  */
 import { allStacks, designAreas } from '@/domain/areas';
-import type { DesignArea, DesignDocument, ZoneId } from '@/domain/schema';
+import { deepLayers } from '@/domain/lockups';
+import type { DesignArea, DesignDocument, LayerStack, ZoneId } from '@/domain/schema';
 
 export interface Roster {
   fields: string[];
@@ -106,27 +107,28 @@ export function designPlaceholders(doc: DesignDocument): string[] {
   return out;
 }
 
+/** Whether a stack holds a placeholder, in its own text or in a lockup placed on it. */
+const hasPlaceholder = (stack: Pick<LayerStack, 'layers'>) => deepLayers(stack).some((l) => l.content.kind === 'text' && new RegExp(PLACEHOLDER.source, 'i').test(l.content.value));
+
 /** Zones whose artwork changes per person. */
 export function personalisedZones(doc: DesignDocument): ZoneId[] {
-  return (Object.keys(doc.zones) as ZoneId[]).filter((z) =>
-    Object.values(doc.zones[z].layers).some((l) => l.content.kind === 'text' && new RegExp(PLACEHOLDER.source, 'i').test(l.content.value)),
-  );
+  return (Object.keys(doc.zones) as ZoneId[]).filter((z) => hasPlaceholder(doc.zones[z]));
 }
 
 /** Design areas whose artwork changes per person (a name on the hood, a number on the sleeve). */
 export function personalisedAreas(doc: DesignDocument): DesignArea[] {
-  return designAreas(doc).filter((a) => a.visible && Object.values(a.layers).some((l) => l.content.kind === 'text' && new RegExp(PLACEHOLDER.source, 'i').test(l.content.value)));
+  return designAreas(doc).filter((a) => a.visible && hasPlaceholder(a));
 }
 
 export function fillPlaceholders(text: string, row: Record<string, string>) {
   return text.replace(PLACEHOLDER, (match, key: string) => row[key.toLowerCase()] ?? match);
 }
 
-/** A copy of the design with every placeholder filled from one roster row, in zones and design areas. */
+/** A copy of the design with every placeholder filled from one roster row, in zones, design areas and lockups (and their placements). */
 export function personalise(doc: DesignDocument, row: Record<string, string>): DesignDocument {
   const next = structuredClone(doc);
   for (const zone of allStacks(next)) {
-    for (const layer of Object.values(zone.layers)) {
+    for (const layer of deepLayers(zone)) {
       if (layer.content.kind === 'text') layer.content.value = fillPlaceholders(layer.content.value, row);
     }
   }

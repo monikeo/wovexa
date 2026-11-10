@@ -671,17 +671,17 @@ export function GarmentPanel() {
         <FabricPrint key={colorway.id} colorway={colorway} model={model} />
       </section>
 
-      <section>
-        <h2 className="panel-title">Print method, {spec.label.toLowerCase()}</h2>
-        <select className="field mt-2" value={artboard?.printMethod ?? doc.zones[spec.id].printMethod} onChange={(e) => dispatch(cmd.setPrintMethod(activeZoneId, e.target.value as PrintMethod))}>
-          {(Object.keys(PRINT_METHOD_LABELS) as PrintMethod[]).map((m) => (
-            <option key={m} value={m} disabled={!spec.methods.includes(m)}>
-              {PRINT_METHOD_LABELS[m]}
-              {spec.methods.includes(m) ? '' : ' (not available here)'}
-            </option>
-          ))}
-        </select>
-        {artboard ? (
+      {artboard?.printMethod ? (
+        <section>
+          <h2 className="panel-title">Print method, {spec.label.toLowerCase()}</h2>
+          <select className="field mt-2" value={artboard.printMethod} onChange={(e) => dispatch(cmd.setPrintMethod(activeZoneId, e.target.value as PrintMethod))}>
+            {(Object.keys(PRINT_METHOD_LABELS) as PrintMethod[]).map((m) => (
+              <option key={m} value={m} disabled={!spec.methods.includes(m)}>
+                {PRINT_METHOD_LABELS[m]}
+                {spec.methods.includes(m) ? '' : ' (not available here)'}
+              </option>
+            ))}
+          </select>
           <InkCount
             zoneId={activeZoneId}
             stack={artboard}
@@ -690,8 +690,13 @@ export function GarmentPanel() {
             garment={partColor(colorway, spec.part === 'torso' ? 'body' : spec.part === 'legLeft' || spec.part === 'legRight' ? 'pants' : 'sleeves')}
             method={artboard.printMethod}
           />
-        ) : null}
-      </section>
+        </section>
+      ) : (
+        <section>
+          <h2 className="panel-title">Print method</h2>
+          <p className="mt-1 text-xs text-fg-2">A lockup prints by the method of each zone or area it is placed on.</p>
+        </section>
+      )}
 
       <div className="flex flex-wrap gap-2">
         <button

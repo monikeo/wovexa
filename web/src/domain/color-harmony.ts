@@ -164,6 +164,16 @@ export function designInks(doc: DesignDocument, limit = 24): Ink[] {
   const inksOf = (layer: { name: string; visible: boolean; content: LayerContent; transform: { widthMm: number; heightMm: number } }, part: Ink['part']) => {
     const c = layer.content;
     if (!layer.visible || c.kind === 'image') return;
+    if (c.kind === 'lockup') {
+      // A lockup's inks are its layers', at the size this placement prints them.
+      const kx = layer.transform.widthMm / c.widthMm;
+      const ky = layer.transform.heightMm / c.heightMm;
+      for (const id of c.orderedLayerIds) {
+        const inner = c.layers[id];
+        if (inner) inksOf({ ...inner, name: `${layer.name}: ${inner.name}`, transform: { widthMm: inner.transform.widthMm * kx, heightMm: inner.transform.heightMm * ky } }, part);
+      }
+      return;
+    }
     // Letter colours take the fill's place: the first is the layer's ink, the rest go with it.
     const letters = c.kind === 'text' && c.letterColors?.length ? [...new Set(c.letterColors.map((x) => x.toUpperCase()))] : null;
     const also = letters ? letters.slice(1) : c.fillStyle?.kind === 'gradient' ? [c.fillStyle.to] : c.fillStyle?.kind === 'pattern' ? [c.fillStyle.color2] : [];
