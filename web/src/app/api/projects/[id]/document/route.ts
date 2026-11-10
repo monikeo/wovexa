@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { apiError, requireUser, sameOrigin } from '@/lib/api';
 import { parseDesignDocument } from '@/domain/schema';
+import { readJsonBody } from '@/lib/request-body';
 
 const MAX_DOCUMENT_BYTES = 2 * 1024 * 1024;
 
@@ -32,12 +33,12 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) return apiError(400, 'invalid_id', 'Unknown project id.');
   if (!sameOrigin(request)) return apiError(403, 'cross_origin', 'Cross-site requests are not allowed.');
-  const length = Number(request.headers.get('content-length') ?? 0);
-  if (length > MAX_DOCUMENT_BYTES) return apiError(413, 'too_large', 'This design is larger than the 2 MB document limit.');
-
   const auth = await requireUser();
   if ('error' in auth) return auth.error;
-  const body = putBody.safeParse(await request.json().catch(() => null));
+  // Counted as it arrives: a missing or false Content-Length can't get a bigger body read.
+  const raw = await readJsonBody(request, MAX_DOCUMENT_BYTES);
+  if (!raw.ok && raw.reason === 'too_large') return apiError(413, 'too_large', 'This design is larger than the 2 MB document limit.');
+  const body = putBody.safeParse(raw.ok ? raw.value : null);
   if (!body.success) return apiError(400, 'invalid_body', 'Send expectedRevision and document.');
   const parsed = parseDesignDocument(body.data.document);
   if (!parsed.ok) return apiError(422, 'invalid_document', 'The design failed validation.', { details: parsed.errors });

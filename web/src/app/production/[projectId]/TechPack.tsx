@@ -14,6 +14,7 @@ import { areaSpec, describeAreaPlacement, designAreas } from '@/domain/areas';
 import * as cmd from '@/domain/commands';
 import { newId } from '@/domain/factory';
 import { getGarment, getSize, partColor, PRINT_METHOD_LABELS, zoneSpecOrFirst } from '@/domain/garments';
+import { detachedLayers, isPlacement } from '@/domain/lockups';
 import { effectiveDpi, runPreflight, summarize } from '@/domain/preflight';
 import { migrateDesignDocument, type BomItem, type DesignArea, type DesignDocument, type ZoneId } from '@/domain/schema';
 import { prepareDocument } from '@/lib/export/package';
@@ -272,14 +273,17 @@ function TechPackBody({ doc, editable, header, projectId }: { doc: DesignDocumen
                 [...zones.map((z) => ({ key: z as string, zone: doc.zones[z], spec: zoneSpecOrFirst(model, z) })), ...areas.map((a) => ({ key: a.id as string, zone: a, spec: areaSpec(a) }))].flatMap(({ key, zone, spec }) => {
                   return zone.orderedLayerIds.map((id) => {
                     const l = zone.layers[id];
-                    const dpi = effectiveDpi(l);
+                    // A lockup prints at its photos' lowest resolution, at the size this placement gives them.
+                    const dpis = (isPlacement(l) ? detachedLayers(l, (x) => x.id, '') : [l]).map((x) => effectiveDpi(x)).filter((d): d is NonNullable<typeof d> => !!d);
+                    const dpi = dpis.length ? { min: Math.min(...dpis.map((d) => d.min)) } : null;
                     return (
                       <tr key={`${key}:${id}`} className={`border-b border-line ${l.visible ? '' : 'text-fg-3'}`}>
                         <td className="py-2 pr-3">{spec.label}</td>
                         <td className="py-2 pr-3">{PRINT_METHOD_LABELS[zone.printMethod]}</td>
                         <td className="py-2 pr-3">
                           {l.name}
-                          {l.content.kind === 'text' && l.content.curveDeg ? `, curved ${Math.round(l.content.curveDeg)}°` : ''}
+                          {l.content.kind === 'text' && l.content.onPath ? ', on a path' : l.content.kind === 'text' && l.content.curveDeg ? `, curved ${Math.round(l.content.curveDeg)}°` : ''}
+                          {l.content.kind === 'lockup' ? (l.content.name === l.name ? ' (lockup)' : `, lockup ${l.content.name}`) : ''}
                           {l.visible ? '' : ' (hidden, not printed)'}
                         </td>
                         <td className="num py-2 pr-3 text-right">

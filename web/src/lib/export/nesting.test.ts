@@ -138,7 +138,8 @@ describe('fabric marker nesting', () => {
     expect(result.unplaced).toEqual([]);
     expectSound(pieces, result, opts);
     expect(ms).toBeLessThan(10000);
-  });
+    // The 10 s budget above is the check; the runner's 5 s default would cut it short on a busy machine.
+  }, 20_000);
 
   it('keeps every piece upright when turning is off', () => {
     const opts = { ...OPTIONS, allowTurn: false };
