@@ -5,6 +5,7 @@
 import { areaSpec, designAreas } from './areas';
 import { getGarment, PRINT_METHOD_LABELS, type ZoneSpec } from './garments';
 import { mmToInch, overflow, rotatedBounds, roundMm } from './geometry';
+import { detachedLayers, type Placement } from './lockups';
 import { projectedAsArtwork, projectedLayers } from './projected';
 import { ZONE_IDS, type AreaId, type ArtboardId, type ArtworkLayer, type DesignDocument, type ImageContent, type PrintMethod, type ProjectedLayer } from './schema';
 
@@ -175,6 +176,19 @@ export function checkLayer(layer: ArtworkLayer, zone: ZoneSpec, method: PrintMet
       message: 'Photos and raster images must be digitized before they can be embroidered',
       fix: 'Use a simple vector logo, or plan for digitizing',
     });
+  }
+
+  // A lockup placement: its layers at the size this placement prints them (photo resolution,
+  // text height, embroidery). Where it sits is the placement's own check above.
+  if (layer.content.kind === 'lockup') {
+    const lockup = layer.content.name;
+    for (const inner of detachedLayers(layer as Placement, (l) => l.id, '')) {
+      if (!inner.visible) continue;
+      for (const issue of checkLayer(inner, zone, method, opts)) {
+        if (issue.code === 'out_of_bounds' || issue.code === 'safe_margin') continue;
+        issues.push({ ...issue, ...base, id: `${layer.id}:${issue.id}`, message: `${inner.name} in ${lockup}: ${issue.message}` });
+      }
+    }
   }
 
   return issues;

@@ -19,14 +19,18 @@ import type {
   LayerStack,
   LayerStyle,
   LayerTransform,
+  LockupContent,
   PrintMethod,
   ShapeContent,
   Surface,
   TextContent,
+  TextPath,
 } from '@/domain/schema';
 import { clipRuns } from '@/domain/clipping';
 import { rotatedBounds } from '@/domain/geometry';
 import { graphemes, letterInks } from '@/domain/letter-colors';
+import { deepLayers } from '@/domain/lockups';
+import { flattenSubpath, parsePath } from '@/domain/path-edit';
 import { getLoadedImage } from '@/lib/assets';
 import { ensureCustomFonts } from '@/lib/font-library';
 import { loadFontStylesheets, scriptFallbacks } from '@/lib/fonts';
@@ -41,9 +45,13 @@ export function fontString(c: Pick<TextContent, 'italic' | 'fontWeight' | 'fontF
 }
 
 function makeCanvas(w: number, h: number) {
+  const W = Math.max(1, Math.ceil(w));
+  const H = Math.max(1, Math.ceil(h));
+  // In a print worker there is no document: an OffscreenCanvas draws exactly the same.
+  if (typeof document === 'undefined') return new OffscreenCanvas(W, H) as unknown as HTMLCanvasElement;
   const c = document.createElement('canvas');
-  c.width = Math.max(1, Math.ceil(w));
-  c.height = Math.max(1, Math.ceil(h));
+  c.width = W;
+  c.height = H;
   return c;
 }
 
@@ -87,7 +95,7 @@ class CanvasCache {
 
 let measureCtx: CanvasRenderingContext2D | null = null;
 function measurer() {
-  measureCtx ??= document.createElement('canvas').getContext('2d');
+  measureCtx ??= makeCanvas(1, 1).getContext('2d');
   return measureCtx!;
 }
 
@@ -125,28 +133,90 @@ export interface TextLayout {
   cy: number;
   lines: string[];
   glyphs?: Glyph[];
+  /** Text on a path: layout units per path unit (the path's own 0–100 box, its width times its aspect). */
+  pathScale?: number;
 }
 
-export function isCurved(c: Pick<TextContent, 'curveDeg' | 'value'>) {
-  return Math.abs(c.curveDeg) >= 0.5 && !c.value.includes('\n') && c.value.length > 0;
+/** Single-line text with a path to follow. A path takes precedence over a curve or a wave. */
+export function isOnPath(c: Pick<TextContent, 'value' | 'onPath'>) {
+  return !!c.onPath && !c.value.includes('\n') && c.value.length > 0;
+}
+
+export function isCurved(c: Pick<TextContent, 'curveDeg' | 'value' | 'onPath'>) {
+  return !isOnPath(c) && Math.abs(c.curveDeg) >= 0.5 && !c.value.includes('\n') && c.value.length > 0;
 }
 
 /** Wave warp applies to straight single-line text; a curve takes precedence. */
-export function isWaved(c: Pick<TextContent, 'curveDeg' | 'value' | 'wave'>) {
-  return !isCurved(c) && Math.abs(c.wave ?? 0) >= 0.5 && !c.value.includes('\n') && c.value.length > 0;
+export function isWaved(c: Pick<TextContent, 'curveDeg' | 'value' | 'wave' | 'onPath'>) {
+  return !isOnPath(c) && !isCurved(c) && Math.abs(c.wave ?? 0) >= 0.5 && !c.value.includes('\n') && c.value.length > 0;
 }
 
-/** True when the text follows a path (arc or wave) rather than straight lines. */
-export function isWarped(c: Pick<TextContent, 'curveDeg' | 'value' | 'wave'>) {
-  return isCurved(c) || isWaved(c);
+/** True when the text follows a path (a drawn one, an arc or a wave) rather than straight lines. */
+export function isWarped(c: Pick<TextContent, 'curveDeg' | 'value' | 'wave' | 'onPath'>) {
+  return isOnPath(c) || isCurved(c) || isWaved(c);
+}
+
+/** A path for text to follow: a polyline in path units with the distance along it to each point. */
+interface Track {
+  pts: [number, number][];
+  dist: number[];
+  length: number;
+  closed: boolean;
+}
+
+const trackCache = new Map<string, Track | null>();
+
+/** The path's first line as a track, in path units: x across the box times its aspect, y down it. */
+export function pathTrack(onPath: Pick<TextPath, 'd' | 'aspect'>): Track | null {
+  const key = `${onPath.aspect}|${onPath.d}`;
+  if (trackCache.has(key)) return trackCache.get(key)!;
+  const sub = parsePath(onPath.d)[0];
+  let track: Track | null = null;
+  if (sub && sub.nodes.length >= 2) {
+    const pts = flattenSubpath(sub, 0.05).map(([x, y]) => [x * onPath.aspect, y] as [number, number]);
+    if (sub.closed) pts.push(pts[0]);
+    const dist = [0];
+    for (let i = 1; i < pts.length; i++) dist.push(dist[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    const length = dist[dist.length - 1];
+    if (length > 1e-6) track = { pts, dist, length, closed: sub.closed };
+  }
+  if (trackCache.size > 100) trackCache.delete(trackCache.keys().next().value!);
+  trackCache.set(key, track);
+  return track;
+}
+
+/** The point and direction `along` path units into a track: round again on a closed path, straight on past an open one's ends. */
+export function trackAt(track: Track, along: number): { x: number; y: number; angle: number } {
+  let s = along;
+  if (track.closed) s = ((s % track.length) + track.length) % track.length;
+  const { pts, dist } = track;
+  let i = 1;
+  if (s >= track.length) i = pts.length - 1;
+  else if (s > 0) {
+    let lo = 1;
+    let hi = pts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (dist[mid] < s) lo = mid + 1;
+      else hi = mid;
+    }
+    i = lo;
+  }
+  const [x0, y0] = pts[i - 1];
+  const [x1, y1] = pts[i];
+  const seg = dist[i] - dist[i - 1] || 1e-9;
+  const t = (s - dist[i - 1]) / seg;
+  return { x: x0 + (x1 - x0) * t, y: y0 + (y1 - y0) * t, angle: Math.atan2(y1 - y0, x1 - x0) };
 }
 
 const layoutCache = new Map<string, TextLayout>();
 
 export function layoutText(c: TextContent): TextLayout {
+  const onPath = isOnPath(c) ? c.onPath : undefined;
+  const track = onPath ? pathTrack(onPath) : null;
   const curved = isCurved(c);
   const waved = isWaved(c);
-  const key = JSON.stringify([c.value, c.fontFamily, c.fontWeight, c.italic, c.letterSpacingEm, c.lineHeight, curved ? c.curveDeg : 0, waved ? c.wave : 0]);
+  const key = JSON.stringify([c.value, c.fontFamily, c.fontWeight, c.italic, c.letterSpacingEm, c.lineHeight, curved ? c.curveDeg : 0, waved ? c.wave : 0, track ? onPath : null]);
   const cached = layoutCache.get(key);
   if (cached) return cached;
   const ctx = measurer();
@@ -155,7 +225,44 @@ export function layoutText(c: TextContent): TextLayout {
   const lineH = TEXT_REF_PX * c.lineHeight;
   let layout: TextLayout;
 
-  if (curved || waved) {
+  if (onPath && track) {
+    // Along a path: the letters cover `span` of it from `start`, each turned to the line under it
+    // and lifted to sit on it (baseline on the line), straddle it, or hang below it (tops on it).
+    setLetterSpacing(ctx, 0);
+    const spacing = c.letterSpacingEm * TEXT_REF_PX;
+    const gs = graphemes(c.value);
+    const widths = gs.map((g) => Math.max(1, ctx.measureText(g).width));
+    const length = widths.reduce((a, b) => a + b, 0) + spacing * (gs.length - 1);
+    const scale = length / Math.max(1e-6, onPath.span * track.length);
+    const lift = onPath.side === 'above' ? 0.32 * TEXT_REF_PX : onPath.side === 'below' ? -0.38 * TEXT_REF_PX : 0;
+    let s = 0;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const glyphs = gs.map((g, i) => {
+      const mid = s + widths[i] / 2;
+      s += widths[i] + spacing;
+      const p = trackAt(track, onPath.start * track.length + mid / scale);
+      const cos = Math.cos(p.angle);
+      const sin = Math.sin(p.angle);
+      // Lifted along the line's normal, to the left of travel: up, for text running left to right.
+      const x = p.x * scale + sin * lift;
+      const y = p.y * scale - cos * lift;
+      for (const [dx, dy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        const px = (dx * widths[i]) / 2;
+        const py = (dy * lineH) / 2;
+        const X = x + px * cos - py * sin;
+        const Y = y + px * sin + py * cos;
+        minX = Math.min(minX, X);
+        maxX = Math.max(maxX, X);
+        minY = Math.min(minY, Y);
+        maxY = Math.max(maxY, Y);
+      }
+      return { g, x, y, rot: p.angle };
+    });
+    layout = { width: maxX - minX, height: maxY - minY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, lines: [c.value], glyphs, pathScale: scale };
+  } else if (curved || waved) {
     setLetterSpacing(ctx, 0);
     const spacing = c.letterSpacingEm * TEXT_REF_PX;
     const gs = graphemes(c.value);
@@ -1494,6 +1601,9 @@ export function layerBleedMm(layer: ArtworkLayer, simulate = false): number {
     mm = layer.transform.heightMm * 0.12 + outline;
   } else if (c.kind === 'shape' && (c.hollow || (c.strokeColor && c.strokeWidthMm))) {
     mm = (c.hollow ? lineWidthMm(c) : c.strokeWidthMm!) / 2 + 0.5;
+  } else if (c.kind === 'lockup') {
+    // Scaled with the placement: what reaches past the lockup's board reaches past this box.
+    mm = lockupOverhangMm(c) * Math.max(layer.transform.widthMm / c.widthMm, layer.transform.heightMm / c.heightMm);
   }
   if (layer.style.outline) mm += layer.style.outline.widthMm + 0.5;
   const shadow = layerShadow(layer);
@@ -1529,9 +1639,43 @@ function drawRaw(ctx: Ctx, layer: ArtworkLayer, w: number, h: number, pxPerMm: n
     if (c.mask) ctx.restore();
     return true;
   }
+  if (c.kind === 'lockup') return drawLockup(ctx, c, w, h, pxPerMm);
   if (c.kind === 'text') drawText(ctx, c, w, h, pxPerMm);
   else drawShape(ctx, c, w, h, pxPerMm);
   return true;
+}
+
+/**
+ * A lockup placement (spec ED2-12): the lockup's own board of layers drawn into the `w` × `h` px
+ * box. The layers draw at the resolution they end up at, so effects inside stay sharp at any size.
+ */
+function drawLockup(ctx: Ctx, c: LockupContent, w: number, h: number, pxPerMm: number): boolean {
+  const sx = w / (c.widthMm * pxPerMm);
+  const sy = h / (c.heightMm * pxPerMm);
+  const k = Math.max(sx, sy);
+  if (!(k > 0) || !Number.isFinite(k)) return true;
+  ctx.save();
+  ctx.translate(-w / 2, -h / 2);
+  ctx.scale(sx / k, sy / k);
+  const ok = drawZone(ctx, c, { pxPerMm: pxPerMm * k });
+  ctx.restore();
+  return ok;
+}
+
+/** How far a lockup's artwork reaches past its board (outlines, shadows, layers hanging over), in its own mm. */
+function lockupOverhangMm(c: LockupContent): number {
+  let mm = 0;
+  for (const id of c.orderedLayerIds) {
+    const layer = c.layers[id];
+    if (!layer) continue;
+    const t = layer.transform;
+    const a = (t.rotationDeg * Math.PI) / 180;
+    const hw = (Math.abs(Math.cos(a)) * t.widthMm + Math.abs(Math.sin(a)) * t.heightMm) / 2;
+    const hh = (Math.abs(Math.sin(a)) * t.widthMm + Math.abs(Math.cos(a)) * t.heightMm) / 2;
+    const reach = layerBleedMm(layer);
+    mm = Math.max(mm, reach - (t.centerXmm - hw), t.centerXmm + hw + reach - c.widthMm, reach - (t.centerYmm - hh), t.centerYmm + hh + reach - c.heightMm);
+  }
+  return mm;
 }
 
 const fxCache = new CanvasCache(32e6, 8e6);
@@ -1924,9 +2068,9 @@ export function renderZoneArtwork(zone: LayerStack, widthMm: number, heightMm: n
     pxPerMm = MAX_EXPORT_SIDE / Math.max(widthMm, heightMm);
     effectiveDpi = Math.floor(pxPerMm * 25.4);
   }
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.round(widthMm * pxPerMm);
-  canvas.height = Math.round(heightMm * pxPerMm);
+  const canvas = makeCanvas(1, 1);
+  canvas.width = Math.max(1, Math.round(widthMm * pxPerMm));
+  canvas.height = Math.max(1, Math.round(heightMm * pxPerMm));
   const ctx = canvas.getContext('2d')!;
   drawZone(ctx, zone, { pxPerMm });
   return { canvas, dpi: effectiveDpi };
@@ -1943,7 +2087,7 @@ export async function ensureFonts(zones: LayerStack[]): Promise<boolean> {
   const uploaded = new Set<string>();
   const wanted = new Map<string, string>();
   for (const zone of zones) {
-    for (const layer of Object.values(zone.layers)) {
+    for (const layer of deepLayers(zone)) {
       const c = layer.content;
       if (c.kind !== 'text') continue;
       if (c.fontAssetId) uploaded.add(c.fontAssetId);

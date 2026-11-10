@@ -14,6 +14,7 @@ import {
   ArrowDownToLine,
   ArrowUpToLine,
   Copy,
+  Component,
   CornerLeftDown,
   CopyPlus,
   Crop,
@@ -31,6 +32,11 @@ import {
   Move,
   RotateCcw,
   Shirt,
+  Spline,
+  SquaresExclude,
+  SquaresIntersect,
+  SquaresSubtract,
+  SquaresUnite,
   Trash2,
   Ungroup,
 } from 'lucide-react';
@@ -38,10 +44,12 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { selectionUnits, type AlignMode, type CopyPlan } from '@/domain/arrange';
 import * as cmd from '@/domain/commands';
 import { changeCase, isCase, type LetterCase } from '@/domain/letter-case';
+import { isPlacement, placementsOf } from '@/domain/lockups';
 import { checkLayer, checkProjectedLayer, DEFAULT_PREFLIGHT, effectiveDpi, shownPixels } from '@/domain/preflight';
 import { projectedAsArtwork } from '@/domain/projected';
 import {
   isAreaId,
+  isLockupId,
   type ArtworkLayer,
   type DesignArea,
   type ImageAdjust,
@@ -50,10 +58,13 @@ import {
   type LayerHalftone,
   type LayerStyle,
   type LayerTransform,
+  type LockupContent,
+  type LockupId,
   type ProjectedLayer,
   type ProjectedTransform,
   type ShapeContent,
   type TextContent,
+  type TextPath,
 } from '@/domain/schema';
 import { AssetError, getLoadedImage, importImageFile, loadAssetImage } from '@/lib/assets';
 import { ARTWORK_FONTS, fontWeights, loadFontStylesheets } from '@/lib/fonts';
@@ -62,10 +73,34 @@ import { canvasToBlob } from '@/lib/download';
 import { croppedTransform, FULL_CROP, recroppedTransform, type CropRect } from '@/domain/geometry';
 import { getAsset } from '@/lib/local-db';
 import { usePreference } from '@/lib/preferences';
-import { DEFAULT_REPEAT, effectiveDistress, isCurved, isNeutralAdjust, isWarped, NEUTRAL_ADJUST, textAspect } from '@/lib/render/zone-renderer';
+import { keepLetterSize, keepPathInPlace, reversePath } from '@/lib/path-text';
+import { DEFAULT_REPEAT, effectiveDistress, isCurved, isNeutralAdjust, isOnPath, isWarped, NEUTRAL_ADJUST, pathTrack, textAspect } from '@/lib/render/zone-renderer';
 import { ColorField, NumberField, toast } from '@/components/ui/primitives';
 import { useActiveArtboard, useActiveZoneSpec, useStudio } from '@/stores/studio-store';
-import { alignSelection, clipSelection, deleteSelection, distributeSelection, duplicateSelection, groupSelection, placementsFor, placeSelection, repeatSelection, ungroupSelection } from './actions';
+import {
+  alignSelection,
+  clipSelection,
+  combineSelection,
+  COMBINE_LABELS,
+  deleteLockup,
+  deleteSelection,
+  detachLockup,
+  distributeSelection,
+  duplicateSelection,
+  editLockup,
+  editPoints,
+  finishLockupEdit,
+  groupSelection,
+  makeLockupFromSelection,
+  placementsFor,
+  placeSelection,
+  putTextOnShape,
+  renameLockupTo,
+  repeatSelection,
+  startTextOnPath,
+  ungroupSelection,
+  type CombineOp,
+} from './actions';
 import { useBrandKit } from './brand-context';
 import { CropEditor } from './CropEditor';
 import { FontPicker } from './FontPicker';
@@ -109,6 +144,7 @@ const ALIGN_BUTTONS: [AlignMode, typeof AlignCenter, string][] = [
 function PlacementBar() {
   const spec = useActiveZoneSpec();
   const placements = placementsFor(spec);
+  if (!placements.length) return null;
   return (
     <div>
       <span className="label">Place</span>
@@ -256,6 +292,61 @@ function OutlineOnly({ hollow, width, onChange }: { hollow: boolean; width: numb
   );
 }
 
+const PATH_SIDES: { id: TextPath['side']; label: string; title: string }[] = [
+  { id: 'above', label: 'Above', title: 'Letters stand on the line' },
+  { id: 'on', label: 'On', title: 'Letters centred on the line' },
+  { id: 'below', label: 'Below', title: 'Letters hang under the line' },
+];
+
+/** Where text on a path sits: which side of the line, where it starts and how much of it it covers. */
+function TextPathControls({ onPath, onChange, onRemove }: { onPath: TextPath; onChange: (next: TextPath, label: string, gesture?: string) => void; onRemove: () => void }) {
+  // An open line has ends the text should stay between; a closed outline goes round.
+  const closed = !!pathTrack(onPath)?.closed;
+  const maxStart = closed ? 1 : Math.max(0, 1 - onPath.span);
+  return (
+    <div className="space-y-2 rounded-lg border border-line p-2">
+      <div className="grid grid-cols-[52px_1fr] items-center gap-2">
+        <span className="label">Path</span>
+        <div className="seg w-fit" role="group" aria-label="Which side of the path the letters sit">
+          {PATH_SIDES.map((s) => (
+            <button key={s.id} aria-pressed={onPath.side === s.id} title={s.title} onClick={() => onChange({ ...onPath, side: s.id }, 'Text side of the path')}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <RangeField
+        label="Start"
+        value={Math.round(Math.min(onPath.start, maxStart) * 100)}
+        min={0}
+        max={closed ? 99 : Math.round(maxStart * 100)}
+        disabled={!closed && maxStart <= 0}
+        format={(v) => `${v}%`}
+        onChange={(v) => onChange({ ...onPath, start: Math.min(v / 100, maxStart) }, 'Move text along the path', 'path-start')}
+      />
+      <RangeField
+        label="Covers"
+        value={Math.round(onPath.span * 100)}
+        min={5}
+        max={100}
+        format={(v) => `${v}%`}
+        onChange={(v) => {
+          const span = v / 100;
+          onChange({ ...onPath, span, start: closed ? onPath.start : Math.min(onPath.start, Math.max(0, 1 - span)) }, 'Text length on the path', 'path-span');
+        }}
+      />
+      <div className="flex gap-2">
+        <button className="btn btn-outline flex-1 px-2 text-xs" onClick={() => onChange(reversePath(onPath), 'Reverse the path')} title="Run the text the other way along the path, as for words along the bottom of a circle badge">
+          <FlipHorizontal2 size={14} /> Other way
+        </button>
+        <button className="btn btn-outline flex-1 px-2 text-xs" onClick={onRemove} title="Straight text again">
+          <Eraser size={14} /> Off the path
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextContent }) {
   const edit = useLayerEdit();
   const dispatch = useStudio((s) => s.dispatch);
@@ -280,24 +371,35 @@ function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextCon
 
   /**
    * Text changes keep the cap height and let the width follow, like a design tool.
-   * Curving or waving keeps the width and lets the height follow the path.
+   * Curving or waving keeps the width and lets the height follow the path. Text on a drawn path
+   * keeps that path exactly where it is.
    */
-  const update = (patch: Partial<TextContent>, label: string, gesture?: string) => {
-    const next = { ...content, ...patch };
-    const affectsShape = ['value', 'fontFamily', 'fontWeight', 'italic', 'letterSpacingEm', 'lineHeight', 'curveDeg', 'wave', 'fontAssetId'].some((key) => key in patch);
+  const update = (requested: Partial<TextContent>, label: string, gesture?: string) => {
+    let patch = requested;
+    let next = { ...content, ...patch };
+    // New words or a new font on a path keep the letter size: the text runs further or less far along it.
+    if (isOnPath(content) && isOnPath(next) && !('onPath' in patch) && ['value', 'fontFamily', 'fontWeight', 'italic', 'letterSpacingEm', 'fontAssetId'].some((key) => key in patch)) {
+      patch = { ...patch, onPath: keepLetterSize(content, next) };
+      next = { ...content, ...patch };
+    }
+    const affectsShape = ['value', 'fontFamily', 'fontWeight', 'italic', 'letterSpacingEm', 'lineHeight', 'curveDeg', 'wave', 'fontAssetId', 'onPath'].some((key) => key in patch);
     const aspect = textAspect(next);
     const pathChange = 'curveDeg' in patch || 'wave' in patch || isWarped(next) !== isWarped(content);
     const transform = !affectsShape
       ? undefined
-      : pathChange
-        ? { heightMm: layer.transform.widthMm / aspect }
-        : { widthMm: layer.transform.heightMm * aspect };
+      : isOnPath(content) && isOnPath(next)
+        ? keepPathInPlace(layer.transform, content, next)
+        : pathChange
+          ? { heightMm: layer.transform.widthMm / aspect }
+          : { widthMm: layer.transform.heightMm * aspect };
     const name = patch.value !== undefined ? patch.value.split('\n')[0].slice(0, 40) || 'Text' : undefined;
     const command = edit(layer.id, { content: patch, transform, name }, label);
     dispatch(gesture ? cmd.coalescing(command, `${gesture}:${layer.id}`) : command);
   };
   const commitText = () => draft !== content.value && update({ value: draft }, 'Edit text');
   const multiline = content.value.includes('\n');
+  const onGarment = useContext(OnGarmentContext);
+  const onPath = isOnPath(content) ? content.onPath : undefined;
   const brandFonts = (kit?.fonts ?? []).filter((f) => ARTWORK_FONTS.some((a) => a.family === f));
   const weights = content.fontAssetId ? [400, 700] : fontWeights(content.fontFamily);
   const shadow = content.shadow;
@@ -348,7 +450,7 @@ function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextCon
         <span className="label">Align</span>
         <div className="seg w-fit" role="group" aria-label="Text alignment">
           {([['left', AlignLeft], ['center', AlignCenter], ['right', AlignRight]] as const).map(([a, Icon]) => (
-            <button key={a} aria-pressed={content.align === a} onClick={() => update({ align: a }, 'Align text')} aria-label={`Align ${a}`} disabled={isCurved(content)}>
+            <button key={a} aria-pressed={content.align === a} onClick={() => update({ align: a }, 'Align text')} aria-label={`Align ${a}`} disabled={isCurved(content) || isOnPath(content)}>
               <Icon size={14} />
             </button>
           ))}
@@ -364,37 +466,51 @@ function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextCon
           ))}
         </div>
       </div>
-      <div className="grid grid-cols-[52px_1fr] items-center gap-2">
-        <label htmlFor={`curve-${layer.id}`} className="label">
-          Curve
-        </label>
-        <div className="flex items-center gap-2">
-          <input
-            id={`curve-${layer.id}`}
-            type="range"
-            min={-180}
-            max={180}
+      {onPath ? (
+        <TextPathControls onPath={onPath} onChange={(next, label, gesture) => update({ onPath: next }, label, gesture)} onRemove={() => update({ onPath: undefined }, 'Take text off the path')} />
+      ) : (
+        <>
+          <div className="grid grid-cols-[52px_1fr] items-center gap-2">
+            <label htmlFor={`curve-${layer.id}`} className="label">
+              Curve
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                id={`curve-${layer.id}`}
+                type="range"
+                min={-180}
+                max={180}
+                step={5}
+                disabled={multiline}
+                value={multiline ? 0 : content.curveDeg}
+                onChange={(e) => update({ curveDeg: Number(e.target.value) }, 'Curve text', 'curve')}
+                className="min-w-0 flex-1 accent-[var(--accent)]"
+                aria-valuetext={`${content.curveDeg} degrees`}
+              />
+              <span className="num w-10 text-right text-xs text-fg-2">{multiline ? 'n/a' : `${content.curveDeg}°`}</span>
+            </div>
+          </div>
+          <RangeField
+            label="Wave"
+            value={isCurved(content) || multiline ? 0 : (content.wave ?? 0)}
+            min={-100}
+            max={100}
             step={5}
-            disabled={multiline}
-            value={multiline ? 0 : content.curveDeg}
-            onChange={(e) => update({ curveDeg: Number(e.target.value) }, 'Curve text', 'curve')}
-            className="min-w-0 flex-1 accent-[var(--accent)]"
-            aria-valuetext={`${content.curveDeg} degrees`}
+            format={(v) => `${v}%`}
+            disabled={multiline || isCurved(content)}
+            onChange={(v) => update({ wave: v || undefined }, 'Wave text', 'wave')}
           />
-          <span className="num w-10 text-right text-xs text-fg-2">{multiline ? 'n/a' : `${content.curveDeg}°`}</span>
-        </div>
-      </div>
-      <RangeField
-        label="Wave"
-        value={isCurved(content) || multiline ? 0 : (content.wave ?? 0)}
-        min={-100}
-        max={100}
-        step={5}
-        format={(v) => `${v}%`}
-        disabled={multiline || isCurved(content)}
-        onChange={(v) => update({ wave: v || undefined }, 'Wave text', 'wave')}
-      />
-      {multiline ? <p className="text-xs text-fg-3">Curve and wave work on single-line text.</p> : isCurved(content) ? <p className="text-xs text-fg-3">Set the curve to 0° to use a wave.</p> : null}
+          {multiline ? (
+            <p className="text-xs text-fg-3">Curve, wave and paths work on single-line text.</p>
+          ) : isCurved(content) ? (
+            <p className="text-xs text-fg-3">Set the curve to 0° to use a wave.</p>
+          ) : onGarment ? null : (
+            <button className="btn btn-ghost min-h-8 w-full justify-start px-2 text-xs" onClick={() => startTextOnPath(layer.id)} disabled={layer.locked} title="Draw a line with the pen and this text runs along it">
+              <Spline size={14} /> Put text along a line you draw
+            </button>
+          )}
+        </>
+      )}
       <NumberField label="Spacing" suffix="em" decimals={2} step={0.01} min={-0.2} max={1} value={content.letterSpacingEm} onCommit={(v) => update({ letterSpacingEm: v }, 'Letter spacing')} />
       {multiline ? (
         <NumberField label="Leading" decimals={2} step={0.05} min={0.6} max={3} value={content.lineHeight} onCommit={(v) => update({ lineHeight: v }, 'Line height')} />
@@ -436,6 +552,7 @@ function ShapeSection({ layer, content }: { layer: ArtworkLayer; content: ShapeC
   const edit = useLayerEdit();
   const dispatch = useStudio((s) => s.dispatch);
   const kit = useBrandKit();
+  const onGarment = useContext(OnGarmentContext);
   const update = (patch: Partial<ShapeContent>, label: string, gesture?: string) => {
     const command = edit(layer.id, { content: patch }, label);
     dispatch(gesture ? cmd.coalescing(command, `${gesture}:${layer.id}`) : command);
@@ -458,6 +575,11 @@ function ShapeSection({ layer, content }: { layer: ArtworkLayer; content: ShapeC
       {content.shape === 'star' ? (
         <RangeField label="Inner" value={Math.round((content.innerRatio ?? 0.45) * 100)} min={10} max={95} format={(v) => `${v}%`} onChange={(v) => update({ innerRatio: v / 100 }, 'Star depth', 'inner')} />
       ) : null}
+      {onGarment ? null : (
+        <button className="btn btn-outline w-full text-xs" onClick={editPoints} disabled={layer.locked} title="Drag points and handles, add and remove points (or double-click the shape)">
+          <Spline size={14} /> Edit points
+        </button>
+      )}
       <OutlineOnly hollow={!!content.hollow} width={content.strokeWidthMm} onChange={(patch, label) => update(patch, label)} />
       {content.hollow ? null : (
         <>
@@ -996,7 +1118,7 @@ function EffectsSection({ layer }: { layer: ArtworkLayer }) {
   const kit = useBrandKit();
   const { shadow, outline, halftone: ht } = layer.style;
   const c = layer.content;
-  const ink = c.kind === 'image' ? '#FFFFFF' : c.fill;
+  const ink = c.kind === 'text' || c.kind === 'shape' ? c.fill : '#FFFFFF';
   const set = (style: Partial<LayerStyle>, label: string, gesture?: string) => {
     const command = edit(layer.id, { style }, label);
     dispatch(gesture ? cmd.coalescing(command, `${gesture}:${layer.id}`) : command);
@@ -1090,7 +1212,7 @@ function EffectsSection({ layer }: { layer: ArtworkLayer }) {
               type="checkbox"
               className="h-4 w-4 accent-[var(--accent)]"
               checked={!!ht.color}
-              onChange={(e) => set({ halftone: e.target.checked ? { ...ht, color: c.kind === 'image' ? '#111111' : c.fill } : withoutKey(ht, 'color') }, e.target.checked ? 'Halftone in one ink' : 'Halftone in its own colours')}
+              onChange={(e) => set({ halftone: e.target.checked ? { ...ht, color: c.kind === 'text' || c.kind === 'shape' ? c.fill : '#111111' } : withoutKey(ht, 'color') }, e.target.checked ? 'Halftone in one ink' : 'Halftone in its own colours')}
             />
             One ink colour
           </label>
@@ -1149,8 +1271,17 @@ function CopiesSection({ layer }: { layer: ArtworkLayer }) {
   );
 }
 
+/** Ways to combine shapes, in the order design tools list them. */
+const COMBINE: { op: CombineOp; Icon: typeof SquaresUnite; short: string }[] = [
+  { op: 'union', Icon: SquaresUnite, short: 'Unite' },
+  { op: 'subtract', Icon: SquaresSubtract, short: 'Subtract' },
+  { op: 'intersect', Icon: SquaresIntersect, short: 'Overlap' },
+  { op: 'exclude', Icon: SquaresExclude, short: 'Exclude' },
+];
+
 function MultiSelection({ count, layers }: { count: number; layers: ArtworkLayer[] }) {
   const zone = useActiveArtboard();
+  const spec = useActiveZoneSpec();
   const ids = layers.map((l) => l.id);
   const units = zone ? selectionUnits(zone, ids) : [];
   const groupIds = new Set(layers.map((l) => l.groupId).filter(Boolean));
@@ -1160,6 +1291,8 @@ function MultiSelection({ count, layers }: { count: number; layers: ArtworkLayer
   const clipTargets = layers.filter((l) => l.id !== lowest);
   const clipped = clipTargets.length > 0 && clipTargets.every((l) => l.clip);
   const lowestName = lowest ? zone?.layers[lowest]?.name : undefined;
+  // One line of text and a shape: the text can run round the shape's outline.
+  const textOnShape = layers.length === 2 && layers.some((l) => l.content.kind === 'shape') && layers.some((l) => l.content.kind === 'text' && !l.locked && !l.content.value.includes('\n'));
   return (
     <div>
       <Section title={isOneGroup ? `Group of ${count} layers` : `${count} layers selected`}>
@@ -1195,9 +1328,91 @@ function MultiSelection({ count, layers }: { count: number; layers: ArtworkLayer
             <CornerLeftDown size={14} /> {clipped ? 'Release clipping' : `Clip the others into ${lowestName}`}
           </button>
         ) : null}
+        {textOnShape ? (
+          <button className="btn btn-outline w-full justify-start text-xs" onClick={putTextOnShape} title="The text runs round the shape's outline, centred at its top">
+            <Spline size={14} /> Put the text on the shape&rsquo;s outline
+          </button>
+        ) : null}
+        {spec.lockupId || layers.some((l) => l.content.kind === 'lockup') ? null : (
+          <button className="btn btn-outline w-full justify-start text-xs" disabled={layers.some((l) => l.locked)} onClick={makeLockupFromSelection} title="Design it once, place it on any zone or area, and every placement follows your edits">
+            <Component size={14} /> Make a lockup of these
+          </button>
+        )}
+        <div>
+          <span className="label">Combine into one shape</span>
+          <div className="mt-1 grid grid-cols-4 gap-1" role="group" aria-label="Combine into one shape">
+            {COMBINE.map(({ op, Icon, short }) => (
+              <button key={op} className="btn btn-outline h-auto flex-col gap-0.5 px-1 py-1.5 text-[11px]" onClick={() => void combineSelection(op)} title={COMBINE_LABELS[op]} aria-label={COMBINE_LABELS[op]}>
+                <Icon size={16} /> {short}
+              </button>
+            ))}
+          </div>
+        </div>
       </Section>
-      <WrapSection count={count} />
+      {spec.lockupId ? null : <WrapSection count={count} />}
     </div>
+  );
+}
+
+/** A lockup's own board open with nothing on it selected: its name, its size, where it goes, and the way back. */
+function LockupPanel({ lockupId }: { lockupId: LockupId }) {
+  const doc = useStudio((s) => s.document);
+  const lockup = doc?.lockups?.items[lockupId];
+  if (!doc || !lockup) return null;
+  const count = placementsOf(doc, lockupId).length;
+  return (
+    <Section title="Lockup">
+      <input
+        key={`${lockup.id}:${lockup.name}`}
+        className="field h-9 font-semibold"
+        defaultValue={lockup.name}
+        aria-label="Lockup name"
+        maxLength={60}
+        onBlur={(e) => e.target.value.trim() && e.target.value !== lockup.name && renameLockupTo(lockup.id, e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+      />
+      <p className="text-xs text-fg-2">
+        Designed on a {Math.round(lockup.widthMm)} × {Math.round(lockup.heightMm)} mm board and placed {count === 0 ? 'nowhere yet' : count === 1 ? 'once' : `${count} times`}. Every change here shows on each placement as you make it; the board fits round the artwork when you finish.
+      </p>
+      <div className="flex gap-2">
+        <button className="btn btn-primary flex-1 text-xs" onClick={finishLockupEdit}>
+          Done
+        </button>
+        <button className="btn btn-outline flex-none px-3 text-danger" disabled={count > 0} onClick={() => deleteLockup(lockup.id)} aria-label="Delete lockup" title={count ? 'Delete or detach its placements first' : 'Delete this lockup'}>
+          <Trash2 size={14} />
+        </button>
+      </div>
+    </Section>
+  );
+}
+
+/**
+ * A lockup placement (spec ED2-12): which lockup it is, how many places it appears, and the way
+ * into its own board, or out of the lockup as separate layers.
+ */
+function LockupSection({ layer }: { layer: ArtworkLayer & { content: LockupContent } }) {
+  const onGarment = useContext(OnGarmentContext);
+  const doc = useStudio((s) => s.document);
+  const c = layer.content;
+  const count = doc ? placementsOf(doc, c.lockupId).length : 0;
+  const known = !!doc?.lockups?.items[c.lockupId as LockupId];
+  return (
+    <Section title="Lockup">
+      <p className="text-xs text-fg-2">
+        <span className="font-semibold text-fg">{c.name}</span>
+        {known ? (count > 1 ? `, placed ${count} times. Edit it once and every placement follows.` : ', placed once. Edit it once and every placement follows.') : ', from another design. Editing it makes it this design’s lockup.'}
+      </p>
+      <div className="flex gap-2">
+        <button className="btn btn-outline flex-1 px-2 text-xs" onClick={() => editLockup(c.lockupId)} title="Open the lockup’s own board (or double-click the placement)">
+          <Component size={14} /> Edit lockup
+        </button>
+        {onGarment ? null : (
+          <button className="btn btn-outline flex-1 px-2 text-xs" disabled={layer.locked} onClick={detachLockup} title="Turn this placement into its separate layers; the lockup and its other placements stay as they are">
+            <Link2Off size={14} /> Detach
+          </button>
+        )}
+      </div>
+    </Section>
   );
 }
 
@@ -1300,6 +1515,7 @@ function ProjectionInspector({ layer }: { layer: ProjectedLayer }) {
         </div>
       ) : null}
       <ProjectionPlacement layer={layer} />
+      {isPlacement(art) ? <LockupSection layer={art} /> : null}
       {art.content.kind === 'text' ? <TextSection key={layer.id} layer={art} content={art.content} /> : null}
       {art.content.kind === 'shape' ? <ShapeSection layer={art} content={art.content} /> : null}
       {art.content.kind === 'image' ? <ImageSection layer={art} /> : null}
@@ -1331,6 +1547,15 @@ export function Inspector() {
   if (!zone) return null;
   if (projection) return <ProjectionInspector layer={projection} />;
   if (layers.length === 0) {
+    // A lockup's own board, nothing on it selected: the lockup's settings, then the garment's.
+    if (isLockupId(zoneId)) {
+      return (
+        <>
+          <LockupPanel lockupId={zoneId} />
+          <GarmentPanel />
+        </>
+      );
+    }
     // A design area being designed on, nothing in it selected: its own settings, then the garment's.
     return isAreaId(zoneId) && 'id' in zone ? (
       <>
@@ -1344,7 +1569,8 @@ export function Inspector() {
   if (layers.length > 1) return <MultiSelection count={layers.length} layers={layers} />;
 
   const layer = layers[0];
-  const issues = checkLayer(layer, spec, zone.printMethod, DEFAULT_PREFLIGHT);
+  // A lockup's own board has no print method of its own: check its layers as a direct-to-garment print.
+  const issues = checkLayer(layer, spec, zone.printMethod ?? 'DTG', DEFAULT_PREFLIGHT);
   const index = zone.orderedLayerIds.indexOf(layer.id);
   // What this layer clips to: the first unclipped layer under it.
   const clipBase = zone.orderedLayerIds
@@ -1380,13 +1606,21 @@ export function Inspector() {
         </div>
       ) : null}
       <TransformSection layer={layer} />
+      {isPlacement(layer) ? <LockupSection layer={layer} /> : null}
       {layer.content.kind === 'text' ? <TextSection key={layer.id} layer={layer} content={layer.content} /> : null}
       {layer.content.kind === 'shape' ? <ShapeSection layer={layer} content={layer.content} /> : null}
       {layer.content.kind === 'image' ? <ImageSection layer={layer} /> : null}
       <EffectsSection layer={layer} />
       <AppearanceSection layer={layer} />
       <CopiesSection key={`copies:${layer.id}`} layer={layer} />
-      <WrapSection count={1} />
+      {spec.lockupId ? null : <WrapSection count={1} />}
+      {spec.lockupId || isPlacement(layer) ? null : (
+        <Section title="Reuse">
+          <button className="btn btn-outline w-full justify-start text-xs" disabled={layer.locked} onClick={makeLockupFromSelection} title="Design it once, place it on any zone or area, and every placement follows your edits">
+            <Component size={14} /> Make a lockup
+          </button>
+        </Section>
+      )}
       <Section title="Arrange">
         <div className="flex gap-2">
           <button className="btn btn-outline flex-1 px-2 text-xs" disabled={index === zone.orderedLayerIds.length - 1} onClick={() => dispatch(cmd.reorderLayer(zoneId, layer.id, zone.orderedLayerIds.length))}>

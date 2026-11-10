@@ -9,12 +9,14 @@
  *   halftones are one circle or rectangle a dot, ready for films,
  * - photos, image repeats and raster effects (distress, cracked ink, shadows) are placed as
  *   images at print resolution, exactly where the PNG puts them,
- * - a layer clipped to the one below is masked by that layer's own shape (vector when it is).
+ * - a layer clipped to the one below is masked by that layer's own shape (vector when it is),
+ * - a lockup placement is its lockup's own layers, written the same way, in a scaled group.
  * Browser only (it measures text and draws raster parts on a canvas).
  */
 import { clipBases } from '@/domain/clipping';
 import { graphemes, letterInks } from '@/domain/letter-colors';
-import type { ArtworkLayer, FillStyle, LayerHalftone, LayerStack, ShapeContent, TextContent } from '@/domain/schema';
+import { shapePathData, transformPathData } from '@/domain/shape-path';
+import type { ArtworkLayer, FillStyle, LayerHalftone, LayerStack, LockupContent, ShapeContent, TextContent } from '@/domain/schema';
 import { ringArea, ringsPath, simplifyRing, traceContours } from '@/lib/render/trace';
 import {
   distanceField,
@@ -50,105 +52,8 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&
 /** SVG `matrix()` of a DOMMatrix. */
 const matrix = (m: DOMMatrix) => `matrix(${n(m.a)} ${n(m.b)} ${n(m.c)} ${n(m.d)} ${n(m.e)} ${n(m.f)})`;
 
-/** Parameters each path command takes. */
-const ARITY: Record<string, number> = { m: 2, l: 2, h: 1, v: 1, c: 6, s: 4, q: 4, t: 2, a: 7, z: 0 };
-
-/**
- * Path data scaled and moved (x·sx + tx, y·sy + ty), every command kept: so an outline drawn on
- * it keeps one width, which a scaled `transform` would stretch.
- */
-export function transformPathData(d: string, sx: number, sy: number, tx: number, ty: number): string {
-  const tokens = d.match(/[MmLlHhVvCcSsQqTtAaZz]|-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g) ?? [];
-  const out: string[] = [];
-  let cmd = '';
-  let i = 0;
-  while (i < tokens.length) {
-    const tok = tokens[i];
-    if (/[A-Za-z]/.test(tok)) {
-      cmd = tok;
-      i++;
-      if (cmd.toLowerCase() === 'z') {
-        out.push(cmd);
-        continue;
-      }
-    } else if (!cmd) {
-      i++;
-      continue;
-    }
-    const lower = cmd.toLowerCase();
-    const arity = ARITY[lower];
-    const args = tokens.slice(i, i + arity).map(Number);
-    if (args.length < arity || args.some((x) => !Number.isFinite(x))) break;
-    i += arity;
-    const rel = cmd === lower;
-    const X = (x: number) => (rel ? x * sx : x * sx + tx);
-    const Y = (y: number) => (rel ? y * sy : y * sy + ty);
-    let p: number[];
-    if (lower === 'h') p = [X(args[0])];
-    else if (lower === 'v') p = [Y(args[0])];
-    else if (lower === 'a') p = [Math.abs(args[0] * sx), Math.abs(args[1] * sy), args[2], args[3], sx * sy < 0 ? 1 - args[4] : args[4], X(args[5]), Y(args[6])];
-    else p = args.map((v, k) => (k % 2 ? Y(v) : X(v)));
-    out.push(cmd + p.map(n).join(' '));
-    // After a move, further pairs are lines.
-    if (lower === 'm') cmd = rel ? 'l' : 'L';
-  }
-  return out.join(' ');
-}
-
-/** A shape's outline as path data, centred on the origin in a w × h box (mm), as the renderer draws it. */
-export function shapePathData(c: ShapeContent, w: number, h: number): string {
-  const hw = w / 2;
-  const hh = h / 2;
-  switch (c.shape) {
-    case 'rect':
-    case 'line': {
-      const r = Math.min(c.cornerRadiusMm, hw, hh);
-      if (r <= 0) return `M${n(-hw)} ${n(-hh)}H${n(hw)}V${n(hh)}H${n(-hw)}Z`;
-      return `M${n(-hw + r)} ${n(-hh)}H${n(hw - r)}A${n(r)} ${n(r)} 0 0 1 ${n(hw)} ${n(-hh + r)}V${n(hh - r)}A${n(r)} ${n(r)} 0 0 1 ${n(hw - r)} ${n(hh)}H${n(-hw + r)}A${n(r)} ${n(r)} 0 0 1 ${n(-hw)} ${n(hh - r)}V${n(-hh + r)}A${n(r)} ${n(r)} 0 0 1 ${n(-hw + r)} ${n(-hh)}Z`;
-    }
-    case 'ellipse':
-      return `M${n(-hw)} 0A${n(hw)} ${n(hh)} 0 1 0 ${n(hw)} 0A${n(hw)} ${n(hh)} 0 1 0 ${n(-hw)} 0Z`;
-    case 'triangle':
-      return `M0 ${n(-hh)}L${n(hw)} ${n(hh)}L${n(-hw)} ${n(hh)}Z`;
-    case 'star': {
-      const pts = c.points ?? 5;
-      const inner = c.innerRatio ?? 0.45;
-      const p: string[] = [];
-      for (let i = 0; i < pts * 2; i++) {
-        const r = i % 2 ? inner : 1;
-        const a = -Math.PI / 2 + (i * Math.PI) / pts;
-        p.push(`${i ? 'L' : 'M'}${n(Math.cos(a) * r * hw)} ${n(Math.sin(a) * r * hh)}`);
-      }
-      return `${p.join('')}Z`;
-    }
-    case 'polygon': {
-      const pts = c.points ?? 6;
-      const p: string[] = [];
-      for (let i = 0; i < pts; i++) {
-        const a = -Math.PI / 2 + (i * Math.PI * 2) / pts;
-        p.push(`${i ? 'L' : 'M'}${n(Math.cos(a) * hw)} ${n(Math.sin(a) * hh)}`);
-      }
-      return `${p.join('')}Z`;
-    }
-    case 'heart': {
-      const X = (u: number) => n((u - 0.5) * w);
-      const Y = (v: number) => n((v - 0.5) * h);
-      return [
-        `M${X(0.5)} ${Y(0.28)}`,
-        `C${X(0.5)} ${Y(0.2)} ${X(0.42)} ${Y(0)} ${X(0.25)} ${Y(0)}`,
-        `C${X(0.05)} ${Y(0)} ${X(0)} ${Y(0.18)} ${X(0)} ${Y(0.32)}`,
-        `C${X(0)} ${Y(0.55)} ${X(0.22)} ${Y(0.74)} ${X(0.5)} ${Y(1)}`,
-        `C${X(0.78)} ${Y(0.74)} ${X(1)} ${Y(0.55)} ${X(1)} ${Y(0.32)}`,
-        `C${X(1)} ${Y(0.18)} ${X(0.95)} ${Y(0)} ${X(0.75)} ${Y(0)}`,
-        `C${X(0.58)} ${Y(0)} ${X(0.5)} ${Y(0.2)} ${X(0.5)} ${Y(0.28)}Z`,
-      ].join('');
-    }
-    case 'path':
-      // Library graphics are drawn in a 0–100 box.
-      return c.path ? transformPathData(c.path, w / 100, h / 100, -w / 2, -h / 2) : '';
-  }
-  return '';
-}
+// Shapes as path data live with the domain, for the editor too; re-exported for the print files.
+export { shapePathData, transformPathData };
 
 /** Collects gradients and pattern tiles into one <defs>. */
 export class Defs {
@@ -371,25 +276,36 @@ function placement(layer: ArtworkLayer) {
 function silhouetteSvg(layer: ArtworkLayer, ppm: number, defs: Defs): string | null {
   const { widthMm: w, heightMm: h } = layer.transform;
   const c = layer.content;
-  if (isVectorLayer(layer) && c.kind !== 'image') {
+  if (isVectorLayer(layer) && (c.kind === 'text' || c.kind === 'shape')) {
     const white = { ...c, fill: '#ffffff', fillStyle: undefined, letterColors: undefined, strokeColor: c.strokeColor ? '#ffffff' : undefined };
     return white.kind === 'text' ? textSvg(white, w, h, defs) : shapeSvg(white, w, h, defs);
   }
   return rasterSvg(layer, ppm, true);
 }
 
+/** What writing a print file gathers as it goes: shared paints and masks, fonts, the parts placed as pixels, cut lines. */
+interface SvgBuild {
+  ppm: number;
+  defs: Defs;
+  fonts: Set<string>;
+  rasterLayers: string[];
+  vectorEffects: string[];
+  cuts: string[];
+}
+
 /**
- * A zone's or design area's artwork as an SVG print file: `widthMm` × `heightMm` at true size.
- * Images and fonts must be loaded first (prepareDocument). `dpi` sets the resolution of the parts
- * placed as images.
+ * A lockup placement as vector (spec ED2-12): the lockup's own layers in a group scaled from its
+ * board into the `w` × `h` box. `outer` is the transform down to the box, for cut lines.
  */
-export function zoneSvg(zone: LayerStack, widthMm: number, heightMm: number, opts: { dpi: number; title: string }): SvgArtwork {
-  const ppm = opts.dpi / 25.4;
-  const defs = new Defs(ppm);
-  const fonts = new Set<string>();
-  const rasterLayers: string[] = [];
-  const vectorEffects: string[] = [];
-  const cuts: string[] = [];
+function lockupSvg(layer: ArtworkLayer & { content: LockupContent }, w: number, h: number, b: SvgBuild, outer: string): string {
+  const c = layer.content;
+  const inner = `translate(${n(-w / 2)} ${n(-h / 2)}) scale(${n(w / c.widthMm)} ${n(h / c.heightMm)})`;
+  return `<g transform="${inner}">${stackSvg(c, c.widthMm, c.heightMm, b, { cutPrefix: `${outer}${inner} `, idPrefix: `${layer.id}-`, namePrefix: `${c.name}: ` }).join('')}</g>`;
+}
+
+/** The layers of a stack as SVG elements, bottom first, each placed on the stack's board. */
+function stackSvg(zone: LayerStack, widthMm: number, heightMm: number, b: SvgBuild, nest: { cutPrefix: string; idPrefix: string; namePrefix: string } = { cutPrefix: '', idPrefix: '', namePrefix: '' }): string[] {
+  const { ppm, defs, fonts, rasterLayers, vectorEffects, cuts } = b;
   const body: string[] = [];
   const bases = clipBases(zone);
   const masks = new Map<string, string | null>();
@@ -410,15 +326,17 @@ export function zoneSvg(zone: LayerStack, widthMm: number, heightMm: number, opt
     const t = layer.transform;
     const w = t.widthMm;
     const h = t.heightMm;
-    // The layer's own artwork as vector (text and shapes), or as pixels (photos, or `withEffects` raster ones).
+    const label = `${nest.namePrefix}${layer.name}`;
+    // The layer's own artwork as vector (text, shapes and lockups), or as pixels (photos, or `withEffects` raster ones).
     const own = (withEffects: boolean) => {
       if (layer.content.kind === 'text') {
         fonts.add(layer.content.fontFamily);
         return textSvg(layer.content, w, h, defs);
       }
       if (layer.content.kind === 'shape') return shapeSvg(layer.content, w, h, defs);
+      if (layer.content.kind === 'lockup' && !withEffects) return lockupSvg(layer as ArtworkLayer & { content: LockupContent }, w, h, b, `${nest.cutPrefix}${placement(layer)} `);
       const pixels = rasterSvg(layer, ppm, false, !withEffects);
-      if (pixels) rasterLayers.push(layer.name);
+      if (pixels) rasterLayers.push(label);
       return pixels;
     };
     let content: string | null;
@@ -427,19 +345,19 @@ export function zoneSvg(zone: LayerStack, widthMm: number, heightMm: number, opt
       // A sticker outline as a traced path under the artwork (and its cut line for the cut file),
       // and a halftone as one shape a dot in place of the artwork.
       const outline = layer.style.outline ? outlinePath(layer) : null;
-      if (outline) cuts.push(`<path transform="${placement(layer)}" d="${outline}"/>`);
+      if (outline) cuts.push(`<path transform="${nest.cutPrefix}${placement(layer)}" d="${outline}"/>`);
       const art = layer.style.halftone ? halftoneSvg(layer, layer.style.halftone) : own(false);
       content = [outline ? `<path d="${outline}" fill="${esc(layer.style.outline!.color)}" fill-rule="evenodd"/>` : '', art ?? ''].join('') || null;
-      vectorEffects.push(layer.name);
+      vectorEffects.push(label);
     } else {
       content = rasterSvg(layer, ppm);
-      if (content) rasterLayers.push(layer.name);
+      if (content) rasterLayers.push(label);
     }
     if (!content) continue;
     const alpha = layer.style.opacity * (base ? base.style.opacity : 1);
     const opacity = alpha < 1 ? ` opacity="${n(alpha)}"` : '';
     const blend = BLEND[layer.style.blendMode] ? ` style="mix-blend-mode:${BLEND[layer.style.blendMode]}"` : '';
-    const name = `id="${esc(`layer-${layer.id}`)}" data-name="${esc(layer.name)}"`;
+    const name = `id="${esc(`layer-${nest.idPrefix}${layer.id}`)}" data-name="${esc(label)}"`;
     if (base) {
       const mask = maskOf(base);
       // A base with no ink shows nothing of what is clipped to it.
@@ -448,6 +366,19 @@ export function zoneSvg(zone: LayerStack, widthMm: number, heightMm: number, opt
     }
     body.push(`<g ${name} transform="${placement(layer)}"${opacity}${blend}>${content}</g>`);
   }
+  return body;
+}
+
+/**
+ * A zone's or design area's artwork as an SVG print file: `widthMm` × `heightMm` at true size.
+ * Images and fonts must be loaded first (prepareDocument). `dpi` sets the resolution of the parts
+ * placed as images.
+ */
+export function zoneSvg(zone: LayerStack, widthMm: number, heightMm: number, opts: { dpi: number; title: string }): SvgArtwork {
+  const ppm = opts.dpi / 25.4;
+  const build: SvgBuild = { ppm, defs: new Defs(ppm), fonts: new Set<string>(), rasterLayers: [], vectorEffects: [], cuts: [] };
+  const body = stackSvg(zone, widthMm, heightMm, build);
+  const { defs, fonts, rasterLayers, vectorEffects, cuts } = build;
   const desc = [
     `${n(widthMm)} × ${n(heightMm)} mm print area at true size (1 unit = 1 mm).`,
     fonts.size ? `Live text in: ${[...fonts].join(', ')}. Install these fonts or outline the text before printing.` : '',

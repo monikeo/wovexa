@@ -3,12 +3,18 @@
 import { alignUnits, arrangeCopies, distributeUnits, expandToGroups, selectionUnits, type AlignMode, type CopyPlan, type DistributeAxis } from '@/domain/arrange';
 import * as cmd from '@/domain/commands';
 import { contrastInk, createGraphicLayer, createImageLayer, createShapeLayer, createTextLayer, newId } from '@/domain/factory';
-import { artboardOf, artboardSpec, designAreas } from '@/domain/areas';
+import { artboardOf, artboardSpec, designAreas, hasArtboard } from '@/domain/areas';
 import { getGarment, partColor } from '@/domain/garments';
 import { normalizeDeg } from '@/domain/geometry';
 import type { Graphic } from '@/domain/graphics';
-import { isAreaId, type AreaId, type ArtboardId, type ArtworkLayer, type LayerShadow, type LayerStyle, type ShapeContent } from '@/domain/schema';
+import { boardFit, detachedLayers, isPlacement, lockupContent, lockupFromContent, lockupFromLayers, lockupsOf, MAX_LOCKUP_LAYERS, MAX_LOCKUPS, newLockupId, newPlacement, nextLockupName, placementsOf } from '@/domain/lockups';
+import { isAreaId, isLockupId, type AreaId, type ArtboardId, type ArtworkLayer, type LayerShadow, type LayerStyle, type LockupId, type ShapeContent } from '@/domain/schema';
+import { mapSubpaths, parsePath } from '@/domain/path-edit';
+import { penPathData, type PenPoint } from '@/domain/pen';
+import { shapePathData } from '@/domain/shape-path';
 import { AssetError, importImageFile } from '@/lib/assets';
+import type { CombineOp } from '@/lib/combine';
+import { placeOnPath, textPathFrom } from '@/lib/path-text';
 import { textAspect } from '@/lib/render/zone-renderer';
 import { toast } from '@/components/ui/primitives';
 import { useStudio } from '@/stores/studio-store';
@@ -59,16 +65,218 @@ export function addGraphic(graphic: Graphic) {
  * the pen starts once it is there.
  */
 export function startPen() {
+  onArtboard(() => window.dispatchEvent(new CustomEvent('wovexa:pen', { detail: 'on' })));
+}
+
+/** The text layer the line being drawn is for; none for a new text. */
+let pathTarget: string | null = null;
+
+/**
+ * Draw the line a text will run along (spec TYP-02): `layerId`'s text, or a new one when it is
+ * left out.
+ */
+export function startTextOnPath(layerId?: string) {
+  pathTarget = layerId ?? null;
+  onArtboard(() => window.dispatchEvent(new CustomEvent('wovexa:pen', { detail: 'path' })));
+}
+
+/**
+ * Text along a line just drawn with the pen (artboard millimetres): the text the line was started
+ * for, or a new one ready to type into.
+ */
+export function addTextOnPath(points: PenPoint[]) {
+  const c = context();
+  const target = pathTarget;
+  pathTarget = null;
+  if (!c?.s.document || points.length < 2) return;
+  const line = parsePath(penPathData(points, false))[0];
+  if (!line) return;
+  const existing = target ? artboardOf(c.s.document, c.zoneId)?.layers[target] : undefined;
+  if (existing?.content.kind === 'text' && !existing.locked) {
+    if (existing.content.value.includes('\n')) return void toast('Text on a path is one line: join the lines first.');
+    const { onPath, box } = textPathFrom(line);
+    const content = { ...existing.content, onPath, curveDeg: 0, wave: undefined };
+    c.s.dispatch(cmd.updateLayer(c.zoneId, existing.id, { content: { onPath, curveDeg: 0, wave: undefined }, transform: placeOnPath(content, box) }, 'Put text on a path'));
+    c.s.select([existing.id]);
+    return;
+  }
+  const layer = createTextLayer(c.spec, 'Your words along the line');
+  if (layer.content.kind !== 'text') return;
+  layer.content.fill = c.ink;
+  const { onPath, box } = textPathFrom(line);
+  layer.content = { ...layer.content, onPath, curveDeg: 0 };
+  Object.assign(layer.transform, placeOnPath(layer.content, box));
+  layer.name = 'Text on a path';
+  c.s.dispatch(cmd.addLayer(c.zoneId, layer));
+  c.s.select([layer.id]);
+  setTimeout(() => window.dispatchEvent(new CustomEvent('wovexa:edit-layer', { detail: { layerId: layer.id } })), 60);
+}
+
+/**
+ * The selected text run along the selected shape's outline (round a circle badge, along a
+ * banner's edge). The shape stays as it is; the text starts centred at its top.
+ */
+export function putTextOnShape() {
+  const c = context();
+  if (!c?.s.document) return;
+  const zone = artboardOf(c.s.document, c.zoneId);
+  if (!zone) return;
+  const picked = c.s.selectedLayerIds.map((id) => zone.layers[id]).filter(Boolean);
+  const text = picked.find((l) => l.content.kind === 'text');
+  const shape = picked.find((l) => l.content.kind === 'shape');
+  if (!text || !shape || text.content.kind !== 'text' || shape.content.kind !== 'shape') return void toast('Select one text and one shape to put the text on the shape.');
+  if (text.content.value.includes('\n')) return void toast('Text on a path is one line: join the lines first.');
+  const t = shape.transform;
+  const a = (t.rotationDeg * Math.PI) / 180;
+  const outline = parsePath(shapePathData(shape.content, t.widthMm, t.heightMm))[0];
+  if (!outline) return;
+  // The outline on the artboard, turned and mirrored as the shape is.
+  const [drawn] = mapSubpaths([outline], (x, y) => {
+    const lx = t.flipX ? -x : x;
+    const ly = t.flipY ? -y : y;
+    return [t.centerXmm + lx * Math.cos(a) - ly * Math.sin(a), t.centerYmm + lx * Math.sin(a) + ly * Math.cos(a)];
+  });
+  const { onPath, box } = textPathFrom(drawn);
+  const content = { ...text.content, onPath, curveDeg: 0, wave: undefined };
+  c.s.dispatch(cmd.updateLayer(c.zoneId, text.id, { content: { onPath, curveDeg: 0, wave: undefined }, transform: placeOnPath(content, box) }, 'Put text on the outline'));
+  c.s.select([text.id]);
+}
+
+// ---- Reusable lockups (spec ED2-12) ----
+
+/** Where to go back to when a lockup's own board is closed. */
+let lockupReturn: ArtboardId | null = null;
+
+// Leaving a lockup's board any way (Done, another tab, a shortcut) fits the board round its
+// artwork, with every placement's box changed to match so nothing on the garment moves.
+if (typeof window !== 'undefined') {
+  useStudio.subscribe((s, prev) => {
+    if (prev.activeZoneId === s.activeZoneId || !isLockupId(prev.activeZoneId) || s.document !== prev.document) return;
+    const lockup = s.document?.lockups?.items[prev.activeZoneId];
+    if (lockup && boardFit(lockup)) s.dispatch(cmd.fitLockupBoard(prev.activeZoneId));
+  });
+}
+
+/**
+ * Make a lockup of the selected layers (whole groups): they move onto the lockup's own board and
+ * one placement of it takes their place, so nothing on the garment changes.
+ */
+export function makeLockupFromSelection() {
+  const c = context();
+  const doc = c?.s.document;
+  if (!c || !doc) return;
+  if (isLockupId(c.zoneId)) return void toast('A lockup can’t hold another lockup: this is already a lockup’s board.');
+  const zone = artboardOf(doc, c.zoneId);
+  if (!zone) return;
+  const ids = expandToGroups(zone, c.s.selectedLayerIds);
+  const layers = zone.orderedLayerIds.filter((id) => ids.includes(id) && zone.layers[id]).map((id) => zone.layers[id]);
+  if (!layers.length) return;
+  if (layers.some((l) => l.locked)) return void toast('Unlock the layers to make a lockup of them.');
+  if (layers.some((l) => l.content.kind === 'lockup')) return void toast('A lockup can’t hold another lockup: detach that placement first.');
+  if (layers.length > MAX_LOCKUP_LAYERS) return void toast(`A lockup holds up to ${MAX_LOCKUP_LAYERS} layers.`, 'error');
+  if (lockupsOf(doc).length >= MAX_LOCKUPS) return void toast(`A design can hold ${MAX_LOCKUPS} lockups.`, 'error');
+  const name = layers.length === 1 ? layers[0].name.slice(0, 60) : nextLockupName(doc);
+  const made = lockupFromLayers(layers, { id: newLockupId(), name, placementId: newId() });
+  if (!made) return;
+  c.s.dispatch(cmd.makeLockup(c.zoneId, layers.map((l) => l.id), made.lockup, made.placement));
+  c.s.select([made.placement.id]);
+  toast(`${made.lockup.name} is a lockup now. Place it on any zone or area; edit it once and every placement follows.`);
+}
+
+/** Put another placement of a lockup on the active zone or design area: centred, shrunk to fit if it is bigger. */
+export function placeLockup(lockupId: string) {
+  const c = context();
+  const lockup = c?.s.document?.lockups?.items[lockupId as LockupId];
+  if (!c || !lockup) return;
+  if (isLockupId(c.zoneId)) return void toast('A lockup can’t hold another lockup: place it on a zone or design area.');
+  const W = c.spec.printableWidthMm;
+  const H = c.spec.printableHeightMm;
+  const placement = newPlacement(lockup, newId(), { cx: W / 2, cy: H / 2, maxW: W * 0.9, maxH: H * 0.9 });
+  c.s.dispatch(cmd.addLayer(c.zoneId, placement));
+  c.s.select([placement.id]);
+}
+
+/**
+ * Open a lockup's own board, to edit it with every tool while each placement follows. A placement
+ * whose lockup isn't in this design (pasted from another) brings it back from its own copy.
+ */
+export function editLockup(lockupId: string) {
   const s = useStudio.getState();
-  const start = () => window.dispatchEvent(new CustomEvent('wovexa:pen', { detail: 'on' }));
-  if (s.viewMode !== '3d') return start();
+  const doc = s.document;
+  if (!doc) return;
+  const id = lockupId as LockupId;
+  if (!doc.lockups?.items[id]) {
+    const zone = artboardOf(doc, s.activeZoneId);
+    const copy = Object.values(zone?.layers ?? {}).find((l) => l.content.kind === 'lockup' && l.content.lockupId === id);
+    if (copy?.content.kind !== 'lockup') return;
+    s.dispatch(cmd.addLockup(lockupFromContent(copy.content)));
+  }
+  if (!isLockupId(s.activeZoneId)) lockupReturn = s.activeZoneId;
+  onArtboard(() => useStudio.getState().setActiveZone(id));
+}
+
+/** Close a lockup's board: its board fits round its artwork (placements stay where they are), and back to where you were. */
+export function finishLockupEdit() {
+  const s = useStudio.getState();
+  const doc = s.document;
+  const id = s.activeZoneId;
+  if (!doc || !isLockupId(id)) return;
+  const lockup = doc.lockups?.items[id];
+  if (lockup && !lockup.orderedLayerIds.length && placementsOf(doc, id).length) toast(`${lockup.name} is empty, so its placements show nothing.`);
+  const model = getGarment(doc.garment.modelId);
+  const back = lockupReturn && hasArtboard(model, useStudio.getState().document, lockupReturn) ? lockupReturn : model.zoneOrder[0];
+  lockupReturn = null;
+  s.setActiveZone(back);
+}
+
+/** Swap the selected placement for its lockup's layers, as ordinary layers (one group) where it was. */
+export function detachLockup() {
+  const { document, selectedLayerIds, activeZoneId, dispatch, select } = useStudio.getState();
+  const zone = document ? artboardOf(document, activeZoneId) : undefined;
+  const layer = selectedLayerIds.length === 1 ? zone?.layers[selectedLayerIds[0]] : undefined;
+  if (!isPlacement(layer) || layer.locked) return;
+  const layers = detachedLayers(layer, newId, `g-${newId()}`);
+  dispatch(cmd.detachPlacement(activeZoneId, layer.id, layers));
+  select(layers.map((l) => l.id));
+  const s = layer.style;
+  if (s.shadow || s.outline || s.halftone || s.distress || s.finish !== 'flat_ink' || s.blendMode !== 'normal') toast('Detached. Effects on the lockup as a whole stay off its separate layers: add them to the group if you want them.');
+}
+
+export function renameLockupTo(lockupId: string, name: string) {
+  if (name.trim()) useStudio.getState().dispatch(cmd.renameLockup(lockupId as LockupId, name));
+}
+
+/** Delete a lockup that is placed nowhere. */
+export function deleteLockup(lockupId: string) {
+  const s = useStudio.getState();
+  const lockup = s.document?.lockups?.items[lockupId as LockupId];
+  if (!s.document || !lockup) return;
+  const count = placementsOf(s.document, lockupId).length;
+  if (count) return void toast(`${lockup.name} is placed ${count === 1 ? 'once' : `${count} times`}: delete or detach ${count === 1 ? 'that placement' : 'those placements'} first.`);
+  if (s.activeZoneId === lockupId) finishLockupEdit();
+  s.dispatch(cmd.removeLockup(lockup.id as LockupId, lockup.name));
+}
+
+/** Run `fn` with the 2D artboard on screen: at once, or once it is shown when only the 3D view is open. */
+function onArtboard(fn: () => void) {
+  const s = useStudio.getState();
+  if (s.viewMode !== '3d') return fn();
   s.setViewMode('2d');
   let tries = 0;
   const wait = () => {
-    if (document.querySelector('[data-testid="editor-2d"]')) setTimeout(start, 50);
+    if (document.querySelector('[data-testid="editor-2d"]')) setTimeout(fn, 50);
     else if (++tries < 60) setTimeout(wait, 100);
   };
   wait();
+}
+
+/** Edit the selected shape's points on the 2D artboard (spec ED2-09). */
+export function editPoints() {
+  const { document, selectedLayerIds, activeZoneId } = useStudio.getState();
+  const zone = document ? artboardOf(document, activeZoneId) : undefined;
+  const layer = selectedLayerIds.length === 1 ? zone?.layers[selectedLayerIds[0]] : undefined;
+  if (layer?.content.kind !== 'shape' || layer.locked) return;
+  onArtboard(() => window.dispatchEvent(new CustomEvent('wovexa:edit-points', { detail: { layerId: layer.id } })));
 }
 
 /** A shape drawn with the pen (path in a 0–100 box, over `box` in mm) on the active zone or design area. */
@@ -93,7 +301,9 @@ export interface Placement {
   maxH: number;
 }
 
-export function placementsFor(spec: { id: string; part: string; printableWidthMm: number; printableHeightMm: number; topFromHpsMm?: number }): Placement[] {
+export function placementsFor(spec: { id: string; part: string; printableWidthMm: number; printableHeightMm: number; topFromHpsMm?: number; lockupId?: string }): Placement[] {
+  // A lockup's own board is not on the garment: its placements are put in place where they go.
+  if (spec.lockupId) return [];
   const W = spec.printableWidthMm;
   const H = spec.printableHeightMm;
   if (spec.part === 'torso' && spec.id === 'front') {
@@ -256,6 +466,52 @@ export function ungroupSelection() {
   select([...selectedLayerIds]);
 }
 
+export type { CombineOp };
+export const COMBINE_LABELS: Record<CombineOp, string> = { union: 'Unite shapes', subtract: 'Subtract front shapes', intersect: 'Keep the overlap', exclude: 'Exclude the overlap' };
+
+/**
+ * Combine the selected layers into one vector shape (spec ED2-09): unite, subtract (the bottom one
+ * minus everything in front), keep the overlap, or exclude it. Text and images take part by their
+ * own outline. The result has the bottom layer's colour and look, sits where it did, and is one undo step.
+ */
+export async function combineSelection(op: CombineOp) {
+  const c = context();
+  if (!c?.s.document) return;
+  const zone = artboardOf(c.s.document, c.zoneId);
+  if (!zone) return;
+  const ids = zone.orderedLayerIds.filter((id) => c.s.selectedLayerIds.includes(id) && zone.layers[id]?.visible);
+  if (ids.length < 2) return void toast('Select two or more layers to combine them.');
+  const layers = ids.map((id) => zone.layers[id]);
+  if (layers.some((l) => l.locked)) return void toast('Unlock the layers to combine them.');
+  const { combineLayers } = await import('@/lib/combine');
+  let result: Awaited<ReturnType<typeof combineLayers>>;
+  try {
+    result = await combineLayers(op, layers);
+  } catch {
+    return void toast('These layers could not be combined.', 'error');
+  }
+  if (!result) return void toast(op === 'intersect' ? 'These layers don’t overlap, so nothing is left.' : 'Nothing is left once they are combined.');
+  const bottom = layers[0];
+  const b = bottom.content;
+  const stroke = b.kind === 'shape' ? { strokeColor: b.strokeColor, strokeWidthMm: b.strokeWidthMm, hollow: b.hollow } : {};
+  const fillStyle = b.kind === 'shape' || (b.kind === 'text' && !b.letterColors) ? b.fillStyle : undefined;
+  const content: ShapeContent = { kind: 'shape', shape: 'path', fill: b.kind === 'text' || b.kind === 'shape' ? b.fill : c.ink, cornerRadiusMm: 0, path: result.path };
+  for (const [k, v] of Object.entries({ ...stroke, fillStyle })) if (v !== undefined) (content as Record<string, unknown>)[k] = v;
+  const { box } = result;
+  const layer: ArtworkLayer = {
+    id: newId(),
+    name: op === 'subtract' ? `${bottom.name} cut-out` : 'Combined shape',
+    visible: true,
+    locked: false,
+    transform: { centerXmm: box.x + box.w / 2, centerYmm: box.y + box.h / 2, widthMm: box.w, heightMm: box.h, rotationDeg: 0, flipX: false, flipY: false },
+    style: { ...bottom.style },
+    content,
+  };
+  const at = zone.orderedLayerIds.indexOf(ids[0]);
+  c.s.dispatch(cmd.batch(COMBINE_LABELS[op], [cmd.removeLayers(c.zoneId, ids), cmd.addLayer(c.zoneId, layer, at)]));
+  c.s.select([layer.id]);
+}
+
 /** Open the crop, or the photo's frame, for the one selected image (showing the inspector first on small screens). */
 export function openCrop(mode: 'crop' | 'frame') {
   const { document, selectedLayerIds, activeZoneId } = useStudio.getState();
@@ -370,10 +626,16 @@ export function pasteLayers(): boolean {
   const sy = c.spec.printableHeightMm / from.heightMm;
   const fit = same ? 1 : Math.min(1, sx, sy);
   const groups = new Map<string, string>();
-  const layers = clipboard.layers.map((l) => {
+  // A lockup can't hold another lockup: its placements stay out of a lockup's own board.
+  const into = isLockupId(c.zoneId) ? clipboard.layers.filter((l) => l.content.kind !== 'lockup') : clipboard.layers;
+  if (!into.length) return void toast('A lockup can’t hold another lockup: paste it on a zone or design area.'), false;
+  const layers = into.map((l) => {
     const copy = JSON.parse(JSON.stringify(l)) as ArtworkLayer;
     copy.id = newId();
     copy.locked = false;
+    // A placement takes the lockup as it is now in this design (it may have changed since the copy).
+    const lockup = copy.content.kind === 'lockup' ? c.s.document?.lockups?.items[copy.content.lockupId as LockupId] : undefined;
+    if (lockup) copy.content = lockupContent(lockup);
     if (copy.groupId) {
       const g = groups.get(copy.groupId) ?? `g-${newId()}`;
       groups.set(copy.groupId, g);
@@ -512,7 +774,7 @@ export function clearEffects() {
 /** Draw the selected text and shapes as lines only (or filled again). */
 export function outlineOnlySelection(on: boolean) {
   const { layers, zoneId, dispatch } = editableSelection();
-  const lined = layers.filter((l) => l.content.kind !== 'image');
+  const lined = layers.filter((l) => l.content.kind === 'text' || l.content.kind === 'shape');
   const label = on ? 'Outline only' : 'Filled';
   if (lined.length) dispatch(cmd.batch(label, lined.map((l) => cmd.updateLayer(zoneId, l.id, { content: on ? { hollow: true, strokeWidthMm: (l.content as { strokeWidthMm?: number }).strokeWidthMm || 1.5 } : { hollow: undefined } }, label))));
 }

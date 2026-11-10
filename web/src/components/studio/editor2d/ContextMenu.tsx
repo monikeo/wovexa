@@ -8,6 +8,7 @@ import {
   ArrowDownToLine,
   ArrowUpToLine,
   BringToFront,
+  Component,
   Copy,
   CornerLeftDown,
   Crop,
@@ -15,11 +16,13 @@ import {
   Focus,
   Group,
   Image as ImageIcon,
+  Link2Off,
   Lock,
   Maximize,
   MousePointerSquareDashed,
   Pencil,
   SendToBack,
+  Spline,
   Square,
   Trash2,
   Type,
@@ -29,6 +32,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 import * as cmd from '@/domain/commands';
+import { isLockupId, type LockupContent } from '@/domain/schema';
 import { ACCEPTED_TYPES } from '@/lib/assets';
 import { useMenuKeyboard } from '@/components/ui/primitives';
 import { useActiveArtboard, useStudio } from '@/stores/studio-store';
@@ -39,8 +43,12 @@ import {
   alignSelection,
   clipSelection,
   deleteSelection,
+  detachLockup,
   duplicateSelection,
+  editLockup,
+  editPoints,
   groupSelection,
+  makeLockupFromSelection,
   moveSelectionInStack,
   openCrop,
   selectAll,
@@ -99,6 +107,15 @@ export function EditorContextMenu({ x, y, onClose }: { x: number; y: number; onC
             ? [{ label: 'Edit text', icon: <Pencil size={15} />, shortcut: 'Enter', run: () => window.dispatchEvent(new CustomEvent('wovexa:edit-layer', { detail: { layerId: single.id } })) }]
             : []),
           ...(single?.content.kind === 'image' ? [{ label: 'Crop…', icon: <Crop size={15} />, run: () => openCrop('crop') }] : []),
+          ...(single?.content.kind === 'shape' && !single.locked ? [{ label: 'Edit points', icon: <Spline size={15} />, run: editPoints }] : []),
+          ...(single?.content.kind === 'lockup'
+            ? [
+                { label: 'Edit lockup', icon: <Component size={15} />, run: () => editLockup((single.content as LockupContent).lockupId) },
+                ...(!single.locked ? [{ label: 'Detach from lockup', icon: <Link2Off size={15} />, run: detachLockup }] : []),
+              ]
+            : !isLockupId(zoneId) && layers.every((l) => l.content.kind !== 'lockup' && !l.locked)
+              ? [{ label: 'Make a lockup', icon: <Component size={15} />, run: makeLockupFromSelection }]
+              : []),
           { label: 'Duplicate', icon: <Copy size={15} />, shortcut: 'Ctrl+D', run: duplicateSelection },
           { label: 'Delete', icon: <Trash2 size={15} />, shortcut: 'Del', run: deleteSelection },
         ],

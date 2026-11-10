@@ -75,7 +75,9 @@ export function buildTechSheet(input: TechSheetInput): string {
               ? `Text “${esc(c.value)}”, ${esc(c.fontFamily)} ${c.fontWeight}${c.italic ? ' italic' : ''}, ${esc(c.fill)}`
               : c.kind === 'image'
                 ? `Image${c.repeat ? ', repeated' : ''}${c.mask ? `, ${c.mask} mask` : ''}`
-                : `Shape (${esc(c.shape)}), ${esc(c.fill)}`;
+                : c.kind === 'lockup'
+                  ? `Lockup “${esc(c.name)}” (${c.orderedLayerIds.map((id) => c.layers[id]?.name).filter(Boolean).map((name) => esc(name!)).join(', ')})`
+                  : `Shape (${esc(c.shape)}), ${esc(c.fill)}`;
           return `<li>${esc(l.name)}: ${what}, ${Math.round(l.transform.widthMm)} × ${Math.round(l.transform.heightMm)} mm${l.style.finish !== 'flat_ink' ? `, ${esc(l.style.finish.replace('_', ' '))} finish` : ''}</li>`;
         })
         .join('');

@@ -24,6 +24,7 @@
     "lucide-react": "^1.70.0",
     "mediabunny": "1.62.1",
     "next": "16.4.5",
+    "polygon-clipping": "0.15.7",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "three": "^0.187.0",

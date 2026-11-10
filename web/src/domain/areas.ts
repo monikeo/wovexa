@@ -1,14 +1,15 @@
 /**
  * Design areas: print areas the person adds and places anywhere on the 3D garment, next to the
  * style's own zones. A zone and an area are both artboards (layers in stacking order), so the
- * editor, layer commands, checks and exports take either through these helpers.
+ * editor, layer commands, checks and exports take either through these helpers. A lockup's own
+ * board (spec ED2-12) is an artboard too, for editing it with every tool; it never prints itself.
  * Pure, no engine imports.
  */
 import { newId } from './factory';
 import { zoneSpecOrFirst, type GarmentModel, type ZoneSpec } from './garments';
-import { isAreaId, PRINT_METHODS, type AreaId, type ArtboardId, type DesignArea, type DesignDocument, type LayerStack, type PrintMethod, type ProjectorSpec, type ZoneId } from './schema';
+import { isAreaId, isLockupId, PRINT_METHODS, type AreaId, type ArtboardId, type DesignArea, type DesignDocument, type LayerStack, type Lockup, type PrintMethod, type ProjectorSpec, type ZoneId } from './schema';
 
-type WithAreas = Pick<DesignDocument, 'zones' | 'areas'>;
+type WithAreas = Pick<DesignDocument, 'zones' | 'areas'> & Partial<Pick<DesignDocument, 'lockups'>>;
 
 /** At most this many design areas per design: plenty of room, and every one is a print file. */
 export const MAX_AREAS = 24;
@@ -23,8 +24,12 @@ export function designAreas(doc: Pick<DesignDocument, 'areas'>): DesignArea[] {
   return a ? a.orderedIds.map((id) => a.items[id]).filter(Boolean) : [];
 }
 
-/** The layers of a zone or design area (both keep their layers in stacking order with a print method). */
-export function artboardOf(doc: WithAreas, id: ArtboardId): (LayerStack & { printMethod: PrintMethod }) | undefined {
+/**
+ * The layers of a zone, design area or lockup board (all keep their layers in stacking order; a
+ * zone and an area also have a print method, a lockup takes those of the places it is put).
+ */
+export function artboardOf(doc: WithAreas, id: ArtboardId): (LayerStack & { printMethod?: PrintMethod }) | undefined {
+  if (isLockupId(id)) return doc.lockups?.items[id];
   return isAreaId(id) ? doc.areas?.items[id] : doc.zones[id];
 }
 
@@ -43,8 +48,27 @@ export function areaSpec(area: DesignArea): ZoneSpec {
   };
 }
 
-/** The print-zone description of a zone, or of a design area (by its own size and name). */
-export function artboardSpec(model: GarmentModel, doc: Pick<DesignDocument, 'areas'> | null | undefined, id: ArtboardId): ZoneSpec {
+/** A lockup's board as the print-zone description the editor works from. */
+export function lockupSpec(lockup: Lockup): ZoneSpec {
+  return {
+    id: 'front',
+    lockupId: lockup.id,
+    label: lockup.name,
+    shortLabel: lockup.name,
+    part: 'torso',
+    printableWidthMm: lockup.widthMm,
+    printableHeightMm: lockup.heightMm,
+    safeInsetMm: 0,
+    methods: [...PRINT_METHODS],
+  };
+}
+
+/** The print-zone description of a zone, or of a design area or lockup (by its own size and name). */
+export function artboardSpec(model: GarmentModel, doc: Partial<Pick<DesignDocument, 'areas' | 'lockups'>> | null | undefined, id: ArtboardId): ZoneSpec {
+  if (isLockupId(id)) {
+    const lockup = doc?.lockups?.items[id];
+    return lockup ? lockupSpec(lockup) : zoneSpecOrFirst(model, model.zoneOrder[0]);
+  }
   if (isAreaId(id)) {
     const area = doc?.areas?.items[id];
     return area ? areaSpec(area) : zoneSpecOrFirst(model, model.zoneOrder[0]);
@@ -52,8 +76,9 @@ export function artboardSpec(model: GarmentModel, doc: Pick<DesignDocument, 'are
   return zoneSpecOrFirst(model, id);
 }
 
-/** Whether `id` names something to design on: one of the style's zones, or one of this design's areas. */
-export function hasArtboard(model: GarmentModel, doc: Pick<DesignDocument, 'areas'> | null | undefined, id: ArtboardId): boolean {
+/** Whether `id` names something to design on: one of the style's zones, or one of this design's areas or lockups. */
+export function hasArtboard(model: GarmentModel, doc: Partial<Pick<DesignDocument, 'areas' | 'lockups'>> | null | undefined, id: ArtboardId): boolean {
+  if (isLockupId(id)) return !!doc?.lockups?.items[id];
   return isAreaId(id) ? !!doc?.areas?.items[id] : !!model.zones[id as ZoneId];
 }
 
@@ -99,7 +124,10 @@ export function describeAreaPlacement(area: DesignArea): string {
   return `${Math.round(area.widthMm)} × ${Math.round(area.heightMm)} mm ${side}, centre ${Math.round(y)} mm above the hem, ${across}${turn}`;
 }
 
-/** Every zone and area that holds artwork, for code that gathers what a design uses (fonts, images). */
+/**
+ * Every zone, area and lockup board that holds artwork, for code that gathers what a design uses
+ * (fonts, images). Not for printing: lockups print where they are placed.
+ */
 export function allStacks(doc: WithAreas): LayerStack[] {
-  return [...Object.values(doc.zones), ...designAreas(doc)];
+  return [...Object.values(doc.zones), ...designAreas(doc), ...Object.values(doc.lockups?.items ?? {})];
 }

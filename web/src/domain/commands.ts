@@ -4,8 +4,11 @@
  * history panel; the history module turns it into undoable patches.
  * Commands must be deterministic: generate ids before building the command, never inside it.
  */
+import { croppedTransform } from './geometry';
+import { boardFit, placementsOf, type Placement } from './lockups';
 import {
   isAreaId,
+  isLockupId,
   type ArtboardId,
   type ArtworkLayer,
   type BomItem,
@@ -18,6 +21,8 @@ import {
   type LayerStack,
   type LayerStyle,
   type LayerTransform,
+  type Lockup,
+  type LockupId,
   type PrintMethod,
   type ProductionData,
   type ProjectedLayer,
@@ -52,8 +57,9 @@ export function batch(label: string, commands: Command[]): Command {
   };
 }
 
-/** The layers of a print zone or a design area, in the draft being edited. */
-function stackOf(d: DesignDocument, id: ArtboardId): (LayerStack & { printMethod: PrintMethod }) | undefined {
+/** The layers of a print zone, a design area or a lockup's board, in the draft being edited. */
+function stackOf(d: DesignDocument, id: ArtboardId): (LayerStack & { printMethod?: PrintMethod }) | undefined {
+  if (isLockupId(id)) return d.lockups?.items[id];
   return isAreaId(id) ? d.areas?.items[id] : d.zones[id];
 }
 
@@ -298,8 +304,123 @@ export function setPrintMethod(zoneId: ArtboardId, method: PrintMethod): Command
   return {
     label: 'Change print method',
     recipe: (d) => {
+      // A lockup prints by the method of wherever it is placed.
+      if (isLockupId(zoneId)) return;
       const zone = stackOf(d, zoneId);
       if (zone) zone.printMethod = method;
+    },
+  };
+}
+
+// ---- Reusable lockups (spec ED2-12) ----
+
+/**
+ * Make a lockup of layers on an artboard: they move onto the lockup's own board and `placement`
+ * takes their place, at the stack position of the topmost of them. One undo step.
+ */
+export function makeLockup(zoneId: ArtboardId, layerIds: string[], lockup: Lockup, placement: Placement): Command {
+  return {
+    label: `Make lockup ${lockup.name}`,
+    recipe: (d) => {
+      const zone = stackOf(d, zoneId);
+      if (!zone || isLockupId(zoneId)) return;
+      const at = Math.max(...layerIds.map((id) => zone.orderedLayerIds.indexOf(id)));
+      if (at < 0) return;
+      const below = zone.orderedLayerIds.slice(0, at + 1).filter((id) => !layerIds.includes(id)).length;
+      for (const id of layerIds) delete zone.layers[id];
+      zone.orderedLayerIds = zone.orderedLayerIds.filter((id) => !layerIds.includes(id));
+      d.lockups ??= { orderedIds: [], items: {} };
+      d.lockups.items[lockup.id] = structuredClone(lockup);
+      if (!d.lockups.orderedIds.includes(lockup.id)) d.lockups.orderedIds.push(lockup.id);
+      zone.layers[placement.id] = structuredClone(placement);
+      zone.orderedLayerIds.splice(below, 0, placement.id);
+    },
+  };
+}
+
+/** Add a lockup (built by the caller) to the design, unless it is there already. */
+export function addLockup(lockup: Lockup): Command {
+  return {
+    label: `Add lockup ${lockup.name}`,
+    recipe: (d) => {
+      d.lockups ??= { orderedIds: [], items: {} };
+      if (d.lockups.items[lockup.id]) return;
+      d.lockups.items[lockup.id] = structuredClone(lockup);
+      d.lockups.orderedIds.push(lockup.id);
+    },
+  };
+}
+
+export function renameLockup(lockupId: LockupId, name: string): Command {
+  return {
+    label: 'Rename lockup',
+    recipe: (d) => {
+      const lockup = d.lockups?.items[lockupId];
+      if (lockup && name.trim()) lockup.name = name.trim().slice(0, 60);
+    },
+  };
+}
+
+/** Delete a lockup no longer placed anywhere. */
+export function removeLockup(lockupId: LockupId, name = 'lockup'): Command {
+  return {
+    label: `Delete ${name}`,
+    recipe: (d) => {
+      if (!d.lockups?.items[lockupId] || placementsOf(d, lockupId).length) return;
+      delete d.lockups.items[lockupId];
+      d.lockups.orderedIds = d.lockups.orderedIds.filter((id) => id !== lockupId);
+      if (!d.lockups.orderedIds.length) delete d.lockups;
+    },
+  };
+}
+
+/**
+ * Fit a lockup's board round its artwork after editing it, with every placement's box changed to
+ * match so nothing on the garment moves.
+ */
+export function fitLockupBoard(lockupId: LockupId): Command {
+  return {
+    label: 'Fit lockup to its artwork',
+    recipe: (d) => {
+      const lockup = d.lockups?.items[lockupId];
+      if (!lockup) return;
+      const fit = boardFit(lockup);
+      if (!fit) return;
+      for (const layer of Object.values(lockup.layers)) {
+        layer.transform.centerXmm -= fit.x;
+        layer.transform.centerYmm -= fit.y;
+      }
+      if (lockup.guides) lockup.guides = { x: lockup.guides.x.map((x) => x - fit.x), y: lockup.guides.y.map((y) => y - fit.y) };
+      lockup.widthMm = fit.w;
+      lockup.heightMm = fit.h;
+      for (const site of placementsOf(d, lockupId)) {
+        const layer = site.artboard === null ? d.projections.layers[site.layerId] : stackOf(d, site.artboard)?.layers[site.layerId];
+        if (!layer) continue;
+        const next = croppedTransform({ ...layer.transform, centerXmm: 0, centerYmm: 0 } as LayerTransform, 1, 1, fit.crop);
+        // Projected layers have no zone position: only their size changes (their centre stays on the garment point).
+        if ('centerXmm' in layer.transform) {
+          layer.transform.centerXmm += next.centerXmm;
+          layer.transform.centerYmm += next.centerYmm;
+        }
+        layer.transform.widthMm = next.widthMm;
+        layer.transform.heightMm = next.heightMm;
+      }
+    },
+  };
+}
+
+/** Swap a placement for its lockup's layers, as ordinary layers where it was. One undo step. */
+export function detachPlacement(zoneId: ArtboardId, layerId: string, layers: ArtworkLayer[]): Command {
+  return {
+    label: 'Detach from lockup',
+    recipe: (d) => {
+      const zone = stackOf(d, zoneId);
+      if (!zone?.layers[layerId]) return;
+      const at = zone.orderedLayerIds.indexOf(layerId);
+      delete zone.layers[layerId];
+      zone.orderedLayerIds.splice(at, 1);
+      for (const layer of layers) zone.layers[layer.id] = structuredClone(layer);
+      zone.orderedLayerIds.splice(at, 0, ...layers.map((l) => l.id));
     },
   };
 }
@@ -559,6 +680,11 @@ export function restoreSnapshot(snapshot: DesignDocument, label = 'Restore versi
       if (snapshot.scene) d.scene = structuredClone(snapshot.scene);
       else delete d.scene;
       d.projections = structuredClone(snapshot.projections);
+      // Design areas and lockups are part of the artwork too.
+      if (snapshot.areas) d.areas = structuredClone(snapshot.areas);
+      else delete d.areas;
+      if (snapshot.lockups) d.lockups = structuredClone(snapshot.lockups);
+      else delete d.lockups;
     },
   };
 }

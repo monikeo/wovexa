@@ -31,7 +31,8 @@ export function cutContourPaths(outlines: [number, number][][], pageHeightMm: nu
   return `q /CutContour CS 1 SCN 0.5 w 1 j\n${paths}\nQ`;
 }
 
-function pdfText(text: string) {
+/** A PDF text string: plain ASCII as it is, anything else as UTF-16BE. */
+export function pdfText(text: string) {
   if (/^[\x20-\x7e]*$/.test(text)) return `(${text.replace(/[\\()]/g, (c) => `\\${c}`)})`;
   // Anything else as UTF-16BE with a byte-order mark.
   let hex = 'FEFF';

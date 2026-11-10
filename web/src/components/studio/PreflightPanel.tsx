@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import { artboardOf } from '@/domain/areas';
 import { getGarment } from '@/domain/garments';
 import { runPreflight, summarize, type PreflightIssue, type Severity } from '@/domain/preflight';
-import { isAreaId } from '@/domain/schema';
+import { isAreaId, isLockupId } from '@/domain/schema';
 import { useStudio } from '@/stores/studio-store';
 import { selectProjection } from './projection-actions';
 
@@ -28,7 +28,7 @@ export function IssueItem({ issue, onSelect }: { issue: PreflightIssue; onSelect
     ? 'Across seams'
     : area
       ? area.name
-      : ((doc && !isAreaId(issue.zoneId) ? getGarment(doc.garment.modelId).zones[issue.zoneId]?.label : undefined) ?? issue.zoneId.replace('_', ' '));
+      : ((doc && !isAreaId(issue.zoneId) && !isLockupId(issue.zoneId) ? getGarment(doc.garment.modelId).zones[issue.zoneId]?.label : undefined) ?? issue.zoneId.replace('_', ' '));
   const body = (
     <>
       <Icon size={16} className={`mt-0.5 flex-none ${className}`} aria-hidden />

@@ -17,11 +17,13 @@ import {
   Box,
   BringToFront,
   Camera,
+  Check,
   Circle,
   CircleDashed,
   Clapperboard,
   ClipboardPaste,
   Columns2,
+  Component,
   Copy,
   CopyPlus,
   CornerLeftDown,
@@ -49,6 +51,7 @@ import {
   Layers,
   Layers2,
   LayoutTemplate,
+  Link2Off,
   ListChecks,
   Lock,
   LockOpen,
@@ -76,6 +79,10 @@ import {
   Spline,
   Square,
   SquareDashed,
+  SquaresExclude,
+  SquaresIntersect,
+  SquaresSubtract,
+  SquaresUnite,
   Star,
   Sticker,
   Sun,
@@ -98,9 +105,10 @@ import { searchCommands, type Searchable } from '@/domain/command-search';
 import * as cmd from '@/domain/commands';
 import { GARMENT_LIST, getGarment, partColor, sizeLabel } from '@/domain/garments';
 import { GRAPHICS } from '@/domain/graphics';
+import { lockupsOf } from '@/domain/lockups';
 import { DRAPES, drapeOf, MOTIONS, motionOf, SCENE_PRESETS, sceneOf, STAGES, stageOf, toneOf, TONES } from '@/domain/scene';
 import { MAX_SHELL_TRIANGLES, type LibraryModel } from '@/domain/model-library';
-import { isAreaId, type AreaId, type ArtboardId, type DesignDocument, type ShapeContent } from '@/domain/schema';
+import { isAreaId, isLockupId, type AreaId, type ArtboardId, type DesignDocument, type LockupContent, type ShapeContent } from '@/domain/schema';
 import { ACCEPTED_TYPES } from '@/lib/assets';
 import { loadModelLibrary } from '@/lib/model-library';
 import { setPreference, usePreference, type Preferences } from '@/lib/preferences';
@@ -114,24 +122,34 @@ import {
   alignSelection,
   clearEffects,
   clipSelection,
+  combineSelection,
+  COMBINE_LABELS,
   copiedLayerCount,
   copySelection,
   deleteSelection,
+  detachLockup,
   distributeSelection,
   duplicateSelection,
+  editLockup,
+  editPoints,
+  finishLockupEdit,
   flipSelection,
   groupSelection,
+  makeLockupFromSelection,
   moveSelectionInStack,
   openCrop,
   outlineOnlySelection,
   pasteLayers,
+  placeLockup,
   placementsFor,
   placeSelection,
+  putTextOnShape,
   repeatSelection,
   rotateSelection,
   setSelectionFlag,
   shadowSelection,
   startPen,
+  startTextOnPath,
   styleSelection,
   switchArtboard,
   ungroupSelection,
@@ -156,8 +174,8 @@ export function useModKey() {
   );
 }
 
-type Section = 'Selection' | 'Design area' | 'Add' | 'Go to' | 'View' | 'Garment' | 'Export' | 'Project' | 'Pages';
-const SECTION_ORDER: Section[] = ['Selection', 'Design area', 'Add', 'Go to', 'View', 'Garment', 'Export', 'Project', 'Pages'];
+type Section = 'Selection' | 'Lockups' | 'Design area' | 'Add' | 'Go to' | 'View' | 'Garment' | 'Export' | 'Project' | 'Pages';
+const SECTION_ORDER: Section[] = ['Selection', 'Lockups', 'Design area', 'Add', 'Go to', 'View', 'Garment', 'Export', 'Project', 'Pages'];
 
 interface PaletteCommand extends Searchable {
   /** Stable across visits, for the recent list. */
@@ -297,6 +315,32 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
               : { id: 'sel-clip', label: layers.length > 1 ? 'Clip into lowest layer' : 'Clip to layer below', keywords: 'clipping mask inside fill photo in text lettering knockout frame', icon: CornerLeftDown, keys: 'Mod+Alt+G', run: () => clipSelection(true) },
           ]
         : []),
+      ...(layers.length > 1
+        ? ([
+            ['union', SquaresUnite, 'merge join add weld boolean pathfinder'],
+            ['subtract', SquaresSubtract, 'minus cut out knock out punch hole boolean pathfinder'],
+            ['intersect', SquaresIntersect, 'overlap common boolean pathfinder'],
+            ['exclude', SquaresExclude, 'xor difference boolean pathfinder'],
+          ] as const).map(([op, icon, keywords]) => ({ id: `combine-${op}`, label: COMBINE_LABELS[op], keywords: `combine shapes ${keywords}`, icon, run: () => void combineSelection(op) }))
+        : []),
+      ...(layers.length === 1 && layers[0].content.kind === 'shape' && !layers[0].locked
+        ? [{ id: 'shape-points', label: 'Edit points', keywords: 'nodes anchors handles path bezier curve reshape vector pen', icon: Spline, run: editPoints }]
+        : []),
+      ...(layers.length === 1 && layers[0].content.kind === 'text' && !layers[0].locked && !layers[0].content.value.includes('\n')
+        ? [{ id: 'text-path', label: 'Put text along a line you draw', keywords: 'text on a path curve arc follow line pen type along', icon: Spline, run: () => startTextOnPath(layers[0].id) }]
+        : []),
+      ...(!isLockupId(activeZoneId) && layers.every((l) => l.content.kind !== 'lockup' && !l.locked)
+        ? [{ id: 'sel-lockup', label: 'Make a lockup', keywords: 'component symbol reuse reusable logo crest master instance linked edit once everywhere', icon: Component, run: makeLockupFromSelection }]
+        : []),
+      ...(layers.length === 1 && layers[0].content.kind === 'lockup'
+        ? [
+            { id: 'lockup-edit', label: `Edit lockup ${layers[0].content.name}`, keywords: 'component symbol master open board change everywhere', icon: Component, run: () => editLockup((layers[0].content as LockupContent).lockupId) },
+            ...(!layers[0].locked ? [{ id: 'lockup-detach', label: 'Detach from lockup', keywords: 'component symbol unlink break apart separate layers', icon: Link2Off, run: detachLockup }] : []),
+          ]
+        : []),
+      ...(layers.length === 2 && layers.some((l) => l.content.kind === 'shape') && layers.some((l) => l.content.kind === 'text' && !l.locked && !l.content.value.includes('\n'))
+        ? [{ id: 'text-on-shape', label: 'Put the text on the shape’s outline', keywords: 'text on a path circle badge round around outline curve arc follow', icon: Spline, run: putTextOnShape }]
+        : []),
       ...(layers.length === 1 && layers[0].content.kind === 'image'
         ? [
             { id: 'img-crop', label: 'Crop image', keywords: 'trim cut photo picture aspect square portrait', icon: Crop, run: () => openCrop('crop') },
@@ -322,7 +366,10 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
         keywords: 'effect neon light halo shadow',
         icon: SunDim,
         searchOnly: true,
-        run: () => shadowSelection({ color: layers[0].content.kind === 'image' ? '#FFFFFF' : layers[0].content.fill, offsetXmm: 0, offsetYmm: 0, blurMm: 4 }, 'Glow'),
+        run: () => {
+          const c = layers[0].content;
+          shadowSelection({ color: c.kind === 'text' || c.kind === 'shape' ? c.fill : '#FFFFFF', offsetXmm: 0, offsetYmm: 0, blurMm: 4 }, 'Glow');
+        },
       },
       { id: 'fx-sticker', label: 'Sticker outline', keywords: 'effect border die cut contour double outline badge patch', icon: Sticker, searchOnly: true, run: () => styleSelection({ outline: { color: '#FFFFFF', widthMm: 3 } }, 'Sticker outline') },
       {
@@ -333,9 +380,9 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
         searchOnly: true,
         run: () => styleSelection({ halftone: { cellMm: 1.5, angleDeg: 45, shape: 'dot', by: layers[0].content.kind === 'image' ? 'tone' : 'fade' } }, 'Halftone'),
       },
-      ...(layers.some((l) => l.content.kind !== 'image')
+      ...(layers.some((l) => l.content.kind === 'text' || l.content.kind === 'shape')
         ? [
-            layers.every((l) => l.content.kind === 'image' || l.content.hollow)
+            layers.every((l) => (l.content.kind !== 'text' && l.content.kind !== 'shape') || l.content.hollow)
               ? { id: 'fx-filled', label: 'Filled', keywords: 'fill solid', icon: PaintBucket, searchOnly: true, run: () => outlineOnlySelection(false) }
               : { id: 'fx-hollow', label: 'Outline only', keywords: 'hollow lines stroke no fill', icon: CircleDashed, searchOnly: true, run: () => outlineOnlySelection(true) },
           ]
@@ -386,6 +433,16 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
     ]);
   }
 
+  // ---- Lockups: place one, open one, or finish editing ----
+  const lockups = lockupsOf(doc);
+  if (lockups.length) {
+    add('Lockups', [
+      ...(isLockupId(activeZoneId) ? [{ id: 'lockup-done', label: 'Done editing the lockup', keywords: 'finish close back component symbol', icon: Check, run: finishLockupEdit }] : []),
+      ...(!isLockupId(activeZoneId) ? lockups.map((l) => ({ id: `lockup-place:${l.id}`, label: `Place lockup ${l.name}`, keywords: 'component symbol add reuse logo crest instance', icon: Component, run: () => placeLockup(l.id) })) : []),
+      ...lockups.filter((l) => l.id !== activeZoneId).map((l) => ({ id: `lockup-open:${l.id}`, label: `Edit lockup ${l.name}`, keywords: 'component symbol master open board change everywhere', icon: Component, searchOnly: true, run: () => editLockup(l.id) })),
+    ]);
+  }
+
   // ---- The design area being designed on ----
   if (area) {
     titles['Design area'] = area.name;
@@ -402,6 +459,7 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
     { id: 'add-image', label: 'Add an image', keywords: 'photo picture upload logo file png jpg svg webp', icon: ImageIcon, run: c.pickImage },
     ...SHAPES.map((x) => ({ id: `shape:${x.shape}`, label: `Add ${x.label.toLowerCase()}`, keywords: `shape ${x.keywords}`, icon: x.icon, run: () => addShape(x.shape) })),
     { id: 'add-pen', label: 'Draw your own shape', keywords: 'pen path vector bezier custom freeform outline', icon: PenTool, keys: 'P', run: startPen },
+    { id: 'add-text-path', label: 'Add text on a path', keywords: 'type along line curve arc follow drawn path pen words', icon: Spline, run: () => startTextOnPath() },
     { id: 'add-area', label: 'Add a design area', keywords: 'new zone box anywhere hood panel seam artboard print area', icon: SquareDashed, run: addDesignArea },
     ...(c.copied ? [{ id: 'paste', label: `Paste ${plural(c.copied, 'layer')}`, keywords: 'clipboard', icon: ClipboardPaste, keys: 'Mod+V', run: () => void pasteLayers() }] : []),
     ...GRAPHICS.map((g) => ({

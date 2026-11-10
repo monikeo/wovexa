@@ -14,7 +14,12 @@ const CLOSE_PX = 10;
 /** A press that moves less than this many pixels is a corner, not a curve. */
 const DRAG_PX = 3;
 
-export function PenOverlay({ fabric, onFinish, onCancel }: { fabric: () => FabricCanvas | null; onFinish: (points: PenPoint[]) => void; onCancel: () => void }) {
+/**
+ * `open`: an open line rather than a closed shape (the path for text on a path), finished with
+ * Enter or Finish after two points or more.
+ */
+export function PenOverlay({ fabric, onFinish, onCancel, open = false }: { fabric: () => FabricCanvas | null; onFinish: (points: PenPoint[]) => void; onCancel: () => void; open?: boolean }) {
+  const enough = open ? 2 : 3;
   const ref = useRef<SVGSVGElement>(null);
   const [points, setPoints] = useState<PenPoint[]>([]);
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
@@ -47,7 +52,7 @@ export function PenOverlay({ fabric, onFinish, onCancel }: { fabric: () => Fabri
   };
 
   const finish = (pts: PenPoint[]) => {
-    if (pts.length >= 3) onFinish(pts);
+    if (pts.length >= enough) onFinish(pts);
     else onCancel();
   };
 
@@ -61,20 +66,20 @@ export function PenOverlay({ fabric, onFinish, onCancel }: { fabric: () => Fabri
       e.stopPropagation();
       if (e.key === 'Escape') onCancel();
       else if (e.key === 'Enter') {
-        if (points.length >= 3) onFinish(points);
+        if (points.length >= enough) onFinish(points);
         else onCancel();
       } else setPoints((p) => p.slice(0, -1));
     };
     window.addEventListener('keydown', key, true);
     return () => window.removeEventListener('keydown', key, true);
-  }, [points, onFinish, onCancel]);
+  }, [points, onFinish, onCancel, enough]);
 
   const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     const { px, py } = local(e);
-    if (points.length >= 3) {
+    if (!open && points.length >= 3) {
       const [fx, fy] = toPx(points[0].x, points[0].y);
       if (Math.hypot(px - fx, py - fy) <= CLOSE_PX) return finish(points);
     }
@@ -103,7 +108,7 @@ export function PenOverlay({ fabric, onFinish, onCancel }: { fabric: () => Fabri
 
   const last = points[points.length - 1];
   const path = penPathData(points, false, toPx);
-  const preview = points.length > 2 ? penPathData(points, true, toPx) : '';
+  const preview = !open && points.length > 2 ? penPathData(points, true, toPx) : '';
   const handle = last && (last.hx || last.hy) ? { a: toPx(last.x - (last.hx ?? 0), last.y - (last.hy ?? 0)), b: toPx(last.x + (last.hx ?? 0), last.y + (last.hy ?? 0)), p: toPx(last.x, last.y) } : null;
   const band = last && hover && !dragging ? { a: toPx(last.x, last.y), b: toPx(hover.x, hover.y) } : null;
 
@@ -119,7 +124,11 @@ export function PenOverlay({ fabric, onFinish, onCancel }: { fabric: () => Fabri
         onPointerCancel={onPointerUp}
         onPointerLeave={() => setHover(null)}
         role="application"
-        aria-label="Pen: click for corners, drag for curves; click the first point or press Enter to finish, Backspace removes a point, Escape cancels"
+        aria-label={
+          open
+            ? 'Draw the line for your text: click for corners, drag for curves; press Enter to finish, Backspace removes a point, Escape cancels'
+            : 'Pen: click for corners, drag for curves; click the first point or press Enter to finish, Backspace removes a point, Escape cancels'
+        }
       >
         {preview ? <path d={preview} fill="var(--accent)" fillOpacity={0.12} stroke="none" /> : null}
         <path d={path} fill="none" stroke="var(--accent)" strokeWidth={1.5} />
@@ -134,17 +143,19 @@ export function PenOverlay({ fabric, onFinish, onCancel }: { fabric: () => Fabri
         {points.map((p, i) => {
           const [x, y] = toPx(p.x, p.y);
           // The first point grows once the shape can close on it.
-          const r = i === 0 && points.length >= 3 ? 5.5 : 3.5;
+          const r = i === 0 && !open && points.length >= 3 ? 5.5 : 3.5;
           return <rect key={i} x={x - r} y={y - r} width={r * 2} height={r * 2} fill={i === 0 ? 'var(--accent)' : 'white'} stroke="var(--accent)" strokeWidth={1.25} />;
         })}
       </svg>
-      <div className="absolute left-1/2 top-7 z-20 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-line bg-floating/95 p-1 pl-2.5 text-xs shadow-sm backdrop-blur">
+      <div className="absolute left-1/2 top-7 z-20 flex w-max max-w-[calc(100%-1rem)] -translate-x-1/2 items-center gap-1 rounded-xl border border-line bg-floating/95 p-1 pl-2.5 text-xs shadow-sm backdrop-blur [&>button]:flex-none">
         <PenTool size={14} className="flex-none text-[var(--accent)]" aria-hidden />
-        <span className="mr-1 hidden text-fg-2 sm:inline">{points.length < 3 ? 'Click for corners, drag for curves' : 'Click the first point or Finish to close'}</span>
+        <span className="mr-1 hidden min-w-0 truncate text-fg-2 sm:block">
+          {open ? (points.length < 2 ? 'Draw the line for your text: click, or drag for curves' : 'Finish when the line is done') : points.length < 3 ? 'Click for corners, drag for curves' : 'Click the first point or Finish to close'}
+        </span>
         <button className="icon-btn h-8 w-8" onClick={() => setPoints((p) => p.slice(0, -1))} disabled={!points.length} aria-label="Remove the last point" title="Remove the last point (Backspace)">
           <Undo2 size={15} />
         </button>
-        <button className="btn btn-primary min-h-8 px-2.5 text-xs" onClick={() => finish(points)} disabled={points.length < 3} title="Close the shape (Enter)">
+        <button className="btn btn-primary min-h-8 px-2.5 text-xs" onClick={() => finish(points)} disabled={points.length < enough} title={open ? 'Put text along the line (Enter)' : 'Close the shape (Enter)'}>
           <Check size={14} /> Finish
         </button>
         <button className="icon-btn h-8 w-8" onClick={onCancel} aria-label="Cancel the pen" title="Cancel (Esc)">

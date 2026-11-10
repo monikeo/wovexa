@@ -9,7 +9,7 @@ import { newId } from '@/domain/factory';
 import { getGarment, getSize, hasZone, zoneSpecOrFirst } from '@/domain/garments';
 import { clamp, normalizeDeg } from '@/domain/geometry';
 import { artworkAsProjected, projectedAsArtwork } from '@/domain/projected';
-import { isAreaId, type DesignDocument, type ProjectedLayer, type ProjectorSpec, type ZoneId } from '@/domain/schema';
+import { isAreaId, isLockupId, type DesignDocument, type ProjectedLayer, type ProjectorSpec, type ZoneId } from '@/domain/schema';
 import { toast } from '@/components/ui/primitives';
 import { useStudio } from '@/stores/studio-store';
 import { angleAbout, slideProjector, surfaceAlong, surfaceAtUv, textureAxes } from './viewer3d/projection';
@@ -49,6 +49,10 @@ export function wrapSelectionAcrossSeams() {
     toast('Artwork in a design area already sits on the garment: move the whole area anywhere in Place mode.');
     return;
   }
+  if (isLockupId(zoneId)) {
+    toast('A lockup’s own board isn’t on the garment: wrap one of its placements instead.');
+    return;
+  }
   const zone = doc.zones[zoneId];
   const layers = s.selectedLayerIds.map((id) => zone.layers[id]).filter(Boolean);
   if (!layers.length) return;
@@ -82,7 +86,7 @@ export function returnProjectionToZone(layerId: string) {
   const layer = doc?.projections.layers[layerId];
   if (!doc || !layer) return;
   const { model, rest } = garmentAtRest(doc);
-  let zoneId: ZoneId = !isAreaId(s.activeZoneId) && hasZone(model, s.activeZoneId) ? s.activeZoneId : model.zoneOrder[0];
+  let zoneId: ZoneId = !isAreaId(s.activeZoneId) && !isLockupId(s.activeZoneId) && hasZone(model, s.activeZoneId) ? s.activeZoneId : model.zoneOrder[0];
   let at: { xMm: number; yMm: number } | null = null;
   let turn = 0;
   const hit = surfaceAlong(

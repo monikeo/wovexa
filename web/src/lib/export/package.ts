@@ -18,13 +18,16 @@ import { getGarment, getSize, partColor, PRINT_METHOD_LABELS, zoneSpecOrFirst, t
 import { documentHash } from '@/domain/hash';
 import { runPreflight } from '@/domain/preflight';
 import { describeAreaPlacement, designAreas } from '@/domain/areas';
+import { layerAssetIds } from '@/domain/lockups';
 import { projectionsAsZone } from '@/domain/projected';
-import type { Colorway, DesignArea, DesignDocument, ZoneId } from '@/domain/schema';
+import type { Colorway, DesignArea, DesignDocument, LayerStack, ZoneId } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
 import { canvasToBlob, sha256Hex } from '@/lib/download';
 import { findFont } from '@/lib/fonts';
 import { getFont } from '@/lib/local-db';
-import { ensureFonts, layoutText, renderZoneArtwork } from '@/lib/render/zone-renderer';
+import { keepLetterSize, keepPathInPlace } from '@/lib/path-text';
+import { renderPrintPng } from '@/lib/render/print-render';
+import { ensureFonts, isOnPath, layoutText, MAX_EXPORT_SIDE, renderZoneArtwork } from '@/lib/render/zone-renderer';
 import { renderZoneSketch } from '@/lib/thumbnail';
 import { fileSafe, formatName, isoDate, revisionLabel } from './naming';
 import { pngBlobWithDpi } from './png-dpi';
@@ -138,7 +141,7 @@ export async function prepareDocument(doc: DesignDocument, zones: ZoneId[]) {
   const ids = new Set<string>();
   const projected = projectionsAsZone(doc);
   const stacks = [...zones.map((z) => doc.zones[z]), projected, ...designAreas(doc)];
-  for (const zone of stacks) for (const l of Object.values(zone.layers)) if (l.content.kind === 'image') ids.add(l.content.assetId);
+  for (const zone of stacks) for (const l of Object.values(zone.layers)) for (const id of layerAssetIds(l)) ids.add(id);
   for (const c of doc.colorways) for (const s of Object.values(c.surfaces ?? {})) if (s?.kind === 'image') ids.add(s.assetId);
   await Promise.all([...ids].filter((id) => !getLoadedImage(id)).map((id) => loadAssetImage(id).catch(() => null)));
   await ensureFonts(stacks);
@@ -165,14 +168,27 @@ const release = (c: HTMLCanvasElement) => {
  * width. The text stays anchored by its alignment, along the layer's rotation.
  */
 export function fitPersonalisedText(person: DesignDocument, original: DesignDocument) {
-  const stacks = [
+  const stacks: (readonly [Pick<LayerStack, 'layers'>, Pick<LayerStack, 'layers'> | undefined])[] = [
     ...(Object.keys(person.zones) as ZoneId[]).map((z) => [person.zones[z], original.zones[z]] as const),
     ...designAreas(person).map((a) => [a, original.areas?.items[a.id]] as const),
   ];
+  // Names inside a lockup placement fit inside the lockup's board the same way.
+  for (const [zone, originalStack] of [...stacks]) {
+    for (const [id, layer] of Object.entries(zone.layers)) {
+      const before = originalStack?.layers[id];
+      if (layer.content.kind === 'lockup' && before?.content.kind === 'lockup') stacks.push([layer.content, before.content]);
+    }
+  }
   for (const [zone, originalStack] of stacks) {
     for (const [id, layer] of Object.entries(zone.layers)) {
       const before = originalStack?.layers[id];
       if (layer.content.kind !== 'text' || before?.content.kind !== 'text' || before.content.value === layer.content.value) continue;
+      // A name on a path keeps the letter size and stays centred where the placeholder was.
+      if (isOnPath(before.content) && isOnPath(layer.content)) {
+        layer.content.onPath = keepLetterSize(before.content, layer.content);
+        Object.assign(layer.transform, keepPathInPlace(layer.transform, before.content, layer.content));
+        continue;
+      }
       const m = layoutText(layer.content);
       if (!m.width || !m.height) continue;
       const aspect = m.width / m.height;
@@ -384,12 +400,19 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
   for (const zoneId of zones) {
     const spec = zoneSpecOrFirst(model, zoneId);
     step(`Print file, ${spec.label}`);
-    const { canvas, dpi } = renderZoneArtwork(doc.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, opts.dpi);
+    // Screen films are made from the print's pixels on the page; every other print file renders in the background.
+    const films = screenZones.includes(zoneId);
+    const art = films ? renderZoneArtwork(doc.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, opts.dpi) : null;
+    const png = !art && opts.include.print ? await renderPrintPng(doc.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, opts.dpi) : null;
+    const canvas = art?.canvas;
+    const dpi = art?.dpi ?? png?.dpi ?? Math.min(opts.dpi, Math.floor((MAX_EXPORT_SIDE / Math.max(spec.printableWidthMm, spec.printableHeightMm)) * 25.4));
+    const widthPx = canvas?.width ?? png?.width ?? Math.round((spec.printableWidthMm * dpi) / 25.4);
+    const heightPx = canvas?.height ?? png?.height ?? Math.round((spec.printableHeightMm * dpi) / 25.4);
     if (dpi < opts.dpi) warnings.push(`${spec.label} was exported at ${dpi} dpi to stay within the browser's image size limit.`);
     const name = nameFor(zoneId, spec, dpi);
-    const record: TechSheetInput['zones'][number] = { zoneId, file: '', widthPx: canvas.width, heightPx: canvas.height, dpi };
+    const record: TechSheetInput['zones'][number] = { zoneId, file: '', widthPx, heightPx, dpi };
     if (opts.include.print) {
-      const blob = await pngBlobWithDpi(await canvasToBlob(canvas), dpi);
+      const blob = png?.blob ?? (await pngBlobWithDpi(await canvasToBlob(canvas!), dpi));
       record.file = await add(`print/${name}.png`, blob);
       outputs.push({
         zone: zoneId,
@@ -398,8 +421,8 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
         colorSpace: 'sRGB',
         physicalWidthMm: spec.printableWidthMm,
         physicalHeightMm: spec.printableHeightMm,
-        pixelWidth: canvas.width,
-        pixelHeight: canvas.height,
+        pixelWidth: widthPx,
+        pixelHeight: heightPx,
         dpi,
         printMethod: doc.zones[zoneId].printMethod,
         placement: placementText(spec),
@@ -407,7 +430,7 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
         sha256: files[files.length - 1].sha256,
       });
     }
-    if (screenZones.includes(zoneId)) {
+    if (films && canvas) {
       step(`Screen films, ${spec.label}`);
       const set = buildSeparations(canvas, dpi, { label: `${doc.title} · ${spec.label} · ${rev}`, underbase: darkGarment });
       inksByZone[zoneId] = set.inks;
@@ -421,7 +444,7 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
       if (set.tonal) warnings.push(`${spec.label} has gradients or photo tones. The films print them as flat ink; ask your printer for halftone separations.`);
       if (set.inks.length > 6) warnings.push(`${spec.label} needs ${set.inks.length} screens. Most presses take 6 to 8; fewer colours cost less.`);
     }
-    release(canvas);
+    if (canvas) release(canvas);
     zoneRecords.push(record);
     if (opts.include.vector) await addVector(doc.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, spec.label, nameFor(zoneId, spec, opts.dpi));
   }
@@ -429,9 +452,9 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
   // ---- Design areas: a print file each, at its own size, with where it goes in words ----
   for (const area of printedAreas) {
     step(`Print file, ${area.name}`);
-    const { canvas, dpi } = renderZoneArtwork(area, area.widthMm, area.heightMm, opts.dpi);
-    if (dpi < opts.dpi) warnings.push(`${area.name} was exported at ${dpi} dpi to stay within the browser's image size limit.`);
     if (opts.include.print) {
+      const { blob, dpi, width, height } = await renderPrintPng(area, area.widthMm, area.heightMm, opts.dpi);
+      if (dpi < opts.dpi) warnings.push(`${area.name} was exported at ${dpi} dpi to stay within the browser's image size limit.`);
       const name = formatName(opts.naming, {
         project: doc.title,
         zone: fileSafe(area.name.toLowerCase()),
@@ -444,7 +467,6 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
         rev,
         date,
       });
-      const blob = await pngBlobWithDpi(await canvasToBlob(canvas), dpi);
       const file = await add(`print/areas/${name}.png`, blob);
       outputs.push({
         zone: area.name,
@@ -454,8 +476,8 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
         colorSpace: 'sRGB',
         physicalWidthMm: area.widthMm,
         physicalHeightMm: area.heightMm,
-        pixelWidth: canvas.width,
-        pixelHeight: canvas.height,
+        pixelWidth: width,
+        pixelHeight: height,
         dpi,
         printMethod: area.printMethod,
         placement: describeAreaPlacement(area),
@@ -463,7 +485,6 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
         sha256: files[files.length - 1].sha256,
       });
     }
-    release(canvas);
     if (opts.include.vector) {
       const name = formatName(opts.naming, { project: doc.title, zone: fileSafe(area.name.toLowerCase()), colorway: active.name, size: doc.garment.sizeCode, method: PRINT_METHOD_LABELS[area.printMethod], w: Math.round(area.widthMm), h: Math.round(area.heightMm), dpi: opts.dpi, rev, date });
       await addVector(area, area.widthMm, area.heightMm, area.name, `areas/${name}`);
@@ -489,20 +510,16 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
         const made: string[] = [];
         for (const zoneId of teamZones) {
           const spec = zoneSpecOrFirst(model, zoneId);
-          const { canvas, dpi } = renderZoneArtwork(person.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, opts.dpi);
-          const blob = await pngBlobWithDpi(await canvasToBlob(canvas), dpi);
+          const { blob, dpi } = await renderPrintPng(person.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, opts.dpi);
           made.push(await add(`${folder}/${nameFor(zoneId, spec, dpi, { name: row.name ?? '', number: row.number ?? '' })}.png`, blob));
-          release(canvas);
         }
         // A name or number in a design area (on the hood, down a sleeve): its own file per person.
         for (const area of teamAreas) {
           const own = person.areas?.items[area.id];
           if (!own) continue;
-          const { canvas, dpi } = renderZoneArtwork(own, own.widthMm, own.heightMm, opts.dpi);
-          const blob = await pngBlobWithDpi(await canvasToBlob(canvas), dpi);
+          const { blob, dpi } = await renderPrintPng(own, own.widthMm, own.heightMm, opts.dpi);
           const name = formatName(opts.naming, { project: doc.title, zone: fileSafe(own.name.toLowerCase()), colorway: active.name, size: doc.garment.sizeCode, method: PRINT_METHOD_LABELS[own.printMethod], w: Math.round(own.widthMm), h: Math.round(own.heightMm), dpi, rev, date, name: row.name ?? '', number: row.number ?? '' });
           made.push(await add(`${folder}/${name}.png`, blob));
-          release(canvas);
         }
         listing.push([i + 1, ...roster.fields.map((f) => row[f] ?? ''), made.join(' ')]);
       }

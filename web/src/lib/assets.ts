@@ -150,6 +150,14 @@ export function getLoadedImage(assetId: string): HTMLImageElement | undefined {
   return loaded.get(assetId);
 }
 
+/**
+ * Decoded pixels for an asset, put straight in the cache: how a print worker, which can't decode
+ * SVG or reach the page's images, gets them. The renderer reads them like any loaded image.
+ */
+export function registerImage(assetId: string, image: ImageBitmap) {
+  loaded.set(assetId, image as unknown as HTMLImageElement);
+}
+
 export function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(0)} KB`;

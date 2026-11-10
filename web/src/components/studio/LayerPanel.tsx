@@ -1,5 +1,5 @@
 'use client';
-import { ArrowDown, ArrowUp, CornerLeftDown, Eye, EyeOff, Image as ImageIcon, Lock, Shapes, Type, Unlock } from 'lucide-react';
+import { ArrowDown, ArrowUp, Component, CornerLeftDown, Eye, EyeOff, Image as ImageIcon, Lock, Shapes, Type, Unlock } from 'lucide-react';
 import { useState } from 'react';
 import { clipBases } from '@/domain/clipping';
 import * as cmd from '@/domain/commands';
@@ -9,7 +9,7 @@ import { useActiveArtboard, useActiveZoneSpec, useStudio } from '@/stores/studio
 import { addImages, addText, selectLayers } from './actions';
 import { moveProjectionBy, selectProjection } from './projection-actions';
 
-const ICON = { image: ImageIcon, text: Type, shape: Shapes } as const;
+const ICON = { image: ImageIcon, text: Type, shape: Shapes, lockup: Component } as const;
 
 /** A projected (cross-seam) layer: select, rename, restack, lock and hide, like a zone layer. */
 function ProjectedRow({ layer, index, count }: { layer: ProjectedLayer; index: number; count: number }) {

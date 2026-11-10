@@ -31,6 +31,8 @@ export interface ZoneSpec {
   methods: PrintMethod[];
   /** Set when this describes a design area the person placed, not one of the style's zones (`id` is then a stand-in). */
   areaId?: string;
+  /** Set when this describes a lockup's own board (spec ED2-12): not printed itself, placed on zones and areas. */
+  lockupId?: string;
 }
 
 export interface GarmentSize {
