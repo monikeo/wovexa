@@ -21,7 +21,9 @@ export async function requireUser() {
 /** Reject cross-site state-changing requests (spec SEC-09, CSRF mitigation alongside SameSite cookies). */
 export function sameOrigin(request: Request) {
   const origin = request.headers.get('origin');
-  if (!origin) return true;
+  // No Origin: a non-browser client (it still needs the session), unless the browser says the
+  // request came from another site.
+  if (!origin) return request.headers.get('sec-fetch-site') !== 'cross-site';
   try {
     return new URL(origin).host === new URL(request.url).host;
   } catch {

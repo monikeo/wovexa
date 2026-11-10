@@ -38,10 +38,12 @@ function LockupBar({ doc, lockupId }: { doc: DesignDocument; lockupId: string })
   if (!lockup) return null;
   const count = placementsOf(doc, lockupId).length;
   return (
-    <div className="absolute bottom-3 left-8 z-20 flex max-w-[calc(100%-15rem)] items-center gap-2 rounded-xl border border-line bg-floating/95 p-1 pl-2.5 text-xs shadow-sm backdrop-blur">
+    // Centred above the zoom controls, so the two never overlap however narrow the artboard is.
+    <div className="absolute bottom-[4.5rem] left-1/2 z-20 flex w-max max-w-[calc(100%-1rem)] -translate-x-1/2 items-center gap-2 rounded-xl border border-line bg-floating/95 p-1 pl-2.5 text-xs shadow-sm backdrop-blur">
       <Component size={14} className="flex-none text-[var(--accent)]" aria-hidden />
       <span className="min-w-0 truncate text-fg-2" title={`Editing the lockup ${lockup.name}. Changes show on every placement as you make them.`}>
-        <span className="font-semibold text-fg">{lockup.name}</span> {count ? `updates ${count === 1 ? 'its placement' : `all ${count} placements`}` : 'is not placed yet'}
+        {count ? 'Changes to ' : null}
+        <span className="font-semibold text-fg">{lockup.name}</span> {count ? `show on ${count === 1 ? 'its placement' : `all ${count} placements`}` : 'isn’t placed anywhere yet'}
       </span>
       <button className="btn btn-primary min-h-8 flex-none px-2.5 text-xs" onClick={finishLockupEdit} title="Back to where you were">
         <Check size={14} /> Done

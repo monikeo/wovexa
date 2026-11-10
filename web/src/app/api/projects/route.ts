@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createDocument } from '@/domain/factory';
 import { apiError, requireUser, sameOrigin } from '@/lib/api';
+import { readJsonBody } from '@/lib/request-body';
 
 /** GET: the signed-in user's projects (RLS limits rows to their organizations). */
 export async function GET(request: Request) {
@@ -29,7 +30,10 @@ export async function POST(request: Request) {
   if (!sameOrigin(request)) return apiError(403, 'cross_origin', 'Cross-site requests are not allowed.');
   const auth = await requireUser();
   if ('error' in auth) return auth.error;
-  const parsed = createBody.safeParse(await request.json().catch(() => null));
+  // A title and an id need a few hundred bytes; nothing bigger is read.
+  const raw = await readJsonBody(request, 4096);
+  if (!raw.ok && raw.reason === 'too_large') return apiError(413, 'too_large', 'Send a title of 1 to 120 characters.');
+  const parsed = createBody.safeParse(raw.ok ? raw.value : null);
   if (!parsed.success) return apiError(400, 'invalid_body', 'Send a title of 1 to 120 characters.');
 
   const projectId = crypto.randomUUID();
