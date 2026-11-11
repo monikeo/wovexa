@@ -400,6 +400,8 @@ export async function traceImageLayer(layer: ArtworkLayer, opts: TraceOptions, s
       visible: true,
       locked: false,
       groupId,
+      // An image clipped to the layer under it gives shapes clipped to the same layer.
+      ...(layer.clip ? { clip: true } : {}),
       transform: { centerXmm: t.centerXmm + ox, centerYmm: t.centerYmm + oy, widthMm: box.w / ppm, heightMm: box.h / ppm, rotationDeg: t.rotationDeg, flipX: t.flipX, flipY: t.flipY },
       style: { opacity: layer.style.opacity, blendMode: layer.style.blendMode, finish: layer.style.finish },
       content,

@@ -11,11 +11,13 @@
  * Results are cached per layer, so an edit re-checks only what changed. Anything that can't be
  * checked yet (an image or font still loading) is left out and `pending` says to look again.
  */
-import { deepLayers } from '@/domain/lockups';
+import { deepLayers, layerAssetIds } from '@/domain/lockups';
 import { getGarment, getSize, zoneSpecOrFirst, type ZoneSpec } from '@/domain/garments';
+import { gradeFor, zoneGrade, type Grade } from '@/domain/grading';
 import { DEFAULT_PREFLIGHT, runPreflight, type PreflightIssue, type PreflightOptions, type Severity } from '@/domain/preflight';
 import type { ArtboardId, ArtworkLayer, DesignDocument, LayerStack, TextContent } from '@/domain/schema';
 import { SEAM_CLEARANCE_MM, seamEdges, sketchForZone } from '@/components/studio/editor2d/flat-sketch';
+import { imageMissing, loadAssetImage } from '@/lib/assets';
 import { fontFileCoverage, inRanges, mergeRanges, parseUnicodeRange, type Ranges } from '@/lib/font-coverage';
 import { findFont, loadFontStylesheets, scriptFallbacks } from '@/lib/fonts';
 import { getFont } from '@/lib/local-db';
@@ -44,7 +46,12 @@ function remember<V>(map: Map<string, V>, key: string, value: V, max: number) {
 // ---- Seam clearance ----
 
 const bands = new Map<string, HTMLCanvasElement>();
-const inkInBand = new Map<string, number>();
+/**
+ * Ink found in the band, per layer object (documents are immutable, so an edited layer is a new
+ * object and an unchanged one keeps its answer), then per band and grade. Kept only as long as
+ * the layer itself is.
+ */
+const inkInBand = new WeakMap<ArtworkLayer, Map<string, number>>();
 
 /** The seam clearance band over a print area, as opaque pixels. */
 function bandFor(key: string, model: ReturnType<typeof getGarment>, spec: ZoneSpec, scale: number) {
@@ -62,16 +69,23 @@ function bandFor(key: string, model: ReturnType<typeof getGarment>, spec: ZoneSp
     pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
     ctx.stroke();
   }
-  remember(bands, key, canvas, 24);
+  // Half a megabyte each: a few garments' worth.
+  remember(bands, key, canvas, 12);
   return canvas;
 }
 
-/** Square millimetres of a layer's ink inside the band, or null while its images load. */
-function inkInside(layer: ArtworkLayer, band: HTMLCanvasElement): number | null {
+/** Square millimetres of a layer's ink inside the band (graded by `grade` when the design scales by size), or null while its images load. */
+function inkInside(layer: ArtworkLayer, band: HTMLCanvasElement, grade: Grade | undefined): number | null {
   const canvas = makeCanvas(band.width, band.height);
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+  if (grade) {
+    ctx.translate(grade.anchorXmm * PPM, grade.anchorYmm * PPM);
+    ctx.scale(grade.factor, grade.factor);
+    ctx.translate(-grade.anchorXmm * PPM, -grade.anchorYmm * PPM);
+  }
   const one: LayerStack = { orderedLayerIds: [layer.id], layers: { [layer.id]: layer } };
   if (!drawZone(ctx, one, { pxPerMm: PPM })) return null;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalCompositeOperation = 'destination-in';
   ctx.drawImage(band, 0, 0);
   const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
@@ -102,22 +116,32 @@ export function seamIssues(doc: DesignDocument): { issues: PreflightIssue[]; pen
     } catch {
       continue;
     }
+    // Artwork graded by size is checked as it prints on the size on show.
+    const factor = zoneGrade(doc, zoneId, size.code);
+    const grade = gradeFor(spec, factor);
+    const key = `${bandKey}|${factor}`;
     for (const layer of layers) {
-      const key = `${bandKey}|${layer.id}|${JSON.stringify([layer.transform, layer.content, layer.style])}`;
-      let mm2 = inkInBand.get(key);
+      let known = inkInBand.get(layer);
+      if (!known) inkInBand.set(layer, (known = new Map()));
+      let mm2 = known.get(key);
       if (mm2 === undefined) {
+        // An image that isn't on this device can't be checked: say nothing rather than wait for ever.
+        const assets = layerAssetIds(layer);
+        if (assets.some(imageMissing)) continue;
         let measured: number | null = null;
         try {
-          measured = inkInside(layer, band);
+          measured = inkInside(layer, band, grade);
         } catch {
           measured = 0;
         }
         if (measured === null) {
+          // Still loading: start the loads (the studio may not have needed these yet) and look again.
+          for (const id of assets) void loadAssetImage(id).catch(() => undefined);
           pending = true;
           continue;
         }
         mm2 = measured;
-        remember(inkInBand, key, mm2, 600);
+        known.set(key, mm2);
       }
       if (mm2 <= MIN_INK_MM2) continue;
       issues.push({

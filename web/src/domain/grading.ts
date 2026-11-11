@@ -57,6 +57,18 @@ export function gradeAnchor(spec: Pick<ZoneSpec, 'printableWidthMm'>) {
   return { xMm: spec.printableWidthMm / 2, yMm: 0 };
 }
 
+/** A point in a zone (mm) where it shows graded by `factor`. */
+export function gradePoint(spec: Pick<ZoneSpec, 'printableWidthMm'>, factor: number, xMm: number, yMm: number): { xMm: number; yMm: number } {
+  const a = gradeAnchor(spec);
+  return { xMm: a.xMm + (xMm - a.xMm) * factor, yMm: a.yMm + (yMm - a.yMm) * factor };
+}
+
+/** A point shown graded by `factor` back in the zone's own millimetres (where the artwork is designed). */
+export function ungradePoint(spec: Pick<ZoneSpec, 'printableWidthMm'>, factor: number, xMm: number, yMm: number): { xMm: number; yMm: number } {
+  const a = gradeAnchor(spec);
+  return { xMm: a.xMm + (xMm - a.xMm) / factor, yMm: a.yMm + (yMm - a.yMm) / factor };
+}
+
 /** A grade as a renderer applies it: scale by `factor` about the anchor. */
 export interface Grade {
   factor: number;

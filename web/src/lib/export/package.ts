@@ -215,8 +215,10 @@ export function fitPersonalisedText(person: DesignDocument, original: DesignDocu
 /** Placement drawings of the given zones for one colourway; zones with artwork show their print area. */
 async function renderFlats(doc: DesignDocument, colorway: Colorway, size: number, zoneList: ZoneId[]) {
   const withArt = zonesWithArtwork(doc);
+  // Artwork graded by size is drawn on the size it was designed on, like the main print files.
+  const sizeCode = gradingBase(doc)?.code;
   const out: { zoneId: ZoneId; canvas: HTMLCanvasElement }[] = [];
-  for (const zoneId of zoneList) out.push({ zoneId, canvas: await renderZoneSketch(doc, zoneId, size, { printArea: withArt.includes(zoneId), colorwayId: colorway.id }) });
+  for (const zoneId of zoneList) out.push({ zoneId, canvas: await renderZoneSketch(doc, zoneId, size, { printArea: withArt.includes(zoneId), colorwayId: colorway.id, sizeCode }) });
   return out;
 }
 
@@ -249,7 +251,7 @@ async function makeProof(doc: DesignDocument, colorways: Colorway[], products: P
       widthMm: spec.printableWidthMm,
       heightMm: spec.printableHeightMm,
       where: placementText(spec),
-      sketch: await renderZoneSketch(doc, zoneId, 900, { printArea: true }),
+      sketch: await renderZoneSketch(doc, zoneId, 900, { printArea: true, sizeCode: gradingBase(doc)?.code }),
       art: renderZoneArtwork(doc.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, 72).canvas,
     });
   }

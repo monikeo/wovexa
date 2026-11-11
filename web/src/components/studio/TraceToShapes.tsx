@@ -5,7 +5,7 @@
  * Everything runs on this device; the image is kept, hidden underneath, unless asked otherwise.
  */
 import { AlertTriangle, Loader2, Shapes } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { artboardOf } from '@/domain/areas';
 import * as cmd from '@/domain/commands';
 import type { ArtworkLayer } from '@/domain/schema';
@@ -50,6 +50,11 @@ export function TraceToShapes({ layer }: { layer: ArtworkLayer }) {
     window.addEventListener('wovexa:trace', show);
     return () => window.removeEventListener('wovexa:trace', show);
   }, [layer.id]);
+  // The panel sits low in the image's settings: bring it into view when it opens (on phones it is below the fold).
+  const panelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (open) panelRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [open]);
 
   // A new preview a moment after the options or the image change.
   const key = JSON.stringify([opts, layer.transform.widthMm, layer.transform.heightMm, layer.content]);
@@ -75,20 +80,25 @@ export function TraceToShapes({ layer }: { layer: ArtworkLayer }) {
 
   const apply = async () => {
     setBusy(true);
+    // Where the image is now: the shapes go there, even if another artboard is opened meanwhile.
+    const zoneId = useStudio.getState().activeZoneId;
+    const from = layer;
     try {
-      const traced = await traceImageLayer(layer, opts);
+      const traced = await traceImageLayer(from, opts);
       if (!traced.layers.length) return void toast('Nothing was left to trace. Keep the background, or choose more colours.', 'error');
       const s = useStudio.getState();
-      const zoneId = s.activeZoneId;
       const zone = s.document ? artboardOf(s.document, zoneId) : undefined;
-      if (!zone?.layers[layer.id]) return void toast('The image is no longer on this artboard.', 'error');
-      if (zone.layers[layer.id].locked) return void toast('Unlock the image to trace it.', 'error');
+      const now = zone?.layers[from.id];
+      if (!zone || !now) return void toast('The image is no longer on this artboard.', 'error');
+      if (now.locked) return void toast('Unlock the image to trace it.', 'error');
+      // Moved, resized or edited while it was traced: the shapes would land where it was.
+      if (now.transform !== from.transform || now.content !== from.content) return void toast('The image changed while it was being traced. Trace it again.', 'error');
       // Just above the image, past the rest of its group, so groups stay together in the stack.
       const order = zone.orderedLayerIds;
-      const group = zone.layers[layer.id].groupId;
-      const last = group ? Math.max(...order.map((id, i) => (zone.layers[id]?.groupId === group ? i : -1))) : order.indexOf(layer.id);
+      const group = now.groupId;
+      const last = group ? Math.max(...order.map((id, i) => (zone.layers[id]?.groupId === group ? i : -1))) : order.indexOf(from.id);
       const commands = traced.layers.map((l, i) => cmd.addLayer(zoneId, l, last + 1 + i));
-      commands.push(keepImage ? cmd.updateLayer(zoneId, layer.id, { visible: false }, 'Hide image') : cmd.removeLayers(zoneId, [layer.id]));
+      commands.push(keepImage ? cmd.updateLayer(zoneId, from.id, { visible: false }, 'Hide image') : cmd.removeLayers(zoneId, [from.id]));
       if (!s.dispatch(cmd.batch('Trace to shapes', commands))) return;
       s.select(traced.layers.map((l) => l.id));
       const n = traced.layers.length;
@@ -111,7 +121,7 @@ export function TraceToShapes({ layer }: { layer: ArtworkLayer }) {
         <Shapes size={14} /> Trace to shapes
       </button>
       {open ? (
-        <div className="space-y-2.5 rounded-lg border border-line p-3" data-testid="trace-panel">
+        <div ref={panelRef} className="space-y-2.5 rounded-lg border border-line p-3" data-testid="trace-panel">
           <p className="text-xs text-fg-2">Redraws the image as flat colour shapes you can recolour, reshape point by point and print at any size. Works best on logos and flat artwork.</p>
           <label className="grid grid-cols-[64px_1fr_24px] items-center gap-2 text-xs">
             <span className="text-fg-2">Colours</span>

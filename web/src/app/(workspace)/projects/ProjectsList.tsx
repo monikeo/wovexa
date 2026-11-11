@@ -360,7 +360,8 @@ export function ProjectsList() {
           <p className="mt-1 text-sm text-fg-2">{empty.body}</p>
         </div>
       ) : (
-        <div className={`grid grid-cols-2 gap-4 lg:grid-cols-4 ${chosen.length ? 'pb-24' : ''}`}>
+        // Room below for the selection bar, which wraps to two rows on phones.
+        <div className={`grid grid-cols-2 gap-4 lg:grid-cols-4 ${chosen.length ? 'pb-36 sm:pb-24' : ''}`}>
           {visible.map((p) => (
             <ProjectCard key={p.id} meta={p} onChanged={refresh} selected={chosen.includes(p.id)} selecting={chosen.length > 0} onSelect={(range) => toggle(p.id, range)} {...filing} />
           ))}

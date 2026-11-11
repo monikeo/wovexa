@@ -129,6 +129,8 @@ export async function importImageFile(file: File): Promise<StoredAsset> {
 
 const imageCache = new Map<string, Promise<HTMLImageElement>>();
 const loaded = new Map<string, HTMLImageElement>();
+/** Images not on this device (a design from elsewhere, a deleted asset): nothing will ever load. */
+const missing = new Set<string>();
 
 export function loadAssetImage(assetId: string): Promise<HTMLImageElement> {
   let pending = imageCache.get(assetId);
@@ -137,12 +139,21 @@ export function loadAssetImage(assetId: string): Promise<HTMLImageElement> {
       if (!asset) throw new AssetError('This image is missing from this device.');
       const img = await loadImage(URL.createObjectURL(asset.blob));
       loaded.set(assetId, img);
+      missing.delete(assetId);
       return img;
     });
-    pending.catch(() => imageCache.delete(assetId));
+    pending.catch((error: unknown) => {
+      imageCache.delete(assetId);
+      if (error instanceof AssetError) missing.add(assetId);
+    });
     imageCache.set(assetId, pending);
   }
   return pending;
+}
+
+/** Whether an image is known to be missing from this device, so waiting for it is pointless. */
+export function imageMissing(assetId: string) {
+  return missing.has(assetId);
 }
 
 /** Synchronous access for render loops; returns undefined until loadAssetImage resolves. */

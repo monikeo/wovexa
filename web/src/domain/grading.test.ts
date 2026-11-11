@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as cmd from './commands';
 import { createDocument, createShapeLayer } from './factory';
 import { getGarment, getSize, zoneSpecOrFirst } from './garments';
-import { gradeFactor, gradedBounds, gradedOverflowMm, gradingBase, gradingTable, matchSize, zoneGrade } from './grading';
+import { gradeFactor, gradedBounds, gradedOverflowMm, gradePoint, gradingBase, gradingTable, matchSize, ungradePoint, zoneGrade } from './grading';
 import { applyCommand, emptyHistory } from './history';
 import { runPreflight } from './preflight';
 import { parseDesignDocument, type DesignDocument } from './schema';
@@ -65,6 +65,29 @@ describe('artwork graded by size', () => {
     const issues = runPreflight(t.d).filter((i) => i.code === 'graded_overflow');
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toMatch(/^On .*XL.* the artwork grows past the front print area/);
+  });
+
+  it('maps points to where they show at a grade and back', () => {
+    const shown = gradePoint(front, 1.2, 50, 100);
+    // 100 mm left of the centre line and 100 mm down become 120 and 120.
+    expect(shown.xMm).toBeCloseTo(front.printableWidthMm / 2 - 120, 9);
+    expect(shown.yMm).toBeCloseTo(120, 9);
+    const back = ungradePoint(front, 1.2, shown.xMm, shown.yMm);
+    expect(back.xMm).toBeCloseTo(50, 9);
+    expect(back.yMm).toBeCloseTo(100, 9);
+  });
+
+  it('warns only about what grading adds, not artwork already past the edge on the base size', () => {
+    const t = design('M');
+    // Already 20 mm past the bottom on M: an out-of-bounds error there, not a grading warning on every size.
+    t.run(cmd.updateTransforms('front', { [t.block.id]: { centerYmm: front.printableHeightMm - 30, heightMm: 100 } }));
+    const graded = () => runPreflight(t.d).filter((i) => i.code === 'graded_overflow');
+    const shrinkOnly = gradingTable(t.d).filter((s) => !s.base && s.zones[0].factor < 1);
+    expect(shrinkOnly.length).toBeGreaterThan(0);
+    // Bigger sizes push it further out, so they are named; smaller ones pull it in and are not.
+    expect(graded()).toHaveLength(1);
+    expect(graded()[0].message).not.toMatch(/\bS\b|XS|K\d/);
+    expect(runPreflight(t.d).some((i) => i.code === 'out_of_bounds')).toBe(true);
   });
 
   it('keeps a graded design graded when the style changes, from a size the new style has', () => {

@@ -301,10 +301,13 @@ export function runPreflight(doc: DesignDocument, opts: PreflightOptions = DEFAU
 
   // Graded artwork: the sizes where it grows past its print area, which cut it off there (one issue per zone).
   const table = gradingTable(doc);
+  // Artwork already past the edge on the base size is flagged as out of bounds: only what grading adds counts.
+  const atBase = new Map((table.find((s) => s.base)?.zones ?? []).map((z) => [z.zoneId, z.overflowMm]));
   const overflowing = new Map<ZoneId, { label: string; sizes: number[]; worst: { mm: number; factor: number } }>();
   table.forEach((size, index) => {
+    if (size.base) return;
     for (const z of size.zones) {
-      if (z.overflowMm <= 1) continue;
+      if (z.overflowMm <= (atBase.get(z.zoneId) ?? 0) + 1) continue;
       const entry = overflowing.get(z.zoneId) ?? { label: z.label, sizes: [], worst: { mm: 0, factor: z.factor } };
       entry.sizes.push(index);
       if (z.overflowMm > entry.worst.mm) entry.worst = { mm: z.overflowMm, factor: z.factor };

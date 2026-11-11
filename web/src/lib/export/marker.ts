@@ -166,7 +166,8 @@ export async function buildMarker(doc: DesignDocument, colorway: Colorway, roste
     }
     const part = first.info.island.part;
     const tex = document.createElement('canvas');
-    drawPart(tex, part, { doc: design, model, geo: geos.get(first.info.size.code)!, colorway, quality: 'print', production: true });
+    // Each size's pieces carry that size's print: artwork graded by size at its own scale.
+    drawPart(tex, part, { doc: design, model, geo: geos.get(first.info.size.code)!, colorway, quality: 'print', production: true, sizeCode: first.info.size.code });
     const base = partColor(colorway, part === 'torso' ? 'body' : part.startsWith('leg') ? 'pants' : 'sleeves');
     for (const [key, piece] of group) {
       const { canvas, bx0, by0 } = renderPiece(tex, piece.info, base);

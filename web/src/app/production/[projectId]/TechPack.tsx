@@ -14,7 +14,7 @@ import { areaSpec, describeAreaPlacement, designAreas } from '@/domain/areas';
 import * as cmd from '@/domain/commands';
 import { newId } from '@/domain/factory';
 import { getGarment, getSize, partColor, PRINT_METHOD_LABELS, zoneSpecOrFirst } from '@/domain/garments';
-import { gradingTable } from '@/domain/grading';
+import { gradingBase, gradingTable } from '@/domain/grading';
 import { detachedLayers, isPlacement } from '@/domain/lockups';
 import { effectiveDpi, summarize } from '@/domain/preflight';
 import { fullPreflight } from '@/lib/preflight-browser';
@@ -30,7 +30,8 @@ function Sketch({ doc, zoneId }: { doc: DesignDocument; zoneId: ZoneId }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let cancelled = false;
-    renderZoneSketch(doc, zoneId, 640, { printArea: true }).then((canvas) => {
+    // With artwork graded by size, the sketch shows the size the schedule describes: the base.
+    renderZoneSketch(doc, zoneId, 640, { printArea: true, sizeCode: gradingBase(doc)?.code }).then((canvas) => {
       if (cancelled || !ref.current) return;
       canvas.className = 'h-auto w-full';
       canvas.setAttribute('role', 'img');

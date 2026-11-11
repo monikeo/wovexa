@@ -354,14 +354,23 @@ export function updateLockupFromKit(entry: KitLockup, kitId: string) {
   }
 }
 
-/** Run `fn` with the 2D artboard on screen: at once, or once it is shown when only the 3D view is open. */
+/**
+ * Run `fn` with the 2D artboard on screen: at once, or once it is shown. Only the 3D view may be
+ * open, and a phone shows one view at a time (3D for a split view), so the artboard itself is
+ * looked for rather than the view setting.
+ */
 function onArtboard(fn: () => void) {
   const s = useStudio.getState();
-  if (s.viewMode !== '3d') return fn();
+  // A phone's sheet or a tablet's drawers cover the artboard: put them away so what follows can be seen and touched.
+  if (s.mobileSheet) s.setMobileSheet(null);
+  if (s.inspectorOpen) s.setInspectorOpen(false);
+  if (s.layersOpen) s.setLayersOpen(false);
+  const shown = () => !!document.querySelector('[data-testid="editor-2d"]');
+  if (shown()) return fn();
   s.setViewMode('2d');
   let tries = 0;
   const wait = () => {
-    if (document.querySelector('[data-testid="editor-2d"]')) setTimeout(fn, 50);
+    if (shown()) setTimeout(fn, 50);
     else if (++tries < 60) setTimeout(wait, 100);
   };
   wait();

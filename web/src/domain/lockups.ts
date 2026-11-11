@@ -278,9 +278,22 @@ function lockupBody(lockup: Lockup) {
   return body;
 }
 
+/**
+ * Answers already worked out, by the two lockup objects compared: documents are immutable, so an
+ * unchanged lockup is the same object from edit to edit and isn't serialised again (traced paths
+ * in a lockup can be long).
+ */
+const compared = new WeakMap<Lockup, WeakMap<Lockup, boolean>>();
+
 /** Whether two versions of a lockup look and read the same. */
 export function sameLockup(a: Lockup, b: Lockup) {
-  return canonicalJson(lockupBody(a)) === canonicalJson(lockupBody(b));
+  let known = compared.get(a);
+  if (!known) compared.set(a, (known = new WeakMap()));
+  const hit = known.get(b);
+  if (hit !== undefined) return hit;
+  const same = canonicalJson(lockupBody(a)) === canonicalJson(lockupBody(b));
+  known.set(b, same);
+  return same;
 }
 
 /** A brand kit's saved lockup: the lockup as saved and when. */
