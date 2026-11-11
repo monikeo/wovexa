@@ -5,6 +5,7 @@
  * font that won't load there) the page renders it as before: the file is the same either way.
  * Images and fonts must already be loaded on the page (prepareDocument).
  */
+import type { Grade } from '@/domain/grading';
 import { deepLayers } from '@/domain/lockups';
 import type { LayerStack } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
@@ -123,12 +124,13 @@ async function fontsFor(stack: LayerStack): Promise<PrintFonts> {
   return { css: needs.css, uploaded, wanted: needs.wanted, families: needs.families };
 }
 
-async function renderInWorker(format: PrintJob['format'], stack: LayerStack, widthMm: number, heightMm: number, dpi: number): Promise<PrintReply> {
+async function renderInWorker(format: PrintJob['format'], stack: LayerStack, widthMm: number, heightMm: number, dpi: number, grade?: Grade): Promise<PrintReply> {
   const pxPerMm = Math.min(dpi / 25.4, MAX_EXPORT_SIDE / Math.max(widthMm, heightMm));
-  const [images, fonts] = await Promise.all([bitmapsFor(stack, pxPerMm), fontsFor(stack)]);
+  // Graded-up artwork draws its vector images bigger too.
+  const [images, fonts] = await Promise.all([bitmapsFor(stack, pxPerMm * Math.max(1, grade?.factor ?? 1)), fontsFor(stack)]);
   const w = getWorker();
   const id = ++jobs;
-  const job: PrintJob = { id, format, stack, widthMm, heightMm, dpi, images, fonts };
+  const job: PrintJob = { id, format, stack, widthMm, heightMm, dpi, images, fonts, ...(grade ? { grade } : {}) };
   const reply = await new Promise<PrintReply>((resolve) => {
     const timer = setTimeout(() => {
       waiting.delete(id);
@@ -153,8 +155,8 @@ async function renderInWorker(format: PrintJob['format'], stack: LayerStack, wid
 }
 
 /** The print file drawn on the page itself: the way without a worker, and the fallback. */
-export async function renderPrintPngOnPage(stack: LayerStack, widthMm: number, heightMm: number, dpi: number): Promise<PrintPng> {
-  const { canvas, dpi: used } = renderZoneArtwork(stack, widthMm, heightMm, dpi);
+export async function renderPrintPngOnPage(stack: LayerStack, widthMm: number, heightMm: number, dpi: number, grade?: Grade): Promise<PrintPng> {
+  const { canvas, dpi: used } = renderZoneArtwork(stack, widthMm, heightMm, dpi, grade);
   const blob = await pngBlobWithDpi(await canvasToBlob(canvas), used);
   const out = { blob, dpi: used, width: canvas.width, height: canvas.height };
   canvas.width = 0;
@@ -164,18 +166,19 @@ export async function renderPrintPngOnPage(stack: LayerStack, widthMm: number, h
 
 /**
  * A print area's artwork as a true-size PNG with its dpi written in: rendered in the background
- * when it can be, on the page otherwise. The same pixels either way.
+ * when it can be, on the page otherwise. The same pixels either way. `grade` prints artwork graded
+ * by garment size.
  */
-export async function renderPrintPng(stack: LayerStack, widthMm: number, heightMm: number, dpi: number): Promise<PrintPng & { background: boolean }> {
+export async function renderPrintPng(stack: LayerStack, widthMm: number, heightMm: number, dpi: number, grade?: Grade): Promise<PrintPng & { background: boolean }> {
   if (canUseWorker() && deepLayers(stack).length) {
     try {
-      const done = await renderInWorker('png', stack, widthMm, heightMm, dpi);
+      const done = await renderInWorker('png', stack, widthMm, heightMm, dpi, grade);
       if (done.ok && done.format === 'png') return { blob: done.blob, dpi: done.dpi, width: done.width, height: done.height, background: true };
     } catch {
       // Anything the worker can't do, the page does.
     }
   }
-  return { ...(await renderPrintPngOnPage(stack, widthMm, heightMm, dpi)), background: false };
+  return { ...(await renderPrintPngOnPage(stack, widthMm, heightMm, dpi, grade)), background: false };
 }
 
 /** A print area's artwork as CMYK rows and a mask for a PDF/X page, drawn on the page itself. */

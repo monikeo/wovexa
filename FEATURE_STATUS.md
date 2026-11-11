@@ -13,10 +13,10 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | Priority | Features | Done | Partial | Not started |
 | --- | ---: | ---: | ---: | ---: |
 | P0 | 34 | 27 | 7 | 0 |
-| P1 | 88 | 45 | 26 | 17 |
+| P1 | 88 | 49 | 26 | 13 |
 | P2 | 59 | 4 | 13 | 42 |
-| Platform requirements (no priority) | 80 | 41 | 23 | 16 |
-| **All** | 261 | 117 | 69 | 75 |
+| Platform requirements (no priority) | 80 | 41 | 24 | 15 |
+| **All** | 261 | 121 | 70 | 70 |
 
 ## Accounts and onboarding
 
@@ -39,11 +39,11 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | PRJ-02 | P0 | Project cards | Done | Cards with rendered thumbnail, garment, last edited and approval status. |
 | PRJ-03 | P0 | CRUD | Done | Rename, duplicate, archive/restore, and delete into Recently deleted: restorable for 30 days (with a countdown, and a banner if the project is opened), then deleted for good; or delete forever at once, confirmed. |
 | PRJ-04 | P0 | Autosave / status | Partial | Saved / Saving / Unsaved / Offline / Failed-with-retry, with the reason shown when a save fails. A design that no longer validates is never written over the last good copy. A project is edited in one tab at a time (Web Locks): a second tab waits or takes editing over and starts from the latest save, so two tabs never save over each other. "Sync conflict" waits for server sync. |
-| PRJ-05 | P1 | Collections / folders | Not started |  |
-| PRJ-06 | P1 | Search and filtering | Partial | Title search and sort. No tag, collaborator or date filters yet. |
-| PRJ-07 | P1 | Project tags / notes | Not started |  |
+| PRJ-05 | P1 | Collections / folders | Done | Folders on the Projects page: file one project from its menu or many at once into an existing folder or a new one, filter by folder (or by no folder), rename a folder (its projects follow) or remove it (its projects stay, unfiled). A copy is filed with its original. Folders are one level deep, by name. |
+| PRJ-06 | P1 | Search and filtering | Partial | Search across titles, folders and tags; sort by last edited or name; filter by folder and by tags (all chosen tags must match). No garment, status, collaborator or date filters yet. |
+| PRJ-07 | P1 | Project tags / notes | Partial | Tags (up to 12 a project, case-insensitive, suggested from those in use), shown on project cards, added and removed for one project or many. No project notes or style references yet. |
 | PRJ-08 | P1 | Project version timeline | Done | Named snapshots, restore as a new edit with a backup, structured diff between versions. |
-| PRJ-09 | P1 | Bulk actions | Not started |  |
+| PRJ-09 | P1 | Bulk actions | Partial | Select projects (checkboxes, Shift for a range, Ctrl+A for all shown, Esc to clear), then move to a folder, tag, duplicate, archive or restore, or delete into Recently deleted; there, restore or delete forever (confirmed). Each change to many projects is one transaction, all or none. No bulk export yet. |
 | PRJ-10 | P2 | Branching | Not started |  |
 
 ## Garments
@@ -56,7 +56,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | GAR-04 | P1 | Construction variants | Partial | Per model: fit, sleeve length and cuff, neckline (crew, V, scoop, polo, hood, dobok), rib or slit hems, hood, kangaroo pocket, placket, drawcords. Not mixable per project. |
 | GAR-05 | P0 | Per-zone color | Done | Per-garment colour parts (body, sleeves, collar, stitching, pants, belt with rank colours), live in 2D and 3D. |
 | GAR-06 | P1 | Fabric presets | Partial | Fabric presets per garment with GSM and their own surface (jersey, piqué, fleece, mesh, rib, diamond weave). All-over fabric prints: gradient, 8 patterns, image tiles and dye effects (spiral and crumple tie-dye, acid wash, heather, dip-dye, marble). |
-| GAR-07 | P1 | Size variants | Partial | Sizes from real charts (shirts K2 to 8XL, singlets, dobok 100 to 210) grade chest, length, sleeve and pants separately; a custom shape grades with them. Print areas are fixed per model, not per size. |
+| GAR-07 | P1 | Size variants | Partial | Sizes from real charts (shirts K2 to 8XL, singlets, dobok 100 to 210) grade chest, length, sleeve and pants separately; a custom shape grades with them. Artwork can scale with size: designed on a base size, each size prints it scaled by its chest (fronts and backs), its overall grade (sleeves) or its pants length (legs), in whole percent, grown from the top centre of the print area; the Garment panel lists every size's scale, the 3D view shows the size on show at its scale (picking and dragging follow), print checks warn where it outgrows the print area, and print files, team files and the tech sheet are made per size. Print areas themselves are fixed per model, not per size. |
 | GAR-08 | P1 | Tag customization | Not started |  |
 | GAR-09 | P1 | Colorway manager | Done | Create from presets, custom or colourway ideas, duplicate, reorder, rename, recolour, delete, compare, switch from the command palette with a live preview. |
 | GAR-10 | P2 | Material library (new) | Not started |  |
@@ -78,7 +78,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | ED2-09 | P1 | Vector drawing | Done | Rectangle, ellipse, triangle, star, polygon, heart, line, plus a library of 19 vector graphics (badges, sport, symbols, nature) with solid, gradient or pattern fills and outlines, or outline only (drawn as lines in their fill, exported as vector strokes). A pen (P) draws shapes of your own: corners and dragged-out curves, closed into a shape that prints and exports as vector. Edit points on any shape after drawing (double-click it): move points and their handles, click the outline to add a point, double-click a point to switch corner and curve, Delete removes one, each edit one undo step. Combine shapes: unite, subtract the front ones, keep the overlap or exclude it, into one path (text and photos by their silhouette). |
 | ED2-10 | P1 | Image adjustments | Partial | Brightness, contrast, saturation, hue, greyscale, invert, threshold (non-destructive), background removal, and crop shapes (circle, rounded, hexagon, shield, star, heart), shown while editing in 2D and able to clip a repeat. Printed effects on any layer: drop shadow or glow, a sticker outline round the cut-out, and a halftone screen (dots, squares or lines, sized by darkness or fade, in one ink or the artwork's own colours). Free crop (any box or a set proportion; the kept part stays where it was) and moving or zooming a photo inside its frame; round shapes square the frame on the photo's middle instead of stretching it. All non-destructive. No sharpen. |
 | ED2-11 | P1 | Pattern tool | Done | Image repeat: grid, half-drop, brick, mirror; tile size, gap, angle, offset; clipped to the layer box; DPI checked per tile. |
-| ED2-12 | P1 | Reusable components | Partial | Lockups: make one of any layers (a crest, a sponsor block, a name and number), place it on any zone, design area or across seams at any size and turn, and edit it once on its own board, with every placement following in the same undo step; detach a placement into its layers; prints, exports (vector in SVG), personalises and is checked like any artwork. Also brand kit logos, user templates, graphics library and standard placements. Lockups live in one design; not shared across projects or a brand kit yet. |
+| ED2-12 | P1 | Reusable components | Done | Lockups: make one of any layers (a crest, a sponsor block, a name and number), place it on any zone, design area or across seams at any size and turn, and edit it once on its own board, with every placement following in the same undo step; detach a placement into its layers; prints, exports (vector in SVG), personalises and is checked like any artwork. Save a lockup to the linked brand kit and place it in any project as the same lockup; the Brand tab shows whether the design's copy matches the kit, offers the kit's newer version (every placement follows, keeping its scale, in one undo step) or saving this design's changes back. Also brand kit logos, user templates, graphics library and standard placements. |
 | ED2-13 | P1 | Guides and constraints | Done | Ruler guides dragged out of either ruler, saved with each print area, snapped to (and clicking onto the print area's edges and middle); moved by their ruler marks and removed by dropping them back or double-clicking. A seam clearance band shows where seams, edges and trims run into the print area. Safe-margin checks and centre snapping. |
 | ED2-14 | P0 | Undo/redo | Done | Semantic command history with merged drags and slider gestures. |
 | ED2-15 | P1 | Shortcuts / commands | Partial | Command palette (Ctrl+K or ⌘K, the top bar, or the project menu on phones): every studio action by name with forgiving search, only what makes sense for the selection, recent picks first, shortcut hints, colourways previewed on the 3D garment as you move through them. Shortcuts (copy, cut and paste layers between zones and design areas, Tab through layers, rotate with comma and period, pen, artboard switching), a "Keys and gestures" reference (?), right-click/long-press/keyboard context menu, labelled undo. Keys can't be remapped. |
@@ -113,9 +113,9 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | --- | --- | --- | --- | --- |
 | PRT-01 | P0 | Physical-unit geometry | Done | Zones in millimetres from the print-area corner; tested UV mapping. |
 | PRT-02 | P0 | DPI resolution audit | Done | Horizontal/vertical effective DPI from source pixels; per tile for repeats. |
-| PRT-03 | P0 | Safe/bleed/no-print boundaries | Partial | Print area and safe margin per zone, and a seam clearance band on the 2D artboard where seams, edges and trims meet the print area. No per-size polygons or automatic seam warnings. |
+| PRT-03 | P0 | Safe/bleed/no-print boundaries | Partial | Print area and safe margin per zone, and a seam clearance band on the 2D artboard where seams, edges and trims meet the print area. Print checks warn when a layer's ink (its real pixels, not its box) runs into that band, and, for artwork graded by size, on the sizes where it outgrows the print area. No per-size print area polygons. |
 | PRT-04 | P1 | Print method selector | Done | Per-zone method with only supported methods offered. |
-| PRT-05 | P1 | Live preflight panel | Done | Live checks: bounds, safe margin, DPI, small text, unsupported method, raster embroidery. |
+| PRT-05 | P1 | Live preflight panel | Done | Live checks: bounds, safe margin, DPI, small text, unsupported method, raster embroidery, ink within the seam clearance band, letters the chosen font doesn't have, and graded artwork outgrowing its print area on some sizes. Checks that wait on an image or font run again once it loads. |
 | PRT-06 | P1 | Ink color estimation | Done | In the studio, per print area: the inks (or thread or vinyl colours) the artwork takes, each with its share of the print, counted by the same separation the production films use; screens for screen print; a white underbase on dark garments, previewed on the artboard, as can any single ink; inks that match the garment marked as left off (no underbase under them); a warning past a press's heads, and a halftone hint for photos and gradients. |
 | PRT-07 | P1 | Embroidery feasibility | Partial | Minimum text height and raster warning for embroidery; no stitch estimates. |
 | PRT-08 | P1 | Print placement presets | Partial | Built-in templates for left chest, centre chest and back placements; no anchor presets per garment. |
@@ -133,8 +133,8 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | AST-03 | P0 | Original + proxy | Partial | Originals are immutable and kept when derived copies are made. No separate proxy textures. |
 | AST-04 | P1 | Upload progress and recovery | Not started | Local storage only so far. |
 | AST-05 | P1 | Image operations | Done | Background removal, adjustments and greyscale non-destructively, and trimming empty edges (the box hugs the artwork, which stays in place; the original is kept and restorable), and free crop or framing inside a shape, non-destructive and printed at the kept pixels' resolution. |
-| AST-06 | P1 | Vector cleanup | Not started |  |
-| AST-07 | P1 | Font vault | Partial | Upload TTF/OTF/WOFF/WOFF2 with a licence statement; stored on this device; fonts and licences listed in the manifest. No glyph coverage check. |
+| AST-06 | P1 | Vector cleanup | Partial | Trace an image into vector shapes: one colour, or up to eight, found the way screen films find inks (blends along soft edges and specks fold into the real colours), the colour around the artwork left out around it or everywhere, three levels of detail, a live preview with a photo warning; the shapes are stacked so no gaps open between colours, grouped exactly over the image (hidden, or removed), each simplified to stay within the path size limit. Combined and drawn shapes simplify too. No SVG inspection report yet. |
+| AST-07 | P1 | Font vault | Done | Upload TTF/OTF/WOFF/WOFF2 with a licence statement; stored on this device; fonts and licences listed in the manifest. Glyph coverage: print checks name the letters a text's font doesn't have (read from the font's own character map for uploaded TTF, OTF and WOFF, its Google Fonts subsets for catalogue fonts, and measured as a second opinion), apart from Khmer, Korean and Chinese, which WOVEXA's own script fonts draw. SVG print files list the fonts their live text needs. |
 | AST-08 | P1 | Palette extraction | Done | Dominant colours from an image, copyable, labelled as suggestions. |
 | AST-09 | P1 | Asset metadata | Partial | Dimensions, file name, SHA-256 and usage locations. No licensing note or tags. |
 | AST-10 | P2 | Smart asset suggestions (new) | Not started |  |
@@ -145,7 +145,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | ID | Priority | Feature | Status | Notes |
 | --- | --- | --- | --- | --- |
 | TYP-01 | P0 | Editable text objects | Done | Text stays editable text in the document; textures are caches. |
-| TYP-02 | P1 | Curved and circular text | Done | Positive and negative arcs, grapheme-safe for Khmer combining marks. Text on a path: along any line drawn with the pen, or round a shape's outline (centred at the top of a circle badge); letters above, on or below the line, where they start and how much of the path they cover, run the other way (the bottom of a badge), off the path again. New words keep the letter size and the path stays put, team names included; exports as live SVG text. |
+| TYP-02 | P1 | Curved and circular text | Done | Positive and negative arcs, grapheme-safe for Khmer combining marks. Text on a path: along any line drawn with the pen, or round a shape's outline (centred at the top of a circle badge); letters above, on or below the line, where they start and how much of the path they cover, run the other way (the bottom of a badge), off the path again. Edit the line afterwards like any shape's points (from the text's settings, the canvas menu or the palette): drag points and handles, add and remove points; the line stays exactly where it is dragged, turned and mirrored layers included, and the letters keep their size, centred where they were. New words keep the letter size and the path stays put, team names included; exports as live SVG text. |
 | TYP-03 | P1 | Text styles | Done | Fill (solid; gradient across or from the centre, with an optional middle colour and eight presets; pattern), outline, outline only, a second outline round the word (the varsity double outline), shadow or glow, halftone, arch and wave, letter case (capitals, title, lower), a colour for each letter (colours that run across the letters and repeat, from ready-made runs or the brand's, kept as live text in SVG), transforms, line height, and one-tap styles (varsity, college arch, athletic, retro, script, stencil, wave, Korean and Khmer display). |
 | TYP-04 | P1 | Text legibility validation | Done | Small-text warning per print method. |
 | TYP-05 | P1 | Repeat design patterns | Done | Image repeat patterns plus procedural pattern fills; parameters stay editable. |
@@ -191,7 +191,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | EXP-02 | P0 | Export preset | Done | Quick front/back 4:5 export and social aspect presets in Wovexa Render. |
 | EXP-03 | P1 | High-resolution image output | Done | Up to 6K (6144 px on the long side). Real-time renders in one offscreen pass up to the GPU's limit and past it in tiles of one camera, joined seamlessly. Photoreal renders in overlapping tiles, so GPU memory stays bounded; it stops at the device's largest render size. No remote fallback. |
 | EXP-04 | P1 | Isolated print artwork | Done | Transparent PNG per zone and design area at true physical size and chosen DPI; finish simulation excluded. The same prints as SVG at true size (1 unit = 1 mm): text stays live text, shapes and graphics are paths, gradients stay gradients, sticker outlines are traced paths and halftones one shape a dot (with a separate cut file of the outlines' edges), clipped layers are masked by their base's own shape, and photos and the remaining raster effects are placed images, for screen-print films, vinyl, cutters and embroidery. PNG print files (single exports, the package and team files) render and encode in a background worker, so a 300 dpi export doesn't hold up the studio; where a worker can't draw a file exactly (no worker canvas or fonts in the browser, a font that won't load there) the page renders it as before. |
-| EXP-05 | P1 | Production ZIP | Done | One production ZIP: print files (zones and design areas, optionally also as SVG) with dpi written in, screen films, team files, placement drawings, product images, client proof PDF, tech sheet, cut-and-sew panels, 3D model, colour CSV and a manifest with SHA-256 for every file. |
+| EXP-05 | P1 | Production ZIP | Done | One production ZIP: print files (zones and design areas, optionally also as SVG) with dpi written in, for artwork graded by size the print files again per size (the order's sizes, or every size), screen films, team files, placement drawings, product images, client proof PDF, tech sheet, cut-and-sew panels, 3D model, colour CSV and a manifest with SHA-256 for every file. |
 | EXP-06 | P1 | Tech pack PDF | Done | Two-page client proof PDF (product per colourway with colour values, then placements with sizes and methods) and a self-contained HTML tech sheet in the package. |
 | EXP-07 | P1 | Export history | Partial | Export history per project in the export panel, and the Exports page for every project on the device: grouped by day, filtered by kind, searchable, with the design version, files, size, a "design changed since" flag, a link to the project and removal of a record. Exports run on the device as you wait, so there are no queued, failed or retry states and no expiry. |
 | EXP-08 | P1 | Naming templates | Done | File-name templates with tokens (project, zone, colourway, size, method, size in mm, dpi, design version, date, name, number), Unicode-safe. |
@@ -234,7 +234,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | ID | Priority | Feature | Status | Notes |
 | --- | --- | --- | --- | --- |
 | BRD-01 | P1 | Brand profile | Done | Brand kits: name, colours, fonts, logos, notes; linked to projects. |
-| BRD-02 | P1 | Shared brand assets | Partial | Logos in brand kits. No safe-area guides or variants. |
+| BRD-02 | P1 | Shared brand assets | Partial | Logos and lockups (crests, sponsor blocks) in brand kits, lockups versioned with updates offered to the projects using them. No safe-area guides or approved variants. |
 | BRD-03 | P1 | Template save / apply | Partial | Save and apply templates; no locked/editable element rules. |
 | BRD-04 | P1 | Template metadata | Partial | Preview, name and description; no tags or licence fields. |
 | BRD-05 | P1 | Team approval of assets | Not started |  |
@@ -266,7 +266,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | SPT-03 | P2 | Dynamic name/number placement | Partial | {name}, {number} or any {column} in text layers, in zones or design areas (a name on the hood gets its own file per person); each person keeps the designed letter height and natural proportions, shrinking to fit the box. No manual per-person overrides. |
 | SPT-04 | P2 | Sponsor placement grid | Not started |  |
 | SPT-05 | P2 | Uniform consistency rule | Not started |  |
-| SPT-06 | P2 | Production matrix | Partial | Per person: a folder of print files; roster.csv lists files per row and sizes.csv totals sizes. Not split by colourway or method. |
+| SPT-06 | P2 | Production matrix | Partial | Per person: a folder of print files, at their size's scale when the artwork is graded by size (a size the style lacks prints at the base size, with a note); roster.csv lists files per row and sizes.csv totals sizes. Not split by colourway or method. |
 | SPT-07 | P2 | Bulk name previews | Not started |  |
 | SPT-08 | P2 | Club shop collection (new) | Not started |  |
 
@@ -401,6 +401,6 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | INIT-010 | – | prototype tablet/mobile sheets, gestures and 320px constraint tests immediately, not af… | Done | Tablet drawers, phone sheets and gestures. |
 | INIT-011 | – | implement IndexedDB local snapshot and startup crash recovery | Done | IndexedDB storage, autosave and flush on hide. |
 | INIT-012 | – | implement still image export and print preflight with physically measured fixture | Done | Still images and preflight. |
-| INIT-013 | – | add 3-device E2E project creation/edit/reopen tests and GPU economy fallback | Partial | Playwright end-to-end tests (npm run test:e2e) in desktop Chrome: new project, clipping and undo, letter colours, crop and frame, ink count and underbase, ruler guides, vector export with a cut file, scene stages. No tablet or phone runs, reopen test or GPU fallback test yet. |
+| INIT-013 | – | add 3-device E2E project creation/edit/reopen tests and GPU economy fallback | Partial | Playwright end-to-end tests (npm run test:e2e) in desktop Chrome: new project, clipping and undo, letter colours, crop and frame, ink count and underbase, ruler guides, vector export with a cut file, scene stages, lockups, text round a circle and reshaping its line, combining shapes, one editing tab at a time, CMYK PDF/X, tracing a logo into shapes, brand kit lockups across projects, folders, tags and bulk archive, and artwork graded by size. No tablet or phone runs, reopen test or GPU fallback test yet. |
 | INIT-014 | – | integrate web vitals/editor frame metrics and production error monitoring | Not started |  |
 

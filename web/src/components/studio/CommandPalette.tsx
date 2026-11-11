@@ -77,6 +77,7 @@ import {
   Shirt,
   Sparkles,
   Spline,
+  Shapes,
   Square,
   SquareDashed,
   SquaresExclude,
@@ -132,12 +133,14 @@ import {
   duplicateSelection,
   editLockup,
   editPoints,
+  hasEditablePoints,
   finishLockupEdit,
   flipSelection,
   groupSelection,
   makeLockupFromSelection,
   moveSelectionInStack,
   openCrop,
+  openTrace,
   outlineOnlySelection,
   pasteLayers,
   placeLockup,
@@ -326,6 +329,9 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
       ...(layers.length === 1 && layers[0].content.kind === 'shape' && !layers[0].locked
         ? [{ id: 'shape-points', label: 'Edit points', keywords: 'nodes anchors handles path bezier curve reshape vector pen', icon: Spline, run: editPoints }]
         : []),
+      ...(layers.length === 1 && layers[0].content.kind === 'text' && hasEditablePoints(layers[0])
+        ? [{ id: 'text-path-points', label: 'Edit the line the text follows', keywords: 'text on a path points nodes handles reshape curve bend line edit path', icon: Spline, run: editPoints }]
+        : []),
       ...(layers.length === 1 && layers[0].content.kind === 'text' && !layers[0].locked && !layers[0].content.value.includes('\n')
         ? [{ id: 'text-path', label: 'Put text along a line you draw', keywords: 'text on a path curve arc follow line pen type along', icon: Spline, run: () => startTextOnPath(layers[0].id) }]
         : []),
@@ -345,6 +351,7 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
         ? [
             { id: 'img-crop', label: 'Crop image', keywords: 'trim cut photo picture aspect square portrait', icon: Crop, run: () => openCrop('crop') },
             { id: 'img-frame', label: 'Move photo in frame', keywords: 'reframe pan zoom mask shape circle badge position inside', icon: Move, run: () => openCrop('frame') },
+            ...(!layers[0].locked ? [{ id: 'img-trace', label: 'Trace image to vector shapes', keywords: 'vectorize vectorise trace convert svg logo shapes paths redraw colours outline', icon: Shapes, run: openTrace }] : []),
           ]
         : []),
       { id: 'sel-flip-x', label: 'Flip horizontally', keywords: 'mirror reverse left right', icon: FlipHorizontal2, run: () => flipSelection('x') },

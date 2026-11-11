@@ -4,7 +4,7 @@ import { artboardOf } from './areas';
 import { createDocument, createShapeLayer, createTextLayer } from './factory';
 import { getGarment, zoneSpecOrFirst } from './garments';
 import { applyCommand, emptyHistory, redo, undo, type History } from './history';
-import { boardFit, detachedLayers, lockupFromLayers, newPlacement, placementsOf, type Placement } from './lockups';
+import { boardFit, detachedLayers, kitLockupStatus, lockupForKit, lockupFromKit, lockupFromLayers, newPlacement, placementsOf, type Placement } from './lockups';
 import { runPreflight } from './preflight';
 import { checkDocumentInvariants, parseDesignDocument, type ArtworkLayer, type DesignDocument, type LockupId } from './schema';
 import { personalise, personalisedZones } from '@/lib/export/roster';
@@ -136,5 +136,59 @@ describe('reusable lockups', () => {
     // Shrunk to a tenth, the word inside is about a millimetre tall: too small to print.
     t.run(cmd.updateTransforms('front', { 'place-1': { widthMm: 7, heightMm: 2 } }));
     expect(runPreflight(t.d).some((i) => i.layerId === 'place-1' && i.code === 'small_text')).toBe(true);
+  });
+});
+
+describe('lockups kept in brand kits', () => {
+  it('saves without the design’s note, and comes back into another design as the same lockup, noting the kit version', () => {
+    const t = withLockup();
+    t.run(cmd.markLockupKit(t.lockupId, { kitId: 'kit-1', savedAt: 1000 }));
+    const saved = lockupForKit(t.d.lockups!.items[t.lockupId]);
+    expect(saved.kit).toBeUndefined();
+    expect(t.d.lockups!.items[t.lockupId].kit).toEqual({ kitId: 'kit-1', savedAt: 1000 });
+    const placed = lockupFromKit({ lockup: saved, savedAt: 1000 }, 'kit-1');
+    expect(placed.id).toBe(t.lockupId);
+    expect(placed.kit).toEqual({ kitId: 'kit-1', savedAt: 1000 });
+    // Changing the copy never reaches back into the kit's.
+    placed.layers[t.word.id].name = 'Changed';
+    expect(saved.layers[t.word.id].name).not.toBe('Changed');
+  });
+
+  it('tells how the design’s copy compares with the kit’s', () => {
+    const t = withLockup();
+    t.run(cmd.markLockupKit(t.lockupId, { kitId: 'kit-1', savedAt: 1000 }));
+    const kitVersion = { lockup: lockupForKit(t.d.lockups!.items[t.lockupId]), savedAt: 1000 };
+    expect(kitLockupStatus(t.d, kitVersion)).toBe('same');
+    expect(kitLockupStatus(createDocument({ projectId: 'p2', title: 'Other', colorwayIndex: 0 }), kitVersion)).toBe('absent');
+    // Board guides are an editing aid, not the lockup.
+    t.run(cmd.setGuides(t.lockupId, { x: [10], y: [] }));
+    expect(kitLockupStatus(t.d, kitVersion)).toBe('same');
+    t.run(cmd.updateLayer(t.lockupId, t.word.id, { content: { value: 'UNITED' } }, 'Edit text'));
+    expect(kitLockupStatus(t.d, kitVersion)).toBe('changed-here');
+    // A version saved to the kit later is newer than the one this design came from.
+    expect(kitLockupStatus(t.d, { ...kitVersion, savedAt: 2000 })).toBe('kit-newer');
+  });
+
+  it('updates from the kit in one undo step: every placement follows, keeping its centre and scale', () => {
+    const t = withLockup();
+    t.run(cmd.addLayer('back', newPlacement(t.d.lockups!.items[t.lockupId], 'place-2', { cx: 100, cy: 100, maxW: 35, maxH: 35 })));
+    const before = placement(t.d, 'back', 'place-2').transform;
+    // The kit's version: the word changed and the board twice as tall.
+    const kitLockup = lockupForKit(t.d.lockups!.items[t.lockupId]);
+    kitLockup.heightMm *= 2;
+    (kitLockup.layers[t.word.id].content as { value: string }).value = 'UNITED';
+    t.run(cmd.replaceLockup(lockupFromKit({ lockup: kitLockup, savedAt: 5000 }, 'kit-1')));
+    const front = placement(t.d, 'front', 'place-1');
+    const back = placement(t.d, 'back', 'place-2');
+    for (const p of [front, back]) expect((p.content.layers[t.word.id].content as { value: string }).value).toBe('UNITED');
+    expect(back.transform.centerXmm).toBe(before.centerXmm);
+    expect(back.transform.widthMm).toBeCloseTo(before.widthMm);
+    expect(back.transform.heightMm).toBeCloseTo(before.heightMm * 2);
+    expect(t.d.lockups!.items[t.lockupId].kit).toEqual({ kitId: 'kit-1', savedAt: 5000 });
+    expect(checkDocumentInvariants(t.d)).toEqual([]);
+    expect(parseDesignDocument(JSON.parse(JSON.stringify(t.d))).ok).toBe(true);
+    const back2 = undo(t.d, t.h).document;
+    expect((placement(back2, 'front', 'place-1').content.layers[t.word.id].content as { value: string }).value).toBe('CLUB');
+    expect(placement(back2, 'back', 'place-2').transform.heightMm).toBeCloseTo(before.heightMm);
   });
 });

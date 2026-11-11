@@ -10,7 +10,7 @@ import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import { allStacks } from '@/domain/areas';
 import { createDocument, newId } from '@/domain/factory';
 import { documentHash } from '@/domain/hash';
-import { migrateDesignDocument, type DesignDocument, type Scene } from '@/domain/schema';
+import { migrateDesignDocument, type DesignDocument, type Lockup, type Scene } from '@/domain/schema';
 
 export type SyncState = 'local' | 'synced' | 'pending' | 'conflict' | 'error';
 
@@ -22,6 +22,10 @@ export interface ProjectMeta {
   layerCount: number;
   createdAt: number;
   updatedAt: number;
+  /** The folder it is filed in, by name; none when unfiled. A folder exists while a project is in it. */
+  folder?: string;
+  /** Labels to find it by (a client, a season, a status), at most MAX_TAGS. */
+  tags?: string[];
   archivedAt?: number;
   /** In Recently deleted since then; deleted for good after TRASH_DAYS (spec PRJ-03). */
   deletedAt?: number;
@@ -90,13 +94,29 @@ export interface BrandColor {
   hex: string;
 }
 
-/** Brand kit (spec BRD-01/02): approved logos, palette and fonts shared across projects. */
+/**
+ * A lockup kept in a brand kit (a crest, a sponsor block): the lockup as saved, with its own id,
+ * so placing it in any project is the same lockup, and a newer version saved later can update it.
+ */
+export interface KitLockup {
+  lockup: Lockup;
+  savedAt: number;
+  /** A small PNG preview; absent when it couldn't be drawn. */
+  thumbnail?: Blob;
+}
+
+/** At most this many lockups in one brand kit. */
+export const MAX_KIT_LOCKUPS = 40;
+
+/** Brand kit (spec BRD-01/02): approved logos, lockups, palette and fonts shared across projects. */
 export interface BrandKit {
   id: string;
   name: string;
   colors: BrandColor[];
   fonts: string[];
   logoAssetIds: string[];
+  /** Saved lockups (optional: kits made before lockups have none). */
+  lockups?: KitLockup[];
   notes: string;
   createdAt: number;
   updatedAt: number;
@@ -313,10 +333,134 @@ export async function duplicateProject(id: string): Promise<ProjectMeta | null> 
     serverRevision: 0,
     syncState: 'local',
     thumbnail: result.meta.thumbnail,
+    // The copy is filed with the original.
+    folder: result.meta.folder,
+    tags: result.meta.tags ? [...result.meta.tags] : undefined,
     approvedHash: undefined,
     approvedVersionId: undefined,
     approvedVersionNumber: undefined,
   });
+}
+
+// ---- Folders, tags and changes to many projects at once ----
+
+export const MAX_TAGS = 12;
+export const MAX_FOLDER_CHARS = 60;
+export const MAX_TAG_CHARS = 32;
+
+/** A folder or tag name as stored: spaces tidied, within its length, or '' when nothing is left. */
+export function cleanLabel(name: string, max: number) {
+  return name.replace(/\s+/g, ' ').trim().slice(0, max).trim();
+}
+
+/** Tags with the same letters in another case are one tag (the first spelling stays). */
+export function mergeTags(tags: readonly string[], add: readonly string[] = [], remove: readonly string[] = []) {
+  const gone = new Set(remove.map((t) => t.toLowerCase()));
+  const out: string[] = [];
+  for (const raw of [...tags, ...add]) {
+    const tag = cleanLabel(raw, MAX_TAG_CHARS);
+    if (tag && !gone.has(tag.toLowerCase()) && !out.some((t) => t.toLowerCase() === tag.toLowerCase())) out.push(tag);
+  }
+  return out.slice(0, MAX_TAGS);
+}
+
+/**
+ * Change several projects in one transaction (all or none): `change` returns the fields to set,
+ * or null to leave a project as it is. Returns how many changed. The edit time is left alone:
+ * filing a project isn't editing it.
+ */
+export async function updateProjects(ids: readonly string[], change: (meta: ProjectMeta) => Partial<ProjectMeta> | null): Promise<number> {
+  const tx = (await db()).transaction('projects', 'readwrite');
+  let changed = 0;
+  for (const id of new Set(ids)) {
+    const meta = await tx.store.get(id);
+    const patch = meta ? change(meta) : null;
+    if (!meta || !patch) continue;
+    await tx.store.put({ ...meta, ...patch });
+    changed++;
+  }
+  await tx.done;
+  return changed;
+}
+
+/** File projects in a folder (made by naming it), or take them out of any with undefined. */
+export function moveProjectsToFolder(ids: readonly string[], folder: string | undefined) {
+  const name = folder === undefined ? undefined : cleanLabel(folder, MAX_FOLDER_CHARS) || undefined;
+  return updateProjects(ids, (meta) => (meta.folder === name ? null : { folder: name }));
+}
+
+/** Rename a folder: every project in it moves to the new name (merging into a folder of that name). */
+export async function renameFolder(from: string, to: string) {
+  const name = cleanLabel(to, MAX_FOLDER_CHARS);
+  if (!name) return 0;
+  const inFolder = (await listProjects({ deleted: 'include', includeArchived: true })).filter((p) => p.folder === from).map((p) => p.id);
+  return moveProjectsToFolder(inFolder, name);
+}
+
+/** Put the projects of a folder back to no folder: the folder goes, the projects stay. */
+export async function removeFolder(name: string) {
+  const inFolder = (await listProjects({ deleted: 'include', includeArchived: true })).filter((p) => p.folder === name).map((p) => p.id);
+  return moveProjectsToFolder(inFolder, undefined);
+}
+
+export function tagProjects(ids: readonly string[], add: readonly string[], remove: readonly string[] = []) {
+  return updateProjects(ids, (meta) => {
+    const next = mergeTags(meta.tags ?? [], add, remove);
+    const same = next.length === (meta.tags ?? []).length && next.every((t, i) => t === meta.tags![i]);
+    return same ? null : { tags: next.length ? next : undefined };
+  });
+}
+
+export function archiveProjects(ids: readonly string[], archived: boolean) {
+  const at = Date.now();
+  return updateProjects(ids, (meta) => (!!meta.archivedAt === archived ? null : { archivedAt: archived ? at : undefined }));
+}
+
+export function trashProjects(ids: readonly string[]) {
+  const at = Date.now();
+  return updateProjects(ids, (meta) => (meta.deletedAt ? null : { deletedAt: at }));
+}
+
+export function restoreProjects(ids: readonly string[]) {
+  return updateProjects(ids, (meta) => (meta.deletedAt ? { deletedAt: undefined } : null));
+}
+
+/** The folder filter for projects filed in no folder. */
+export const NO_FOLDER = '\u0000none';
+
+export interface ProjectFilter {
+  query: string;
+  /** A folder's name, NO_FOLDER for unfiled projects, or null for every project. */
+  folder: string | null;
+  /** Projects must carry every one of these (any case). */
+  tags: readonly string[];
+}
+
+/** Projects matching a search (title, folder or tag), a folder and tags. */
+export function filterProjects(projects: readonly ProjectMeta[], f: ProjectFilter): ProjectMeta[] {
+  const q = f.query.trim().toLowerCase();
+  const wanted = f.tags.map((t) => t.toLowerCase());
+  return projects.filter((p) => {
+    if (f.folder === NO_FOLDER ? !!p.folder : f.folder !== null && p.folder !== f.folder) return false;
+    const tags = (p.tags ?? []).map((t) => t.toLowerCase());
+    if (!wanted.every((t) => tags.includes(t))) return false;
+    return !q || p.title.toLowerCase().includes(q) || (p.folder ?? '').toLowerCase().includes(q) || tags.some((t) => t.includes(q));
+  });
+}
+
+/** Folders in use (with how many of `projects` are in each) and every tag, in name order. */
+export function foldersAndTags(projects: readonly ProjectMeta[]) {
+  const folders = new Map<string, number>();
+  const tags = new Map<string, string>();
+  for (const p of projects) {
+    if (p.folder) folders.set(p.folder, (folders.get(p.folder) ?? 0) + 1);
+    for (const t of p.tags ?? []) if (!tags.has(t.toLowerCase())) tags.set(t.toLowerCase(), t);
+  }
+  const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true });
+  return {
+    folders: [...folders].sort(([a], [b]) => byName(a, b)).map(([name, count]) => ({ name, count })),
+    tags: [...tags.values()].sort(byName),
+  };
 }
 
 export async function archiveProject(id: string, archived: boolean) {
@@ -471,14 +615,63 @@ export async function getBrandKit(id: string) {
   return (await db()).get('brandKits', id);
 }
 
+/** Fired on the window when a brand kit is saved or deleted in this tab, so open panels show it at once. */
+export const BRAND_KIT_CHANGED = 'wovexa:brand-kit-changed';
+const kitChanged = (kitId: string) => {
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(BRAND_KIT_CHANGED, { detail: { kitId } }));
+};
+
 export async function saveBrandKit(kit: BrandKit): Promise<BrandKit> {
   const stored = { ...kit, updatedAt: Date.now() };
   await (await db()).put('brandKits', stored);
+  kitChanged(kit.id);
   return stored;
 }
 
 export async function deleteBrandKit(id: string) {
   await (await db()).delete('brandKits', id);
+  kitChanged(id);
+}
+
+export class KitLockupError extends Error {}
+
+/**
+ * Save a lockup into a brand kit, replacing an earlier version of it, in one transaction so an
+ * edit made to the kit elsewhere in the meantime isn't lost. Returns the kit as saved.
+ */
+export async function saveKitLockup(kitId: string, entry: KitLockup): Promise<BrandKit> {
+  const tx = (await db()).transaction('brandKits', 'readwrite');
+  // An aborted transaction's `done` rejects: settle it here so nothing is left unhandled.
+  const abandon = async (message: string) => {
+    tx.abort();
+    await tx.done.catch(() => undefined);
+    return new KitLockupError(message);
+  };
+  const kit = await tx.store.get(kitId);
+  if (!kit) throw await abandon('The linked brand kit is no longer on this device. Link another in the Brand tab.');
+  const list = kit.lockups ?? [];
+  const at = list.findIndex((l) => l.lockup.id === entry.lockup.id);
+  if (at < 0 && list.length >= MAX_KIT_LOCKUPS) throw await abandon(`${kit.name} already holds ${MAX_KIT_LOCKUPS} lockups. Remove one on the Brand kits page first.`);
+  const stored: BrandKit = { ...kit, lockups: at < 0 ? [...list, entry] : list.map((l, i) => (i === at ? entry : l)), updatedAt: Date.now() };
+  await tx.store.put(stored);
+  await tx.done;
+  kitChanged(kitId);
+  return stored;
+}
+
+/** Take a lockup out of a brand kit (projects that placed it keep their own copy). */
+export async function removeKitLockup(kitId: string, lockupId: string): Promise<BrandKit | undefined> {
+  const tx = (await db()).transaction('brandKits', 'readwrite');
+  const kit = await tx.store.get(kitId);
+  if (!kit) {
+    await tx.done;
+    return undefined;
+  }
+  const stored: BrandKit = { ...kit, lockups: (kit.lockups ?? []).filter((l) => l.lockup.id !== lockupId), updatedAt: Date.now() };
+  await tx.store.put(stored);
+  await tx.done;
+  kitChanged(kitId);
+  return stored;
 }
 
 // ---- Font library (spec AST-07) ----
@@ -542,7 +735,7 @@ export async function assetUsage(assetId: string): Promise<string[]> {
   const usesAsset = (doc: unknown) => JSON.stringify(doc).includes(`"${assetId}"`);
   return [
     ...docs.filter(({ document }) => usesAsset(document)).map(({ document }) => (document as { title?: string }).title ?? 'Untitled'),
-    ...kits.filter((k) => k.logoAssetIds.includes(assetId)).map((k) => `brand kit ${k.name}`),
+    ...kits.filter((k) => k.logoAssetIds.includes(assetId) || usesAsset(k.lockups ?? [])).map((k) => `brand kit ${k.name}`),
   ];
 }
 

@@ -1,11 +1,11 @@
 'use client';
 /** Brand kit manager (spec BRD-01/02): approved logos, a named palette, fonts and usage notes. */
-import { Check, Palette, Plus, Trash2, Upload, X } from 'lucide-react';
+import { Check, Component, Palette, Plus, Trash2, Upload, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { newId } from '@/domain/factory';
 import { ACCEPTED_TYPES, AssetError, importImageFile } from '@/lib/assets';
 import { ARTWORK_FONTS } from '@/lib/fonts';
-import { deleteBrandKit, getAsset, listAssets, listBrandKits, saveBrandKit, type BrandKit, type StoredAsset } from '@/lib/local-db';
+import { BRAND_KIT_CHANGED, deleteBrandKit, getAsset, getBrandKit, listAssets, listBrandKits, saveBrandKit, type BrandKit, type StoredAsset } from '@/lib/local-db';
 import { ConfirmDialog, Sheet, toast } from '@/components/ui/primitives';
 import { BlobImage } from '@/components/workspace/projects';
 import { PageHeader } from '@/components/workspace/WorkspaceShell';
@@ -70,10 +70,30 @@ function KitEditor({ initial, onSaved, onDeleted }: { initial: BrandKit; onSaved
   const [picker, setPicker] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [dirty, setDirty] = useState(false);
+  // Lockups taken out here; the rest of the kit's lockups come from what is stored when saving,
+  // so lockups saved from the studio meanwhile aren't lost.
+  const [removedLockups, setRemovedLockups] = useState<string[]>([]);
   const update = (patch: Partial<BrandKit>) => {
     setKit((k) => ({ ...k, ...patch }));
     setDirty(true);
   };
+  // Lockups arrive from the studio (in this tab or another): show them while nothing here is unsaved.
+  useEffect(() => {
+    if (dirty) return;
+    let alive = true;
+    const reload = () => {
+      void getBrandKit(kit.id).then((latest) => alive && latest && setKit(latest), () => undefined);
+    };
+    const onChanged = (e: Event) => (e as CustomEvent<{ kitId: string }>).detail?.kitId === kit.id && reload();
+    window.addEventListener('focus', reload);
+    window.addEventListener(BRAND_KIT_CHANGED, onChanged);
+    return () => {
+      alive = false;
+      window.removeEventListener('focus', reload);
+      window.removeEventListener(BRAND_KIT_CHANGED, onChanged);
+    };
+  }, [dirty, kit.id]);
+  const lockups = (kit.lockups ?? []).filter((l) => !removedLockups.includes(l.lockup.id));
   const logoKey = kit.logoAssetIds.join(',');
   useEffect(() => {
     let alive = true;
@@ -141,6 +161,40 @@ function KitEditor({ initial, onSaved, onDeleted }: { initial: BrandKit; onSaved
       </section>
 
       <section className="mt-6">
+        <h3 className="text-sm font-semibold">Lockups</h3>
+        {lockups.length ? (
+          <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+            {lockups.map((entry) => (
+              <li key={entry.lockup.id} className="flex items-center gap-3 rounded-lg border border-line p-2">
+                <span className="grid h-14 w-14 flex-none place-items-center rounded-md bg-[var(--surface-hover)] p-1.5">
+                  {entry.thumbnail ? <BlobImage blob={entry.thumbnail} className="max-h-full max-w-full object-contain" /> : <Component size={18} className="text-fg-3" aria-hidden />}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium">{entry.lockup.name}</span>
+                  <span className="block text-xs text-fg-2">
+                    {Math.round(entry.lockup.widthMm)} × {Math.round(entry.lockup.heightMm)} mm, saved {new Date(entry.savedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
+                  </span>
+                </span>
+                <button
+                  className="icon-btn h-8 w-8"
+                  aria-label={`Remove ${entry.lockup.name}`}
+                  title="Take it out of the kit; projects that placed it keep their copy"
+                  onClick={() => {
+                    setRemovedLockups((r) => [...r, entry.lockup.id]);
+                    setDirty(true);
+                  }}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-2 text-sm text-fg-3">Crests, sponsor blocks and name-and-number sets saved from a project. In the studio, open a lockup and choose Save to brand kit.</p>
+        )}
+      </section>
+
+      <section className="mt-6">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold">Colours</h3>
           <button className="btn btn-outline min-h-8 text-xs" disabled={kit.colors.length >= 16} onClick={() => update({ colors: [...kit.colors, { id: newId(), name: `Colour ${kit.colors.length + 1}`, hex: '#2B59FF' }] })}>
@@ -200,10 +254,19 @@ function KitEditor({ initial, onSaved, onDeleted }: { initial: BrandKit; onSaved
           className="btn btn-primary"
           disabled={!dirty || !kit.name.trim()}
           onClick={async () => {
-            const saved = await saveBrandKit({ ...kit, name: kit.name.trim() });
-            setDirty(false);
-            toast(`Saved ${saved.name}.`, 'success');
-            onSaved(saved);
+            try {
+              // Lockups as stored now (some may have been saved from the studio meanwhile), less those taken out here.
+              const latest = await getBrandKit(kit.id);
+              const kept = (latest?.lockups ?? kit.lockups ?? []).filter((l) => !removedLockups.includes(l.lockup.id));
+              const saved = await saveBrandKit({ ...kit, name: kit.name.trim(), lockups: kept });
+              setKit(saved);
+              setRemovedLockups([]);
+              setDirty(false);
+              toast(`Saved ${saved.name}.`, 'success');
+              onSaved(saved);
+            } catch {
+              toast('The brand kit couldn’t be saved. Check that this browser has space left, then try again.', 'error');
+            }
           }}
         >
           Save brand kit
@@ -278,7 +341,8 @@ export function BrandKits() {
                       ))}
                     </div>
                     <p className="mt-2 text-xs text-fg-2">
-                      {k.logoAssetIds.length} {k.logoAssetIds.length === 1 ? 'logo' : 'logos'}, {k.fonts.length} {k.fonts.length === 1 ? 'font' : 'fonts'}
+                      {k.logoAssetIds.length} {k.logoAssetIds.length === 1 ? 'logo' : 'logos'}, {k.lockups?.length ? `${k.lockups.length} ${k.lockups.length === 1 ? 'lockup' : 'lockups'}, ` : ''}
+                      {k.fonts.length} {k.fonts.length === 1 ? 'font' : 'fonts'}
                     </p>
                   </button>
                 </li>

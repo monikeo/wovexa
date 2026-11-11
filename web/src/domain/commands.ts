@@ -351,6 +351,38 @@ export function addLockup(lockup: Lockup): Command {
   };
 }
 
+/**
+ * Swap a lockup for another version of itself, such as its brand kit's. Every placement keeps its
+ * centre and its scale (a bigger board makes a bigger placement), so nothing stretches.
+ */
+export function replaceLockup(next: Lockup, label = `Update ${next.name}`): Command {
+  return {
+    label,
+    recipe: (d) => {
+      const prev = d.lockups?.items[next.id as LockupId];
+      if (!prev) return;
+      for (const site of placementsOf(d, next.id)) {
+        const layer = site.artboard === null ? d.projections.layers[site.layerId] : stackOf(d, site.artboard)?.layers[site.layerId];
+        if (!layer) continue;
+        layer.transform.widthMm = Math.max(0.5, (layer.transform.widthMm / prev.widthMm) * next.widthMm);
+        layer.transform.heightMm = Math.max(0.5, (layer.transform.heightMm / prev.heightMm) * next.heightMm);
+      }
+      d.lockups!.items[next.id as LockupId] = structuredClone(next);
+    },
+  };
+}
+
+/** Note which brand kit version a lockup matches (after saving it there). */
+export function markLockupKit(lockupId: LockupId, kit: NonNullable<Lockup['kit']>): Command {
+  return {
+    label: 'Save lockup to brand kit',
+    recipe: (d) => {
+      const lockup = d.lockups?.items[lockupId];
+      if (lockup) lockup.kit = { ...kit };
+    },
+  };
+}
+
 export function renameLockup(lockupId: LockupId, name: string): Command {
   return {
     label: 'Rename lockup',
@@ -487,6 +519,17 @@ export function setGarmentSize(sizeCode: string): Command {
   return { label: `Size ${sizeCode}`, recipe: (d) => void (d.garment.sizeCode = sizeCode) };
 }
 
+/** Grade the artwork by size, designed on `baseSize`; null prints the same artwork on every size. */
+export function setGrading(baseSize: string | null): Command {
+  return {
+    label: baseSize ? `Artwork scales with size, designed on ${baseSize}` : 'Same artwork on every size',
+    recipe: (d) => {
+      if (baseSize) d.garment.grading = { baseSize };
+      else delete d.garment.grading;
+    },
+  };
+}
+
 /** Use a custom 3D shape (from this style's GLB template, or any garment GLB as a shell) instead of the built-in one, or go back with null. */
 export function setGarmentShape(shape: NonNullable<DesignDocument['garment']['shape']> | null): Command {
   return {
@@ -541,6 +584,8 @@ export function setGarmentModel(model: Pick<GarmentModel, 'id' | 'assetVersion' 
       d.garment.assetVersion = model.assetVersion;
       if (!model.sizes.some((s) => s.code === d.garment.sizeCode)) d.garment.sizeCode = model.defaultSize;
       if (!model.fabricPresets.some((f) => f.id === d.garment.fabricPresetId)) d.garment.fabricPresetId = model.fabricPresets[0].id;
+      // Graded artwork stays graded, from a size the new style has.
+      if (d.garment.grading && !model.sizes.some((s) => s.code === d.garment.grading!.baseSize)) d.garment.grading.baseSize = d.garment.sizeCode;
       // Keep each zone on a print method the new garment offers there.
       if (model.zones) {
         for (const [zoneId, zone] of Object.entries(d.zones) as [ZoneId, ZoneDesign][]) {

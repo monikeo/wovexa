@@ -4,11 +4,12 @@
  * colour for every part the garment has, and all-over fabric prints per part.
  */
 import { Check, ChevronDown, ChevronUp, Copy, Dices, Download, GitCompare, ImagePlus, Loader2, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useBrandKit } from './brand-context';
 import * as cmd from '@/domain/commands';
 import { createColorway } from '@/domain/factory';
 import { BELT_COLOURS, colorwayPresetsFor, GARMENT_LIST, getGarment, hasZone, partColor, PRINT_METHOD_LABELS, sizeChart, sizeLabel, type GarmentModel } from '@/domain/garments';
+import { gradingBase, gradingTable } from '@/domain/grading';
 import { FABRIC_EFFECTS, PATTERNS, ZONE_IDS, type Colorway, type DesignDocument, type FabricEffect, type PrintMethod, type Surface } from '@/domain/schema';
 import { downloadBlob } from '@/lib/download';
 import { groupLibrary, MAX_SHELL_TRIANGLES, type LibraryModel } from '@/domain/model-library';
@@ -34,6 +35,80 @@ const EFFECT_LABELS: Record<FabricEffect, string> = {
 };
 
 const seed = () => Math.floor(Math.random() * 2147483646) + 1;
+
+/**
+ * Artwork graded by size (team orders): smaller sizes print it smaller and bigger ones bigger, by
+ * how much the garment changes where the print goes. Designed on one size, the base.
+ */
+function SizeGrading({ model, doc }: { model: GarmentModel; doc: DesignDocument }) {
+  const dispatch = useStudio((s) => s.dispatch);
+  const base = gradingBase(doc, model);
+  const table = useMemo(() => (base ? gradingTable({ garment: doc.garment, zones: doc.zones }) : []), [base, doc.garment, doc.zones]);
+  const zones = table[0]?.zones ?? [];
+  return (
+    <div className="space-y-2 rounded-lg border border-line p-3" data-testid="size-grading">
+      <label className="flex items-start gap-2.5 text-sm">
+        <input type="checkbox" className="mt-0.5 h-4 w-4 flex-none accent-[var(--accent)]" checked={!!base} onChange={(e) => dispatch(cmd.setGrading(e.target.checked ? doc.garment.sizeCode : null))} />
+        <span>
+          <span className="font-medium">Scale artwork with size</span>
+          <span className="mt-0.5 block text-xs text-fg-2">For orders across sizes: each size prints the artwork scaled by how much its garment differs, with print files per size.</span>
+        </span>
+      </label>
+      {base ? (
+        <>
+          <label className="grid grid-cols-[auto_1fr] items-center gap-2 text-xs">
+            <span className="text-fg-2">Designed on</span>
+            <select className="field h-8 text-xs" value={base.code} onChange={(e) => dispatch(cmd.setGrading(e.target.value))} aria-label="Size the artwork is designed on">
+              {model.sizes.map((s) => (
+                <option key={s.code} value={s.code}>
+                  {sizeLabel(model, s)}
+                </option>
+              ))}
+            </select>
+          </label>
+          {doc.garment.sizeCode !== base.code ? (
+            <p className="text-xs text-fg-2">
+              The 3D view shows size {doc.garment.sizeCode} with its artwork scaled; the artboard shows it as designed, on {base.code}.
+            </p>
+          ) : null}
+          {zones.length ? (
+            <div className="max-h-56 overflow-auto rounded-md border border-line">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-panel text-fg-2">
+                  <tr>
+                    <th className="px-2 py-1 text-left font-medium">Size</th>
+                    {zones.map((z) => (
+                      <th key={z.zoneId} className="px-2 py-1 text-right font-medium">
+                        {model.zones[z.zoneId]?.shortLabel ?? z.label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {table.map((row) => (
+                    <tr key={row.code} className={row.code === doc.garment.sizeCode ? 'bg-selected' : ''}>
+                      <td className="px-2 py-1">
+                        {row.label}
+                        {row.base ? <span className="text-fg-3"> (base)</span> : null}
+                      </td>
+                      {row.zones.map((z) => (
+                        <td key={z.zoneId} className={`num px-2 py-1 text-right ${z.overflowMm > 1 ? 'text-warning' : ''}`} title={`${Math.round(z.widthMm)} × ${Math.round(z.heightMm)} mm${z.overflowMm > 1 ? `, ${Math.round(z.overflowMm)} mm past the print area` : ''}`}>
+                          {Math.round(z.factor * 100)}%
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-xs text-fg-3">Add artwork to a print area to see each size’s scale.</p>
+          )}
+        </>
+      ) : null}
+    </div>
+  );
+}
 
 function isLight(hex: string) {
   const n = parseInt(hex.slice(1), 16);
@@ -577,6 +652,7 @@ export function GarmentPanel() {
           </label>
         </div>
         <SizeGuide model={model} selected={doc.garment.sizeCode} onPick={(code) => dispatch(cmd.setGarmentSize(code))} />
+        <SizeGrading model={model} doc={doc} />
         <ShapePicker model={model} doc={doc} />
       </section>
 

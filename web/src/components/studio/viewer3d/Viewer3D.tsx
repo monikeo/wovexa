@@ -14,6 +14,7 @@ import { unionBounds } from '@/domain/arrange';
 import { artboardOf, designAreas, NEW_AREA_MM } from '@/domain/areas';
 import { batch, coalescing, scaleArea, updateArea, updateProjectedLayer, updateTransforms, type Command } from '@/domain/commands';
 import { getGarment, getSize, partColor, zoneSpecOrFirst, type PartId } from '@/domain/garments';
+import { gradePoint, ungradePoint, zoneGrade } from '@/domain/grading';
 import { clamp, hitTestLayer, normalizeDeg, rotatedBounds, scaleRotateAbout } from '@/domain/geometry';
 import { layerAssetIds } from '@/domain/lockups';
 import { projectionsAsZone } from '@/domain/projected';
@@ -976,9 +977,22 @@ function Garment({ geo, ownRest, quality, mode, guides, hanger, onOwnZone }: { g
     };
   }, [draw, doc, colorway]);
 
+  /**
+   * A point on the garment in a zone's own millimetres. Artwork graded by size shows at this
+   * size's grade, so the point is graded back: picking and dragging land where the artwork shows.
+   */
+  const ungrade = <P extends { xMm: number; yMm: number }>(zoneId: ZoneId, p: P): P => {
+    const d = useStudio.getState().document!;
+    const factor = zoneGrade(d, zoneId, d.garment.sizeCode);
+    const spec = model.zones[zoneId];
+    if (factor === 1 || !spec) return p;
+    return { ...p, ...ungradePoint(spec, factor, p.xMm, p.yMm) };
+  };
+
   const pickAt = (part: GarmentPart, uv: THREE.Vector2) => {
-    const hit = uvToZone(model, geo.layout, part, wrapU(uv.x), uv.y);
-    if (!hit) return null;
+    const found = uvToZone(model, geo.layout, part, wrapU(uv.x), uv.y);
+    if (!found) return null;
+    const hit = ungrade(found.zoneId, found);
     const zone = useStudio.getState().document!.zones[hit.zoneId];
     return { ...hit, layerId: hitTestLayer(zone, hit.xMm, hit.yMm) };
   };
@@ -1299,7 +1313,7 @@ function Garment({ geo, ownRest, quality, mode, guides, hanger, onOwnZone }: { g
       raycaster.setFromCamera(ndc, camera);
       const uv = raycaster.intersectObject(d.mesh, false)[0]?.uv;
       if (!uv) return; // off the garment: hold the last position
-      const p = uvInZone(model, geo.layout, d.zoneId, wrapU(uv.x), uv.y);
+      const p = ungrade(d.zoneId, uvInZone(model, geo.layout, d.zoneId, wrapU(uv.x), uv.y));
       if (!d.moved && Math.hypot(p.xMm - d.start.xMm, p.yMm - d.start.yMm) < 1.5) return;
       d.moved = true;
       // Snap to the zone's centre line and keep the artwork's centre on the print area.
@@ -2459,7 +2473,11 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
       const part = geo.parts.find((p) => p.id === partForZone(id));
       if (!spec || !zone || !part?.geometry.index) return null;
       const shown = zone.orderedLayerIds.map((l) => zone.layers[l]).filter((l) => l?.visible);
-      const box = shown.length ? unionBounds(shown.map((l) => rotatedBounds(l.transform))) : { x: 0, y: 0, width: spec.printableWidthMm, height: spec.printableHeightMm };
+      const raw = shown.length ? unionBounds(shown.map((l) => rotatedBounds(l.transform))) : { x: 0, y: 0, width: spec.printableWidthMm, height: spec.printableHeightMm };
+      // Artwork graded by size shows at this size's scale: frame it as shown.
+      const factor = shown.length ? zoneGrade(d, id, d.garment.sizeCode) : 1;
+      const corner = gradePoint(spec, factor, raw.x, raw.y);
+      const box = { x: corner.xMm, y: corner.yMm, width: raw.width * factor, height: raw.height * factor };
       const { u, v } = zoneToUv(getGarment(d.garment.modelId), geo.layout, id, box.x + box.width / 2, box.y + box.height / 2);
       const g = part.geometry;
       const hit = surfaceAtUv({ position: g.attributes.position.array, uv: g.attributes.uv.array, index: g.index!.array, normal: g.attributes.normal?.array }, u, v);

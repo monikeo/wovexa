@@ -1,16 +1,37 @@
 'use client';
 import { AlertTriangle, CheckCircle2, Info, XOctagon } from 'lucide-react';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { artboardOf } from '@/domain/areas';
 import { getGarment } from '@/domain/garments';
-import { runPreflight, summarize, type PreflightIssue, type Severity } from '@/domain/preflight';
+import { summarize, type PreflightIssue, type Severity } from '@/domain/preflight';
+import { fullPreflight } from '@/lib/preflight-browser';
 import { isAreaId, isLockupId } from '@/domain/schema';
 import { useStudio } from '@/stores/studio-store';
 import { selectProjection } from './projection-actions';
 
+/**
+ * Every print check for the open design. The browser's checks (seams, fonts) wait for images and
+ * fonts: they run again once fonts finish loading, and shortly after while anything is pending.
+ */
 export function usePreflight() {
   const doc = useStudio((s) => s.document);
-  return useMemo(() => (doc ? runPreflight(doc) : []), [doc]);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (typeof document === 'undefined' || !document.fonts) return;
+    const again = () => setTick((t) => t + 1);
+    document.fonts.addEventListener('loadingdone', again);
+    return () => document.fonts.removeEventListener('loadingdone', again);
+  }, []);
+  const result = useMemo(() => {
+    void tick; // a new tick checks again what was still loading
+    return doc ? fullPreflight(doc) : { issues: [], pending: false };
+  }, [doc, tick]);
+  useEffect(() => {
+    if (!result.pending) return;
+    const timer = setTimeout(() => setTick((t) => t + 1), 1500);
+    return () => clearTimeout(timer);
+  }, [result]);
+  return result.issues;
 }
 
 export const SEVERITY: Record<Severity, { label: string; Icon: typeof Info; className: string }> = {

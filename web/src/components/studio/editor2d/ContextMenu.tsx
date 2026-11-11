@@ -22,6 +22,7 @@ import {
   MousePointerSquareDashed,
   Pencil,
   SendToBack,
+  Shapes,
   Spline,
   Square,
   Trash2,
@@ -47,10 +48,12 @@ import {
   duplicateSelection,
   editLockup,
   editPoints,
+  hasEditablePoints,
   groupSelection,
   makeLockupFromSelection,
   moveSelectionInStack,
   openCrop,
+  openTrace,
   selectAll,
   ungroupSelection,
   zoomToSelection,
@@ -107,7 +110,8 @@ export function EditorContextMenu({ x, y, onClose }: { x: number; y: number; onC
             ? [{ label: 'Edit text', icon: <Pencil size={15} />, shortcut: 'Enter', run: () => window.dispatchEvent(new CustomEvent('wovexa:edit-layer', { detail: { layerId: single.id } })) }]
             : []),
           ...(single?.content.kind === 'image' ? [{ label: 'Crop…', icon: <Crop size={15} />, run: () => openCrop('crop') }] : []),
-          ...(single?.content.kind === 'shape' && !single.locked ? [{ label: 'Edit points', icon: <Spline size={15} />, run: editPoints }] : []),
+          ...(single?.content.kind === 'image' && !single.locked ? [{ label: 'Trace to shapes…', icon: <Shapes size={15} />, run: openTrace }] : []),
+          ...(single && hasEditablePoints(single) ? [{ label: single.content.kind === 'text' ? 'Edit the path' : 'Edit points', icon: <Spline size={15} />, run: editPoints }] : []),
           ...(single?.content.kind === 'lockup'
             ? [
                 { label: 'Edit lockup', icon: <Component size={15} />, run: () => editLockup((single.content as LockupContent).lockupId) },

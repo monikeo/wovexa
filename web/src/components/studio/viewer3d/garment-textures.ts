@@ -6,6 +6,7 @@
  * Each part has a change key, so only parts whose content changed are repainted and re-uploaded.
  */
 import { partColor, type GarmentModel, type PartId } from '@/domain/garments';
+import { gradeAnchor, zoneGrade } from '@/domain/grading';
 import { isAreaId, type ArtboardId, type Colorway, type DesignDocument, type LayerTransform, type Surface, type ZoneId } from '@/domain/schema';
 import { drawZone, drawZoneSurface, paintFabric } from '@/lib/render/zone-renderer';
 import { partSizeMm, type EdgePoint, type GarmentGeometry } from './garment-geometry';
@@ -71,7 +72,15 @@ export interface PaintContext {
    * relief, gloss and metal (see drawPartSurface).
    */
   simulateFinish?: boolean;
+  /**
+   * The size `geo` is built for, when it isn't the design's size on show (the fabric marker paints
+   * every size of an order): artwork graded by size is drawn at this size's scale.
+   */
+  sizeCode?: string;
 }
+
+/** The size a paint context draws: its own, or the design's size on show. */
+const sizeOf = (c: Pick<PaintContext, 'doc' | 'sizeCode'>) => c.sizeCode ?? c.doc.garment.sizeCode;
 
 export function zonesOnPart(model: GarmentModel, part: PartId): ZoneId[] {
   return model.zoneOrder.filter((z) => model.zones[z]?.part === part);
@@ -155,6 +164,22 @@ function runs(edge: EdgePoint[], kind: EdgePoint['kind'], W: number, H: number) 
   return out;
 }
 
+/**
+ * Scale the context about a zone's grade anchor (the top centre of its print area, on the part)
+ * when the design is graded by size and shown on another size than its base.
+ */
+function applyGrade(ctx: CanvasRenderingContext2D, c: Pick<PaintContext, 'model' | 'doc' | 'sizeCode'>, zoneId: ZoneId, origin: { x: number; y: number }, ppm: number) {
+  const spec = c.model.zones[zoneId];
+  const factor = zoneGrade(c.doc, zoneId, sizeOf(c));
+  if (!spec || factor === 1) return;
+  const a = gradeAnchor(spec);
+  const ax = (origin.x + a.xMm) * ppm;
+  const ay = (origin.y + a.yMm) * ppm;
+  ctx.translate(ax, ay);
+  ctx.scale(factor, factor);
+  ctx.translate(-ax, -ay);
+}
+
 function drawGuides(ctx: CanvasRenderingContext2D, c: PaintContext, zoneId: ZoneId, origin: { x: number; y: number }, ppm: number) {
   const { guides, model, doc, live } = c;
   const spec = model.zones[zoneId];
@@ -172,7 +197,11 @@ function drawGuides(ctx: CanvasRenderingContext2D, c: PaintContext, zoneId: Zone
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
     ctx.strokeStyle = guides.accent;
-    ctx.lineWidth = Math.max(2, 1.6 * ppm);
+    // Selection outlines go round the artwork as shown: graded at this size.
+    ctx.translate(-origin.x * ppm, -origin.y * ppm);
+    applyGrade(ctx, c, zoneId, origin, ppm);
+    ctx.translate(origin.x * ppm, origin.y * ppm);
+    ctx.lineWidth = Math.max(2, 1.6 * ppm) / zoneGrade(doc, zoneId, sizeOf(c));
     for (const id of guides.selection.ids) {
       const layer = doc.zones[zoneId].layers[id];
       if (!layer) continue;
@@ -251,6 +280,9 @@ export function drawPart(canvas: HTMLCanvasElement, part: PartId, c: PaintContex
 
   for (const zoneId of zonesOnPart(model, part)) {
     const o = zoneOrigin(model, geo.layout, zoneId);
+    ctx.save();
+    // Artwork graded by size shows at this size's grade, grown from the top centre of its print area.
+    applyGrade(ctx, c, zoneId, o, ppm);
     complete =
       drawZone(ctx, doc.zones[zoneId], {
         pxPerMm: ppm,
@@ -259,6 +291,7 @@ export function drawPart(canvas: HTMLCanvasElement, part: PartId, c: PaintContex
         overrides: live?.zoneId === zoneId ? live.overrides : undefined,
         simulateFinish: sewn && (c.simulateFinish ?? true),
       }) && complete;
+    ctx.restore();
     drawGuides(ctx, c, zoneId, o, ppm);
   }
   // Design areas go on last, like transfers pressed onto the finished garment.
@@ -294,6 +327,8 @@ export function drawPartSurface(canvas: HTMLCanvasElement, part: PartId, c: Pain
   for (const zoneId of zonesOnPart(model, part)) {
     const o = zoneOrigin(model, geo.layout, zoneId);
     const zone = doc.zones[zoneId];
+    ctx.save();
+    applyGrade(ctx, c, zoneId, o, ppm);
     complete =
       drawZoneSurface(ctx, zone, {
         pxPerMm: ppm,
@@ -302,6 +337,7 @@ export function drawPartSurface(canvas: HTMLCanvasElement, part: PartId, c: Pain
         overrides: live?.zoneId === zoneId ? live.overrides : undefined,
         method: zone.printMethod,
       }) && complete;
+    ctx.restore();
   }
   complete = drawAreaSurfaces(ctx, part, projectionScene(c), ppm, { live }) && complete;
   return complete;
@@ -333,5 +369,7 @@ export function partKey(part: PartId, c: PaintContext, generation: number) {
   const projected = projectionKey(scene, part, g?.projection);
   const areaGuides = g ? `${g.zones ? 1 : 0}${g.active ?? ''}${g.selection && isAreaId(g.selection.zoneId) ? g.selection.ids.join(',') : ''}` : '-';
   const areas = areasKey(scene, part, c.live, areaGuides);
-  return [part, zones.map((z) => idOf(c.doc.zones[z])).join('.'), live, projected, areas, idOf(c.colorway), c.quality, guideKey, idOf(c.geo), generation].join('|');
+  // Graded artwork repaints when the grading changes, not only the artwork.
+  const grades = zones.map((z) => zoneGrade(c.doc, z, sizeOf(c))).join(',');
+  return [part, zones.map((z) => idOf(c.doc.zones[z])).join('.'), grades, live, projected, areas, idOf(c.colorway), c.quality, guideKey, idOf(c.geo), generation].join('|');
 }

@@ -8,6 +8,7 @@ import * as cmd from '@/domain/commands';
 import { newId } from '@/domain/factory';
 import { getGarment, getSize, hasZone, zoneSpecOrFirst } from '@/domain/garments';
 import { clamp, normalizeDeg } from '@/domain/geometry';
+import { gradePoint, ungradePoint, zoneGrade } from '@/domain/grading';
 import { artworkAsProjected, projectedAsArtwork } from '@/domain/projected';
 import { isAreaId, isLockupId, type DesignDocument, type ProjectedLayer, type ProjectorSpec, type ZoneId } from '@/domain/schema';
 import { toast } from '@/components/ui/primitives';
@@ -61,13 +62,20 @@ export function wrapSelectionAcrossSeams() {
     return;
   }
   const projected: ProjectedLayer[] = [];
+  // Artwork graded by size lifts off where, and at the size, it shows on the size on show.
+  const spec = getGarment(doc.garment.modelId).zones[zoneId];
+  const factor = spec ? zoneGrade(doc, zoneId, doc.garment.sizeCode) : 1;
   for (const layer of layers) {
-    const projector = projectorAtZonePoint(doc, zoneId, layer.transform.centerXmm, layer.transform.centerYmm);
+    const at = spec ? gradePoint(spec, factor, layer.transform.centerXmm, layer.transform.centerYmm) : { xMm: layer.transform.centerXmm, yMm: layer.transform.centerYmm };
+    const projector = projectorAtZonePoint(doc, zoneId, at.xMm, at.yMm);
     if (!projector) {
       toast(`${layer.name} isn’t on this garment’s surface, so it can’t be wrapped.`, 'error');
       return;
     }
-    projected.push(artworkAsProjected(layer, projector));
+    const lifted = artworkAsProjected(layer, projector);
+    lifted.transform.widthMm *= factor;
+    lifted.transform.heightMm *= factor;
+    projected.push(lifted);
   }
   const commands = projected.map((p) => cmd.wrapAcrossSeams(zoneId, p.id, p));
   s.dispatch(commands.length === 1 ? commands[0] : cmd.batch('Wrap across seams', commands));
@@ -105,8 +113,14 @@ export function returnProjectionToZone(layerId: string) {
     }
   }
   const spec = zoneSpecOrFirst(model, zoneId);
-  const center = at ? { xMm: clamp(at.xMm, 0, spec.printableWidthMm), yMm: clamp(at.yMm, 0, spec.printableHeightMm) } : { xMm: spec.printableWidthMm / 2, yMm: spec.printableHeightMm / 2 };
+  // On a size where the zone's artwork shows graded, the point and size on the garment are that
+  // size's: back in the zone they are the design's own, ungraded.
+  const factor = zoneGrade(doc, spec.id, doc.garment.sizeCode);
+  const designed = at ? ungradePoint(spec, factor, at.xMm, at.yMm) : null;
+  const center = designed ? { xMm: clamp(designed.xMm, 0, spec.printableWidthMm), yMm: clamp(designed.yMm, 0, spec.printableHeightMm) } : { xMm: spec.printableWidthMm / 2, yMm: spec.printableHeightMm / 2 };
   const art = projectedAsArtwork(layer, center);
+  art.transform.widthMm = Math.max(0.5, art.transform.widthMm / factor);
+  art.transform.heightMm = Math.max(0.5, art.transform.heightMm / factor);
   art.transform.rotationDeg = normalizeDeg(art.transform.rotationDeg + turn);
   s.dispatch(cmd.returnToZone(layerId, spec.id, art));
   s.setActiveZone(spec.id);

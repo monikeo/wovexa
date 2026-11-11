@@ -1,23 +1,82 @@
 'use client';
 /**
- * Brand kit inside the studio (spec BRD-01/02): approved logos to place, palette colours and
- * fonts to apply to the selection. The kit itself is managed on the Brand kits page.
+ * Brand kit inside the studio (spec BRD-01/02): approved logos and lockups to place, palette
+ * colours and fonts to apply to the selection. The kit itself is managed on the Brand kits page.
  */
-import { Palette, Plus } from 'lucide-react';
+import { Component, Palette, Plus } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import * as cmd from '@/domain/commands';
 import { createImageLayer } from '@/domain/factory';
 import { artboardOf, artboardSpec } from '@/domain/areas';
 import { getGarment } from '@/domain/garments';
-import type { TextContent } from '@/domain/schema';
+import { kitLockupStatus, type KitLockupStatus } from '@/domain/lockups';
+import { isLockupId, type TextContent } from '@/domain/schema';
 import { nearestWeight } from '@/lib/fonts';
 import { getAsset, listBrandKits, type BrandKit, type StoredAsset } from '@/lib/local-db';
 import { textAspect } from '@/lib/render/zone-renderer';
 import { toast } from '@/components/ui/primitives';
 import { BlobImage } from '@/components/workspace/projects';
 import { useStudio } from '@/stores/studio-store';
+import { placeKitLockup, saveLockupToKit, updateLockupFromKit } from './actions';
 import { useBrandKit } from './brand-context';
+
+const LOCKUP_STATUS: Record<KitLockupStatus, string> = {
+  absent: 'Not in this design yet',
+  same: 'In this design, matching the kit',
+  'kit-newer': 'The kit has a newer version',
+  'changed-here': 'Changed in this design since',
+};
+
+/** The kit's lockups: place one, bring this design's copy up to the kit's version, or save this design's changes back. */
+function KitLockups({ kit }: { kit: BrandKit }) {
+  const doc = useStudio((s) => s.document);
+  const onLockupBoard = useStudio((s) => isLockupId(s.activeZoneId));
+  const lockups = kit.lockups ?? [];
+  return (
+    <section>
+      <h3 className="label mb-2 px-1">Lockups</h3>
+      {lockups.length ? (
+        <ul className="space-y-1.5">
+          {lockups.map((entry) => {
+            const status = doc ? kitLockupStatus(doc, entry) : 'absent';
+            return (
+              <li key={entry.lockup.id} className="flex items-center gap-2 rounded-lg border border-line p-1.5" data-testid="kit-lockup">
+                <span className="grid h-11 w-11 flex-none place-items-center rounded-md bg-[var(--surface-hover)] p-1">
+                  {entry.thumbnail ? <BlobImage blob={entry.thumbnail} className="max-h-full max-w-full object-contain" /> : <Component size={16} className="text-fg-3" aria-hidden />}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium">{entry.lockup.name}</span>
+                  <span className={`block truncate text-[11px] ${status === 'kit-newer' ? 'text-warning' : 'text-fg-3'}`}>{LOCKUP_STATUS[status]}</span>
+                </span>
+                {status === 'kit-newer' ? (
+                  <button className="btn btn-outline min-h-8 flex-none px-2 text-xs" onClick={() => updateLockupFromKit(entry, kit.id)} title="Use the kit’s version in this design: every placement follows (one undo step)">
+                    Update
+                  </button>
+                ) : null}
+                {status === 'changed-here' ? (
+                  <button className="btn btn-outline min-h-8 flex-none px-2 text-xs" onClick={() => void saveLockupToKit(entry.lockup.id)} title="Save this design’s version to the kit, for every project">
+                    Save
+                  </button>
+                ) : null}
+                <button
+                  className="btn btn-outline min-h-8 flex-none px-2 text-xs"
+                  disabled={onLockupBoard}
+                  onClick={() => placeKitLockup(entry, kit.id)}
+                  title={onLockupBoard ? 'Finish editing the lockup first: a lockup can’t hold another' : `Place ${entry.lockup.name} on this artboard`}
+                >
+                  Place
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p className="px-1 text-xs text-fg-3">No lockups in this kit yet. Make a lockup, then save it to the kit from its settings.</p>
+      )}
+    </section>
+  );
+}
 
 function useAssets(ids: string[]) {
   const [assets, setAssets] = useState<StoredAsset[]>([]);
@@ -125,6 +184,7 @@ export function BrandPanel() {
           <p className="px-1 text-xs text-fg-3">No logos in this kit yet.</p>
         )}
       </section>
+      <KitLockups kit={kit} />
       <section>
         <h3 className="label mb-2 px-1">Colours, applied to the selection</h3>
         <div className="grid grid-cols-6 gap-1.5">

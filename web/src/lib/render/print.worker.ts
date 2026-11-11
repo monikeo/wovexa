@@ -5,6 +5,7 @@
  * and a mask for a PDF/X page), so a 300 dpi export never freezes the studio. The page sends the
  * artwork, its images as bitmaps and what fonts it needs.
  */
+import type { Grade } from '@/domain/grading';
 import type { LayerStack } from '@/domain/schema';
 import { registerImage } from '@/lib/assets';
 import { cmykRaster, type CmykRaster } from '@/lib/export/pdf-x';
@@ -19,6 +20,8 @@ export interface PrintJob {
   widthMm: number;
   heightMm: number;
   dpi: number;
+  /** Artwork graded by size: drawn scaled about its anchor. */
+  grade?: Grade;
   images: { id: string; bitmap: ImageBitmap }[];
   fonts: PrintFonts;
 }
@@ -36,7 +39,7 @@ scope.onmessage = async (event: MessageEvent<PrintJob>) => {
     for (const { id, bitmap } of job.images) registerImage(id, bitmap);
     // New faces change how text measures: layouts made before them are stale.
     if (await loadPrintFonts(job.fonts)) clearTextLayoutCache();
-    const { canvas, dpi } = renderZoneArtwork(job.stack, job.widthMm, job.heightMm, job.dpi);
+    const { canvas, dpi } = renderZoneArtwork(job.stack, job.widthMm, job.heightMm, job.dpi, job.grade);
     const surface = canvas as unknown as OffscreenCanvas;
     if (job.format === 'cmyk') {
       const raster = await cmykRaster(surface.getContext('2d')!, surface.width, surface.height);

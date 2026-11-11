@@ -5,15 +5,17 @@
  */
 import { drawSketch, sketchBounds, sketchForZone } from '@/components/studio/editor2d/flat-sketch';
 import { getGarment, getSize, zoneSpecOrFirst } from '@/domain/garments';
+import { gradeAnchor, zoneGrade } from '@/domain/grading';
 import { layerAssetIds } from '@/domain/lockups';
 import type { DesignDocument, ZoneId } from '@/domain/schema';
 import { getLoadedImage, loadAssetImage } from './assets';
 import { canvasToBlob } from './download';
 import { drawZone, ensureFonts } from './render/zone-renderer';
 
-export async function renderZoneSketch(doc: DesignDocument, zoneId: ZoneId, size = 360, opts: { printArea?: boolean; colorwayId?: string } = {}) {
+export async function renderZoneSketch(doc: DesignDocument, zoneId: ZoneId, size = 360, opts: { printArea?: boolean; colorwayId?: string; sizeCode?: string } = {}) {
   const model = getGarment(doc.garment.modelId);
-  const garmentSize = getSize(model, doc.garment.sizeCode);
+  // The garment in the size asked for (the size on show by default), its artwork at that size's scale when graded by size.
+  const garmentSize = getSize(model, opts.sizeCode ?? doc.garment.sizeCode);
   const spec = zoneSpecOrFirst(model, zoneId);
   const colorway = doc.colorways.find((c) => c.id === (opts.colorwayId ?? doc.activeColorwayId)) ?? doc.colorways[0];
   const zone = doc.zones[spec.id];
@@ -42,6 +44,13 @@ export async function renderZoneSketch(doc: DesignDocument, zoneId: ZoneId, size
   sketch.body.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
   ctx.closePath();
   ctx.clip();
+  const factor = zoneGrade(doc, spec.id, garmentSize.code);
+  if (factor !== 1) {
+    const a = gradeAnchor(spec);
+    ctx.translate(a.xMm, a.yMm);
+    ctx.scale(factor, factor);
+    ctx.translate(-a.xMm, -a.yMm);
+  }
   drawZone(ctx, zone, { pxPerMm: 1 });
   ctx.restore();
   if (opts.printArea) {

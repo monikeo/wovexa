@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
-import { addText, designOf, dropPhoto, frontLayers, newProject, palette, platePreview, selectLayers, unzip } from './helpers';
+import { addText, designOf, dropLogo, dropPhoto, frontLayers, newProject, palette, platePreview, selectLayers, unzip } from './helpers';
 
 test.beforeEach(async ({ page }) => {
   await newProject(page);
@@ -187,6 +187,139 @@ test('edits a project in one tab at a time, and lets editing move with the lates
   await expect(second.getByRole('alertdialog')).toBeHidden();
   await expect.poll(async () => (await frontLayers(second)).length).toBe(2);
   await expect(page.getByRole('alertdialog')).toContainText('Editing moved to another tab');
+});
+
+test('traces a logo into colour shapes, keeping the image hidden underneath', async ({ page }) => {
+  await dropLogo(page);
+  await palette(page, 'trace image to vector shapes');
+  const panel = page.getByTestId('trace-panel');
+  await expect(panel.getByRole('img', { name: /Preview: 2 colour shapes/ })).toBeVisible({ timeout: 20_000 });
+  await expect(panel).toContainText('Leaves out #FFFFFF');
+  await panel.getByRole('button', { name: 'Trace', exact: true }).click();
+  await expect.poll(async () => (await frontLayers(page)).map((l) => [l.content.kind, l.visible])).toEqual([
+    ['image', false],
+    ['shape', true],
+    ['shape', true],
+  ]);
+  const [, red, navy] = await frontLayers(page);
+  expect(red.content.kind === 'shape' && red.content.fill).toBe('#DC1E28');
+  expect(navy.content.kind === 'shape' && navy.content.fill).toBe('#141E5A');
+  expect(red.groupId && red.groupId === navy.groupId).toBeTruthy();
+  // One undo brings the image back on its own.
+  await page.keyboard.press('Control+Z');
+  await expect.poll(async () => (await frontLayers(page)).map((l) => [l.content.kind, l.visible])).toEqual([['image', true]]);
+});
+
+test('reshapes the line text runs along, keeping the letters the same size', async ({ page }) => {
+  await addText(page, 'TEAM');
+  await palette(page, 'add ellipse');
+  const [text, circle] = await frontLayers(page);
+  await selectLayers(page, [text.id, circle.id]);
+  await palette(page, 'put the text on the shape');
+  await selectLayers(page, [text.id]);
+  const before = (await frontLayers(page))[0].content;
+  await palette(page, 'edit the line the text follows');
+  const overlay = page.getByRole('application', { name: /Editing the line the text follows/ });
+  await expect(overlay).toBeVisible();
+  // Drag the first point of the circle further out from its middle: the line gets longer.
+  const nodes = await Promise.all((await overlay.locator('[data-node]').all()).map(async (n) => (await n.boundingBox())!));
+  const mid = nodes.reduce((m, b) => ({ x: m.x + (b.x + b.width / 2) / nodes.length, y: m.y + (b.y + b.height / 2) / nodes.length }), { x: 0, y: 0 });
+  const from = { x: nodes[0].x + nodes[0].width / 2, y: nodes[0].y + nodes[0].height / 2 };
+  const away = Math.hypot(from.x - mid.x, from.y - mid.y) || 1;
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x + ((from.x - mid.x) / away) * 60, from.y + ((from.y - mid.y) / away) * 60, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(async () => {
+    const c = (await frontLayers(page))[0].content;
+    return c.kind === 'text' && before.kind === 'text' ? c.onPath?.d !== before.onPath?.d : false;
+  }).toBe(true);
+  // The line grew, so the same words cover less of it.
+  const after = (await frontLayers(page))[0].content;
+  expect(after.kind === 'text' && before.kind === 'text' && after.onPath!.span < before.onPath!.span).toBe(true);
+  await page.keyboard.press('Enter');
+  await expect(overlay).toBeHidden();
+});
+
+test('keeps a lockup in the brand kit and places it in another project', async ({ page }) => {
+  await page.goto('/brands');
+  await page.getByRole('button', { name: 'New brand kit' }).click();
+  await page.getByRole('textbox', { name: 'Brand name' }).fill('Tigers FC');
+  await page.getByRole('button', { name: 'Save brand kit' }).click();
+  await expect(page.getByText('Saved Tigers FC.')).toBeVisible();
+
+  const linkKit = async () => {
+    await page.getByRole('tab', { name: 'Brand' }).click();
+    await page.getByRole('combobox', { name: 'Link a brand kit' }).selectOption({ label: 'Tigers FC' });
+    await expect.poll(async () => !!(await designOf(page)).brandKitId).toBe(true);
+  };
+  await newProject(page);
+  await linkKit();
+  await addText(page, 'TIGERS');
+  await palette(page, 'make a lockup');
+  await expect.poll(async () => (await frontLayers(page))[0]?.content.kind).toBe('lockup');
+  const lockup = Object.values((await designOf(page)).lockups!.items)[0];
+  await page.getByRole('button', { name: 'Save to brand kit' }).click();
+  await expect(page.getByText(`Saved ${lockup.name} to Tigers FC`)).toBeVisible();
+  await expect(page.getByTestId('kit-lockup').filter({ hasText: lockup.name })).toContainText('matching the kit');
+  const lockupId = lockup.id;
+
+  await newProject(page);
+  await linkKit();
+  const row = page.getByTestId('kit-lockup').filter({ hasText: lockup.name });
+  await expect(row).toContainText('Not in this design yet');
+  await row.getByRole('button', { name: 'Place' }).click();
+  await expect.poll(async () => (await frontLayers(page)).map((l) => (l.content.kind === 'lockup' ? l.content.lockupId : null))).toEqual([lockupId]);
+  await expect(row).toContainText('matching the kit');
+});
+
+test('files projects in a folder, tags them and archives them together', async ({ page }) => {
+  await newProject(page);
+  await page.goto('/projects');
+  const select = page.getByRole('checkbox', { name: /^Select / });
+  await expect(select).toHaveCount(2, { timeout: 15_000 });
+  for (const box of await select.all()) await box.click();
+  const bar = page.getByRole('toolbar', { name: 'Selected projects' });
+  await expect(bar).toContainText('2 selected');
+  await bar.getByRole('button', { name: /Move to/ }).click();
+  await page.getByRole('textbox', { name: 'New folder name' }).fill('Spring 2027');
+  await page.getByRole('button', { name: 'Move', exact: true }).click();
+  await expect(page.getByRole('group', { name: 'Folders' }).getByRole('button', { name: /Spring 2027/ })).toBeVisible();
+  for (const box of await select.all()) await box.click();
+  await bar.getByRole('button', { name: /Tags/ }).click();
+  // The tag field suggests tags already in use, so it is a combobox.
+  await page.getByRole('combobox', { name: 'Tag to add' }).fill('Approved');
+  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+  await page.getByRole('group', { name: 'Tags' }).getByRole('button', { name: 'Approved' }).click();
+  await expect(page.locator('article')).toHaveCount(2);
+  await bar.getByRole('button', { name: 'Archive' }).click();
+  await expect(page.getByText('Archived 2 projects.')).toBeVisible();
+  await expect(page.locator('article')).toHaveCount(0);
+  await page.getByRole('group', { name: 'Show projects' }).getByRole('button', { name: 'Archived' }).click();
+  await expect(page.locator('article')).toHaveCount(2);
+  // Still filed and tagged.
+  await expect(page.locator('article').first()).toContainText('Spring 2027');
+  await expect(page.locator('article').first()).toContainText('Approved');
+});
+
+test('scales artwork with garment size and prints it at the size on show', async ({ page }) => {
+  await addText(page, 'GRADED');
+  // The garment's settings show with nothing selected.
+  await selectLayers(page, []);
+  const grading = page.getByTestId('size-grading');
+  await grading.getByRole('checkbox').check();
+  await expect.poll(async () => (await designOf(page)).garment.grading?.baseSize).toBe('M');
+  await expect(grading.getByRole('row', { name: /^M \(base\) 100%/ })).toBeVisible();
+  await expect(grading.getByRole('row', { name: /^XL/ })).toContainText(/1\d\d%/);
+  await page.getByRole('combobox', { name: 'Size', exact: true }).selectOption('XL');
+  await expect(grading).toContainText('The 3D view shows size XL with its artwork scaled');
+  await palette(page, 'export files');
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: /Print files.*True-size PNG/ }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toContain('XL');
+  await expect(page.getByText(/The artwork is at 1\d\d% for size XL/)).toBeVisible();
 });
 
 test('exports a CMYK PDF/X-1a print file', async ({ page }) => {

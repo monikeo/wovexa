@@ -30,6 +30,7 @@ import {
   Loader2,
   Maximize2,
   Move,
+  Palette,
   RotateCcw,
   Shirt,
   Spline,
@@ -98,12 +99,14 @@ import {
   putTextOnShape,
   renameLockupTo,
   repeatSelection,
+  saveLockupToKit,
   startTextOnPath,
   ungroupSelection,
   type CombineOp,
 } from './actions';
 import { useBrandKit } from './brand-context';
 import { CropEditor } from './CropEditor';
+import { TraceToShapes } from './TraceToShapes';
 import { FontPicker } from './FontPicker';
 import { AreaPanel } from './AreaPanel';
 import { GarmentPanel } from './GarmentPanel';
@@ -299,13 +302,16 @@ const PATH_SIDES: { id: TextPath['side']; label: string; title: string }[] = [
   { id: 'below', label: 'Below', title: 'Letters hang under the line' },
 ];
 
-/** Where text on a path sits: which side of the line, where it starts and how much of it it covers. */
-function TextPathControls({ onPath, onChange, onRemove }: { onPath: TextPath; onChange: (next: TextPath, label: string, gesture?: string) => void; onRemove: () => void }) {
+/** Where text on a path sits: which side of the line, where it starts and how much of it it covers, and the line itself. */
+function TextPathControls({ onPath, locked, onChange, onRemove }: { onPath: TextPath; locked: boolean; onChange: (next: TextPath, label: string, gesture?: string) => void; onRemove: () => void }) {
   // An open line has ends the text should stay between; a closed outline goes round.
   const closed = !!pathTrack(onPath)?.closed;
   const maxStart = closed ? 1 : Math.max(0, 1 - onPath.span);
   return (
     <div className="space-y-2 rounded-lg border border-line p-2">
+      <button className="btn btn-outline w-full text-xs" onClick={editPoints} disabled={locked} title="Drag the line’s points and handles, add and remove points; the text follows">
+        <Spline size={14} /> Edit the line
+      </button>
       <div className="grid grid-cols-[52px_1fr] items-center gap-2">
         <span className="label">Path</span>
         <div className="seg w-fit" role="group" aria-label="Which side of the path the letters sit">
@@ -469,7 +475,7 @@ function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextCon
         </div>
       </div>
       {onPath ? (
-        <TextPathControls onPath={onPath} onChange={(next, label, gesture) => update({ onPath: next }, label, gesture)} onRemove={() => update({ onPath: undefined }, 'Take text off the path')} />
+        <TextPathControls onPath={onPath} locked={layer.locked} onChange={(next, label, gesture) => update({ onPath: next }, label, gesture)} onRemove={() => update({ onPath: undefined }, 'Take text off the path')} />
       ) : (
         <>
           <div className="grid grid-cols-[52px_1fr] items-center gap-2">
@@ -857,6 +863,7 @@ function ImageSection({ layer }: { layer: ArtworkLayer }) {
         ) : null}
         <BackgroundRemoval layer={layer} />
         <TrimEdges layer={layer} />
+        <TraceToShapes key={layer.id} layer={layer} />
         <ImagePalette content={c} />
       </Section>
       <ImageAdjustments layer={layer} content={c} />
@@ -1384,7 +1391,34 @@ function LockupPanel({ lockupId }: { lockupId: LockupId }) {
           <Trash2 size={14} />
         </button>
       </div>
+      <SaveLockupToKit lockupId={lockup.id} />
     </Section>
+  );
+}
+
+/** Keep a lockup in the linked brand kit, ready to place in any project. */
+function SaveLockupToKit({ lockupId }: { lockupId: string }) {
+  const kit = useBrandKit();
+  const linked = useStudio((s) => !!s.document?.brandKitId);
+  const [busy, setBusy] = useState(false);
+  const saved = kit?.lockups?.find((l) => l.lockup.id === lockupId);
+  if (!linked) return <p className="text-[11px] text-fg-3">Link a brand kit in the Brand tab to keep this lockup there for every project.</p>;
+  return (
+    <button
+      className="btn btn-outline w-full text-xs"
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        try {
+          await saveLockupToKit(lockupId);
+        } finally {
+          setBusy(false);
+        }
+      }}
+      title={saved ? `Replace the version in ${kit?.name ?? 'the brand kit'} with this one` : `Keep this lockup in ${kit?.name ?? 'the brand kit'}, ready to place in any project`}
+    >
+      {busy ? <Loader2 size={14} className="animate-spin" /> : <Palette size={14} />} {saved ? 'Update in brand kit' : 'Save to brand kit'}
+    </button>
   );
 }
 
@@ -1414,6 +1448,7 @@ function LockupSection({ layer }: { layer: ArtworkLayer & { content: LockupConte
           </button>
         )}
       </div>
+      {known ? <SaveLockupToKit lockupId={c.lockupId} /> : null}
     </Section>
   );
 }

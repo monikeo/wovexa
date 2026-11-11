@@ -3,6 +3,7 @@
  * print shop needs, built from the saved document.
  *
  *   print/                 true-size transparent PNGs with their dpi written into the file
+ *   print/sizes/           artwork graded by size: the print files again for each size, scaled for it
  *   print/separations/     screen-print films, one per ink, with registration marks
  *   team/                  personalised print files per person, roster and size breakdown
  *   flats/                 placement drawings per colourway
@@ -14,9 +15,10 @@
  *   colourways.csv         every colour part as HEX, RGB and approximate CMYK
  *   manifest.json          machine-readable index with SHA-256 for every file
  */
-import { getGarment, getSize, partColor, PRINT_METHOD_LABELS, zoneSpecOrFirst, type ZoneSpec } from '@/domain/garments';
+import { getGarment, getSize, partColor, PRINT_METHOD_LABELS, sizeLabel, zoneSpecOrFirst, type ZoneSpec } from '@/domain/garments';
+import { gradeFor, gradingBase, gradingTable, matchSize, zoneGrade } from '@/domain/grading';
 import { documentHash } from '@/domain/hash';
-import { runPreflight } from '@/domain/preflight';
+import { fullPreflight } from '@/lib/preflight-browser';
 import { describeAreaPlacement, designAreas } from '@/domain/areas';
 import { layerAssetIds } from '@/domain/lockups';
 import { projectionsAsZone } from '@/domain/projected';
@@ -213,8 +215,10 @@ export function fitPersonalisedText(person: DesignDocument, original: DesignDocu
 /** Placement drawings of the given zones for one colourway; zones with artwork show their print area. */
 async function renderFlats(doc: DesignDocument, colorway: Colorway, size: number, zoneList: ZoneId[]) {
   const withArt = zonesWithArtwork(doc);
+  // Artwork graded by size is drawn on the size it was designed on, like the main print files.
+  const sizeCode = gradingBase(doc)?.code;
   const out: { zoneId: ZoneId; canvas: HTMLCanvasElement }[] = [];
-  for (const zoneId of zoneList) out.push({ zoneId, canvas: await renderZoneSketch(doc, zoneId, size, { printArea: withArt.includes(zoneId), colorwayId: colorway.id }) });
+  for (const zoneId of zoneList) out.push({ zoneId, canvas: await renderZoneSketch(doc, zoneId, size, { printArea: withArt.includes(zoneId), colorwayId: colorway.id, sizeCode }) });
   return out;
 }
 
@@ -247,7 +251,7 @@ async function makeProof(doc: DesignDocument, colorways: Colorway[], products: P
       widthMm: spec.printableWidthMm,
       heightMm: spec.printableHeightMm,
       where: placementText(spec),
-      sketch: await renderZoneSketch(doc, zoneId, 900, { printArea: true }),
+      sketch: await renderZoneSketch(doc, zoneId, 900, { printArea: true, sizeCode: gradingBase(doc)?.code }),
       art: renderZoneArtwork(doc.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, 72).canvas,
     });
   }
@@ -326,6 +330,12 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
   const teamZones = roster ? personalisedZones(doc).filter((z) => zones.includes(z)) : [];
   const teamAreas = roster ? personalisedAreas(doc) : [];
   const screenZones = opts.include.separations ? zones.filter((z) => doc.zones[z].printMethod === 'SCREEN_PRINT') : [];
+  // Artwork graded by size: the main print files are the base size's; each other size of the order
+  // (or of the style, without a roster of sizes) gets its own set, scaled for it.
+  const gradeBase = gradingBase(doc, model);
+  const orderedSizes = roster?.fields.includes('size') ? [...new Set(roster.rows.map((r) => matchSize(model, r.size)?.code).filter((c): c is string => !!c))] : [];
+  const gradedSizes = gradeBase && opts.include.print && zones.length ? (orderedSizes.length ? orderedSizes : model.sizes.map((s) => s.code)).filter((c) => c !== gradeBase.code) : [];
+  const printSize = gradeBase?.code ?? doc.garment.sizeCode;
   const zip = new ZipWriter();
   const files: PackageFile[] = [];
   const warnings: string[] = [];
@@ -337,6 +347,7 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
   const total =
     1 +
     zones.length +
+    zones.length * gradedSizes.length +
     printedAreas.length +
     screenZones.length +
     (roster && (teamZones.length || teamAreas.length) ? roster.rows.length : 0) +
@@ -379,7 +390,7 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
       project: doc.title,
       zone: zoneId,
       colorway: active.name,
-      size: doc.garment.sizeCode,
+      size: printSize,
       method: PRINT_METHOD_LABELS[doc.zones[zoneId].printMethod],
       w: spec.printableWidthMm,
       h: spec.printableHeightMm,
@@ -449,6 +460,36 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
     if (opts.include.vector) await addVector(doc.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, spec.label, nameFor(zoneId, spec, opts.dpi));
   }
 
+  // ---- Artwork graded by size: the print files again for each size, scaled from the top centre of the print area ----
+  const gradedFolders: Record<string, string> = {};
+  for (const code of gradedSizes) {
+    const shown = sizeLabel(model, getSize(model, code));
+    gradedFolders[code] = `print/sizes/${fileSafe(code)}/`;
+    for (const zoneId of zones) {
+      const spec = zoneSpecOrFirst(model, zoneId);
+      step(`Print file, ${spec.label}, size ${shown}`);
+      const factor = zoneGrade(doc, zoneId, code);
+      const { blob, dpi, width, height } = await renderPrintPng(doc.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, opts.dpi, gradeFor(spec, factor));
+      const file = await add(`${gradedFolders[code]}${nameFor(zoneId, spec, dpi, { size: code })}.png`, blob);
+      outputs.push({
+        zone: zoneId,
+        size: code,
+        grade: factor,
+        filename: file,
+        format: 'png',
+        colorSpace: 'sRGB',
+        physicalWidthMm: spec.printableWidthMm,
+        physicalHeightMm: spec.printableHeightMm,
+        pixelWidth: width,
+        pixelHeight: height,
+        dpi,
+        printMethod: doc.zones[zoneId].printMethod,
+        placement: placementText(spec),
+        sha256: files[files.length - 1].sha256,
+      });
+    }
+  }
+
   // ---- Design areas: a print file each, at its own size, with where it goes in words ----
   for (const area of printedAreas) {
     step(`Print file, ${area.name}`);
@@ -500,6 +541,8 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
       if (roster.fields.some((f) => f !== 'size')) warnings.push('Names and numbers were not printed: add {name} or {number} to a text layer to personalise them.');
     } else {
       const listing: (string | number)[][] = [['#', ...roster.fields, 'files']];
+      // Graded artwork prints at each person's size; a size the style doesn't come in prints at the base.
+      const unknownSizes = new Set<string>();
       for (let i = 0; i < roster.rows.length; i++) {
         const row = roster.rows[i];
         step(`Team file ${i + 1} of ${roster.rows.length}`);
@@ -508,10 +551,13 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
         fitPersonalisedText(person, doc);
         const folder = `team/${String(i + 1).padStart(3, '0')}${row.name ? `_${fileSafe(row.name)}` : ''}${row.number ? `_${fileSafe(row.number)}` : ''}`;
         const made: string[] = [];
+        const own = gradeBase ? matchSize(model, row.size) : undefined;
+        if (gradeBase && row.size?.trim() && !own) unknownSizes.add(row.size.trim());
         for (const zoneId of teamZones) {
           const spec = zoneSpecOrFirst(model, zoneId);
-          const { blob, dpi } = await renderPrintPng(person.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, opts.dpi);
-          made.push(await add(`${folder}/${nameFor(zoneId, spec, dpi, { name: row.name ?? '', number: row.number ?? '' })}.png`, blob));
+          const grade = own ? gradeFor(spec, zoneGrade(doc, zoneId, own.code)) : undefined;
+          const { blob, dpi } = await renderPrintPng(person.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, opts.dpi, grade);
+          made.push(await add(`${folder}/${nameFor(zoneId, spec, dpi, { name: row.name ?? '', number: row.number ?? '', ...(own ? { size: own.code } : {}) })}.png`, blob));
         }
         // A name or number in a design area (on the hood, down a sleeve): its own file per person.
         for (const area of teamAreas) {
@@ -523,6 +569,7 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
         }
         listing.push([i + 1, ...roster.fields.map((f) => row[f] ?? ''), made.join(' ')]);
       }
+      if (unknownSizes.size) warnings.push(`${[...unknownSizes].join(', ')} ${unknownSizes.size === 1 ? 'isn’t a size' : 'aren’t sizes'} of the ${model.shortName.toLowerCase()}: those team files print the artwork at the base size, ${gradeBase!.code}.`);
       teamFile = await add('team/roster.csv', toCsv(listing), 'text/csv;charset=utf-8');
       const sizes = sizeBreakdown(roster);
       if (sizes.length) await add('team/sizes.csv', toCsv([['size', 'quantity'], ...sizes.map((s) => [s.size, s.count])]), 'text/csv;charset=utf-8');
@@ -626,8 +673,9 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
   await add('colourways.csv', toCsv(colourRows), 'text/csv;charset=utf-8');
 
   const fonts = await fontsUsed(doc);
-  const issues = runPreflight(doc)
-    .filter((i) => i.severity !== 'info')
+  // Images and fonts are loaded by now, so the seam and font checks can run too.
+  const issues = fullPreflight(doc)
+    .issues.filter((i) => i.severity !== 'info')
     .map(({ severity, code, zoneId, layerId, message }) => ({ severity, code, zoneId, layerId, message }));
 
   if (opts.include.techSheet) {
@@ -650,6 +698,7 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
         issues,
         team: teamFile && roster ? { people: roster.rows.length, sizes: sizeBreakdown(roster), file: teamFile } : undefined,
         marker,
+        grading: gradeBase ? { base: sizeLabel(model, gradeBase), sizes: gradingTable(doc), folders: gradedFolders } : undefined,
       }),
       'text/html;charset=utf-8',
     );
@@ -663,6 +712,8 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
       '',
       'print/              Print files: transparent PNG at true physical size. The resolution is written into each file,',
       '                    so it opens at the right size in RIP and design software.',
+      gradeBase && zones.length ? `                    The artwork is graded by size: these files are size ${gradeBase.code}, the size it was designed on.` : null,
+      gradedSizes.length ? 'print/sizes/        The print files again for each size, the artwork scaled for that size (percentages in the tech sheet).' : null,
       screenZones.length ? 'print/separations/  Screen-print films, one per ink (black = ink), with registration marks in a 15 mm margin.' : null,
       opts.include.vector ? 'print/vector/       The same print files as SVG at true size (1 unit = 1 mm): text and shapes as vector, photos and' : null,
       opts.include.vector ? '                    raster effects as placed images. For screen-print films, vinyl cutting and embroidery digitising.' : null,
@@ -714,6 +765,9 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
     outputs,
     separations: Object.fromEntries(Object.entries(inksByZone).map(([z, inks]) => [z, inks])),
     team: roster && (teamZones.length || teamAreas.length) ? { people: roster.rows.length, fields: roster.fields, zones: teamZones, areas: teamAreas.map((a) => a.name), sizes: sizeBreakdown(roster) } : null,
+    grading: gradeBase
+      ? { baseSize: gradeBase.code, anchor: 'top centre of each print area', sizes: gradingTable(doc).map((s) => ({ size: s.code, grades: Object.fromEntries(s.zones.map((z) => [z.zoneId, z.factor])), folder: gradedFolders[s.code] ?? null })) }
+      : null,
     marker: marker ?? null,
     fonts,
     preflight: issues,

@@ -28,6 +28,7 @@ import type {
 } from '@/domain/schema';
 import { clipRuns } from '@/domain/clipping';
 import { rotatedBounds } from '@/domain/geometry';
+import type { Grade } from '@/domain/grading';
 import { graphemes, letterInks } from '@/domain/letter-colors';
 import { deepLayers } from '@/domain/lockups';
 import { flattenSubpath, parsePath } from '@/domain/path-edit';
@@ -2059,8 +2060,12 @@ export function renderLayerBitmap(layer: ArtworkLayer, pxPerMm: number, opts: La
 
 export const MAX_EXPORT_SIDE = 8192;
 
-/** Isolated print artwork for one zone: transparent background, true physical size. */
-export function renderZoneArtwork(zone: LayerStack, widthMm: number, heightMm: number, dpi: number) {
+/**
+ * Isolated print artwork for one zone: transparent background, true physical size. With a grade
+ * (artwork graded by garment size), the artwork is drawn scaled about its anchor, outlines and
+ * effects with it, on the same print area.
+ */
+export function renderZoneArtwork(zone: LayerStack, widthMm: number, heightMm: number, dpi: number, grade?: Grade) {
   let pxPerMm = dpi / 25.4;
   const longest = Math.max(widthMm, heightMm) * pxPerMm;
   let effectiveDpi = dpi;
@@ -2072,6 +2077,11 @@ export function renderZoneArtwork(zone: LayerStack, widthMm: number, heightMm: n
   canvas.width = Math.max(1, Math.round(widthMm * pxPerMm));
   canvas.height = Math.max(1, Math.round(heightMm * pxPerMm));
   const ctx = canvas.getContext('2d')!;
+  if (grade && Math.abs(grade.factor - 1) > 1e-9) {
+    ctx.translate(grade.anchorXmm * pxPerMm, grade.anchorYmm * pxPerMm);
+    ctx.scale(grade.factor, grade.factor);
+    ctx.translate(-grade.anchorXmm * pxPerMm, -grade.anchorYmm * pxPerMm);
+  }
   drawZone(ctx, zone, { pxPerMm });
   return { canvas, dpi: effectiveDpi };
 }
