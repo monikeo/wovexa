@@ -11,6 +11,7 @@ import { describeAreaPlacement, designAreas } from '@/domain/areas';
 import * as cmd from '@/domain/commands';
 import { createTextLayer } from '@/domain/factory';
 import { getGarment, getSize, hasZone, partColor, PRINT_METHOD_LABELS, sizeLabel, zoneSpecOrFirst } from '@/domain/garments';
+import { gradeFor, gradingBase, zoneGrade } from '@/domain/grading';
 import { documentHash } from '@/domain/hash';
 import { runPreflight, summarize } from '@/domain/preflight';
 import type { DesignDocument, LayerStack, ZoneId } from '@/domain/schema';
@@ -410,7 +411,8 @@ export function ExportPanel() {
         setProgress({ label: `Vector print file, ${job.label}`, fraction: 0.2 + (0.7 * i) / jobs.length });
         const art = zoneSvg(job.stack, job.w, job.h, { dpi: prefs.dpi, title: `${current.title}, ${job.label}` });
         art.fonts.forEach((f) => fonts.add(f));
-        const name = formatName(prefs.naming, { project: current.title, zone: job.zone, colorway: current.colorways[0]?.name, size: current.garment.sizeCode, method: PRINT_METHOD_LABELS[job.method], w: Math.round(job.w), h: Math.round(job.h), dpi: prefs.dpi, rev: label, date: isoDate() });
+        // Graded artwork is exported as designed: on its base size.
+        const name = formatName(prefs.naming, { project: current.title, zone: job.zone, colorway: current.colorways[0]?.name, size: gradingBase(current)?.code ?? current.garment.sizeCode, method: PRINT_METHOD_LABELS[job.method], w: Math.round(job.w), h: Math.round(job.h), dpi: prefs.dpi, rev: label, date: isoDate() });
         out.push({ name: `${name}.svg`, svg: art.svg });
         // Sticker outlines come with their cut line, for a vinyl cutter or plotter.
         if (art.cut) out.push({ name: `${name}_cut.svg`, svg: art.cut });
@@ -491,12 +493,17 @@ export function ExportPanel() {
       const spec = zoneSpecOrFirst(model, zoneId);
       setProgress({ label: `Rendering ${spec.label.toLowerCase()} at ${prefs.dpi} dpi`, fraction: 0.3 });
       await prepareDocument(current, [zoneId]);
-      const { blob, dpi } = await renderPrintPng(current.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, prefs.dpi);
+      // Artwork graded by size prints at the size on show.
+      const factor = zoneGrade(current, zoneId, current.garment.sizeCode);
+      const { blob, dpi } = await renderPrintPng(current.zones[zoneId], spec.printableWidthMm, spec.printableHeightMm, prefs.dpi, gradeFor(spec, factor));
       const label = await designRevision(current, approvalOf(useStudio.getState().meta));
-      const fileName = `${formatName(prefs.naming, { project: current.title, zone: zoneId, colorway: current.colorways[0]?.name, size: current.garment.sizeCode, method: PRINT_METHOD_LABELS[current.zones[zoneId].printMethod], w: spec.printableWidthMm, h: spec.printableHeightMm, dpi, rev: label, date: isoDate() })}.png`;
+      // A graded print is one size's file: its name says which, even when the template leaves sizes out.
+      const template = factor !== 1 && !/\{size\}/i.test(prefs.naming) ? `${prefs.naming}_{size}` : prefs.naming;
+      const fileName = `${formatName(template, { project: current.title, zone: zoneId, colorway: current.colorways[0]?.name, size: current.garment.sizeCode, method: PRINT_METHOD_LABELS[current.zones[zoneId].printMethod], w: spec.printableWidthMm, h: spec.printableHeightMm, dpi, rev: label, date: isoDate() })}.png`;
       downloadBlob(blob, fileName);
-      await record('print', 'Print file', fileName, 1, blob.size, { dpi });
-      toast(dpi < prefs.dpi ? `Exported at ${dpi} dpi to stay within the browser's image size limit.` : `Exported ${spec.label.toLowerCase()} at ${dpi} dpi, ${spec.printableWidthMm} × ${spec.printableHeightMm} mm.`, dpi < prefs.dpi ? undefined : 'success');
+      await record('print', 'Print file', fileName, 1, blob.size, { dpi, ...(factor !== 1 ? { size: current.garment.sizeCode, grade: factor } : {}) });
+      const graded = factor !== 1 ? ` The artwork is at ${Math.round(factor * 100)}% for size ${current.garment.sizeCode}.` : '';
+      toast(dpi < prefs.dpi ? `Exported at ${dpi} dpi to stay within the browser's image size limit.${graded}` : `Exported ${spec.label.toLowerCase()} at ${dpi} dpi, ${spec.printableWidthMm} × ${spec.printableHeightMm} mm.${graded}`, dpi < prefs.dpi ? undefined : 'success');
     });
   };
 

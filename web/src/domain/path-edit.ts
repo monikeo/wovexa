@@ -316,6 +316,32 @@ export function boundsOf(subpaths: readonly Subpath[]): { x: number; y: number; 
   return Number.isFinite(x0) ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : { x: 0, y: 0, w: 0, h: 0 };
 }
 
+/**
+ * Where a path's own units land in a layer: millimetres from the layer's centre, before it is
+ * turned and mirrored, and back. A shape's path spans a 0–100 box; text on a path has its own.
+ */
+export interface PathSpace {
+  toLocal(u: number, v: number): [number, number];
+  fromLocal(x: number, y: number): [number, number];
+}
+
+/** A shape's 0–100 box stretched across a layer `w` × `h` mm. */
+export function boxSpace(w: number, h: number): PathSpace {
+  return {
+    toLocal: (u, v) => [(u / 100 - 0.5) * w, (v / 100 - 0.5) * h],
+    fromLocal: (x, y) => [(x / w + 0.5) * 100, (y / h + 0.5) * 100],
+  };
+}
+
+/** A path's length in its own units (closed paths include the way back to the start). */
+export function pathLength(sub: Subpath, tolerance = 0.05): number {
+  const pts = flattenSubpath(sub, tolerance);
+  if (sub.closed && pts.length > 1) pts.push(pts[0]);
+  let length = 0;
+  for (let i = 1; i < pts.length; i++) length += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  return length;
+}
+
 /** Every point (anchors and handles) through `map`. */
 export function mapSubpaths(subpaths: readonly Subpath[], map: (x: number, y: number) => [number, number]): Subpath[] {
   return subpaths.map((s) => ({

@@ -1,5 +1,5 @@
 'use client';
-import { Archive, ArchiveRestore, Copy, MoreHorizontal, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { Archive, ArchiveRestore, Copy, Folder, FolderInput, MoreHorizontal, Pencil, Plus, RotateCcw, Tag, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -104,7 +104,13 @@ function Thumbnail({ meta }: { meta: ProjectMeta }) {
   );
 }
 
-export function ProjectActions({ meta, onChanged }: { meta: ProjectMeta; onChanged: () => void }) {
+/** Filing a project from its menu, where the page offers it (the Projects page does). */
+export interface FilingActions {
+  onFile?: (ids: string[]) => void;
+  onTag?: (ids: string[]) => void;
+}
+
+export function ProjectActions({ meta, onChanged, onFile, onTag }: { meta: ProjectMeta; onChanged: () => void } & FilingActions) {
   const [open, setOpen] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -182,6 +188,30 @@ export function ProjectActions({ meta, onChanged }: { meta: ProjectMeta; onChang
           <button role="menuitem" className={item} onClick={act(() => duplicateProject(meta.id), 'Duplicated.')}>
             <Copy size={15} /> Duplicate
           </button>
+          {onFile ? (
+            <button
+              role="menuitem"
+              className={item}
+              onClick={() => {
+                setOpen(false);
+                onFile([meta.id]);
+              }}
+            >
+              <FolderInput size={15} /> Move to folder…
+            </button>
+          ) : null}
+          {onTag ? (
+            <button
+              role="menuitem"
+              className={item}
+              onClick={() => {
+                setOpen(false);
+                onTag([meta.id]);
+              }}
+            >
+              <Tag size={15} /> Tags…
+            </button>
+          ) : null}
           {meta.archivedAt ? (
             <button role="menuitem" className={item} onClick={act(() => archiveProject(meta.id, false), 'Restored.')}>
               <ArchiveRestore size={15} /> Restore
@@ -213,12 +243,45 @@ export function ProjectActions({ meta, onChanged }: { meta: ProjectMeta; onChang
   );
 }
 
-export function ProjectCard({ meta, onChanged }: { meta: ProjectMeta; onChanged: () => void }) {
+export function ProjectCard({
+  meta,
+  onChanged,
+  selected = false,
+  selecting = false,
+  onSelect,
+  onFile,
+  onTag,
+}: {
+  meta: ProjectMeta;
+  onChanged: () => void;
+  selected?: boolean;
+  /** Some projects are selected: a click on a card selects it instead of opening it. */
+  selecting?: boolean;
+  /** Select or unselect; with Shift, every project from the last one chosen to this one. */
+  onSelect?: (range: boolean) => void;
+} & FilingActions) {
   return (
-    <article className="group relative rounded-xl border border-line bg-panel transition-shadow hover:shadow-md">
-      <Link href={`/studio/${meta.id}`} className="block rounded-xl focus-visible:outline-offset-4" aria-label={`Open ${meta.title}`}>
+    <article className={`group relative rounded-xl border bg-panel transition-shadow hover:shadow-md ${selected ? 'border-accent ring-2 ring-[var(--accent)]/40' : 'border-line'}`}>
+      <Link
+        href={`/studio/${meta.id}`}
+        className="block rounded-xl focus-visible:outline-offset-4"
+        aria-label={`Open ${meta.title}`}
+        onClick={(e) => {
+          if (!onSelect || !(selecting || e.shiftKey)) return;
+          e.preventDefault();
+          onSelect(e.shiftKey);
+        }}
+      >
         <Thumbnail meta={meta} />
       </Link>
+      {onSelect ? (
+        <label
+          className={`absolute left-2 top-2 grid h-8 w-8 cursor-pointer place-items-center rounded-lg bg-panel/90 shadow-sm transition-opacity focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 ${selected || selecting ? 'opacity-100' : 'opacity-0'}`}
+        >
+          {/* A click (or Space) selects; with Shift, a range. The page holds which are selected. */}
+          <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]" checked={selected} readOnly aria-label={`Select ${meta.title}`} onClick={(e) => onSelect(e.shiftKey)} />
+        </label>
+      ) : null}
       <div className="flex items-start gap-2 p-3">
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-sm font-semibold">{meta.title}</h3>
@@ -236,8 +299,22 @@ export function ProjectCard({ meta, onChanged }: { meta: ProjectMeta; onChanged:
               {approvalState(meta) === 'approved' ? `Approved, v${meta.approvedVersionNumber}` : 'Changed since approval'}
             </p>
           ) : null}
+          {meta.folder || meta.tags?.length ? (
+            <p className="mt-1.5 flex flex-wrap gap-1 text-[11px]">
+              {meta.folder ? (
+                <span className="inline-flex max-w-full items-center gap-1 truncate rounded-md bg-[var(--surface-hover)] px-1.5 py-0.5 text-fg-2" title={`In the folder ${meta.folder}`}>
+                  <Folder size={11} aria-hidden /> {meta.folder}
+                </span>
+              ) : null}
+              {meta.tags?.map((t) => (
+                <span key={t} className="max-w-full truncate rounded-md border border-line px-1.5 py-0.5 text-fg-2">
+                  {t}
+                </span>
+              ))}
+            </p>
+          ) : null}
         </div>
-        <ProjectActions meta={meta} onChanged={onChanged} />
+        <ProjectActions meta={meta} onChanged={onChanged} onFile={onFile} onTag={onTag} />
       </div>
     </article>
   );

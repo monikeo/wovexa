@@ -13,16 +13,20 @@ import { EditorContextMenu } from './ContextMenu';
 import { setGuides as updateGuides, updateLayer, updateTransforms } from '@/domain/commands';
 import { getGarment, getSize, partColor } from '@/domain/garments';
 import { croppedTransform, formatLength, rotatedBounds, type Rect } from '@/domain/geometry';
-import { pathData, refitToBox, type Subpath } from '@/domain/path-edit';
+import { boxSpace, pathData, refitToBox, type Subpath } from '@/domain/path-edit';
 import { artboardOf } from '@/domain/areas';
 import { clipBases } from '@/domain/clipping';
+import { LIMITS } from '@/domain/limits';
 import type { ArtboardId, ArtworkLayer, DesignDocument, LayerStack, LayerTransform } from '@/domain/schema';
+import { shapeToBoxPath } from '@/domain/shape-path';
+import { toast } from '@/components/ui/primitives';
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
+import { editedTextPath, textPathSpace } from '@/lib/path-text';
 import { setPreference, usePreference } from '@/lib/preferences';
-import { ensureFonts, imageNeedsBitmap, imageSource, renderLayerBitmap } from '@/lib/render/zone-renderer';
+import { ensureFonts, imageNeedsBitmap, imageSource, isOnPath, renderLayerBitmap } from '@/lib/render/zone-renderer';
 import { useActiveColorway, useActiveZoneSpec, useLive, useStudio } from '@/stores/studio-store';
 import { drawRuler, GUIDE_COLOR, GUIDE_GRAB_PX, RULER_SIZE } from './rulers';
-import { drawSketch, sketchForZone } from './flat-sketch';
+import { drawSketch, SEAM_CLEARANCE_MM, seamEdges, sketchForZone } from './flat-sketch';
 import { PathEditOverlay } from './PathEditOverlay';
 import { PenOverlay } from './PenOverlay';
 import { penShape } from '@/domain/pen';
@@ -170,9 +174,6 @@ function currentGuides(doc: DesignDocument | null | undefined, zoneId: ArtboardI
   return g;
 }
 
-/** How far into the garment from a seam or edge a print should stay clear, in mm. */
-const SEAM_CLEARANCE_MM = 20;
-
 /** Document order split into display items: single layers, or contiguous group blocks. */
 function displayItems(zone: LayerStack) {
   const items: { key: string; ids: string[] }[] = [];
@@ -253,13 +254,30 @@ export function Editor2D() {
   const colorway = useActiveColorway();
   const units = usePreference('units');
   const zone = doc ? artboardOf(doc, zoneId) : undefined;
-  // The shape whose points are being edited: only while it is still a selected, unlocked shape here.
+  // The shape (or text on a path) whose points are being edited: only while it is still selected and unlocked here.
   const editing = pointsLayerId ? zone?.layers[pointsLayerId] : undefined;
-  const pointsLayer = editing?.content.kind === 'shape' && !editing.locked && selected.includes(editing.id) ? editing : undefined;
+  const pointsLayer = editing && !editing.locked && selected.includes(editing.id) && (editing.content.kind === 'shape' || (editing.content.kind === 'text' && isOnPath(editing.content))) ? editing : undefined;
+  const pointsPath = (() => {
+    if (!pointsLayer) return null;
+    const { content: c, transform: t } = pointsLayer;
+    if (c.kind === 'text') {
+      const space = textPathSpace(c, t);
+      return space && c.onPath ? { source: c.onPath.d, space, what: 'text' as const } : null;
+    }
+    return c.kind === 'shape' ? { source: shapeToBoxPath(c, t.widthMm, t.heightMm), space: boxSpace(t.widthMm, t.heightMm), what: 'shape' as const } : null;
+  })();
   const commitPoints = useCallback(
     (subs: Subpath[]) => {
       const layer = pointsLayer;
       if (!layer || !subs.length) return;
+      if (layer.content.kind === 'text') {
+        // The text follows the edited line where it was dragged to, its letters the same size.
+        const next = editedTextPath(layer.content, layer.transform, subs[0]);
+        if (!next) return void toast('That line is too short for the text to follow. Drag the points further apart.', 'error');
+        if (next.onPath.d.length > LIMITS.textPathChars) return void toast('That line has too many points for text to follow. Delete some of them.', 'error');
+        useStudio.getState().dispatch(updateLayer(zoneId, layer.id, { content: { onPath: next.onPath }, transform: next.transform }, 'Edit the text’s path'));
+        return;
+      }
       // The box hugs the edited shape, which stays exactly where it is on the artboard.
       const { subpaths, crop } = refitToBox(subs);
       const transform = croppedTransform(layer.transform, 1, 1, crop);
@@ -422,8 +440,7 @@ export function Editor2D() {
           ctx.lineWidth = 2 * SEAM_CLEARANCE_MM;
           ctx.lineJoin = 'round';
           ctx.lineCap = 'round';
-          const edges = [sketch.body, ...sketch.shapes.filter((s) => s.part !== 'body' && s.part !== 'inside').map((s) => s.points), ...sketch.bands.map((b) => b.points), ...sketch.seams];
-          for (const pts of edges) {
+          for (const pts of seamEdges(sketch)) {
             ctx.beginPath();
             pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
             ctx.stroke();
@@ -1272,7 +1289,18 @@ export function Editor2D() {
         )}
       </div>
       {zoneSpec?.lockupId && doc ? <LockupBar doc={doc} lockupId={zoneSpec.lockupId} /> : null}
-      {pointsLayer ? <PathEditOverlay key={pointsLayer.id} fabric={getFabric} layer={pointsLayer} onCommit={commitPoints} onDone={() => setPointsLayerId(null)} /> : null}
+      {pointsLayer && pointsPath ? (
+        <PathEditOverlay
+          key={pointsLayer.id}
+          fabric={getFabric}
+          transform={pointsLayer.transform}
+          source={pointsPath.source}
+          space={pointsPath.space}
+          what={pointsPath.what}
+          onCommit={commitPoints}
+          onDone={() => setPointsLayerId(null)}
+        />
+      ) : null}
       {penMode && zone ? (
         <PenOverlay
           key={`${zoneId}:${penMode}`}

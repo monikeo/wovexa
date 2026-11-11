@@ -7,6 +7,7 @@
  */
 import { newId } from './factory';
 import { rotatedBounds } from './geometry';
+import { canonicalJson } from './hash';
 import type { ArtboardId, ArtworkLayer, DesignDocument, LayerStack, LayerTransform, Lockup, LockupContent, LockupId, PlainLayer, ProjectedLayer } from './schema';
 
 /** At most this many lockups per design. */
@@ -265,6 +266,52 @@ export function detachedLayers(placement: Placement, ids: (layer: PlainLayer) =>
   }
   if (out.length === 1) delete out[0].groupId;
   return out;
+}
+
+// ---- Lockups kept in brand kits ----
+
+/** What two versions of a lockup compare on: its artwork and name, not where it came from or its board guides. */
+function lockupBody(lockup: Lockup) {
+  const body: Partial<Lockup> = { ...lockup };
+  delete body.kit;
+  delete body.guides;
+  return body;
+}
+
+/** Whether two versions of a lockup look and read the same. */
+export function sameLockup(a: Lockup, b: Lockup) {
+  return canonicalJson(lockupBody(a)) === canonicalJson(lockupBody(b));
+}
+
+/** A brand kit's saved lockup: the lockup as saved and when. */
+export interface KitLockupVersion {
+  lockup: Lockup;
+  savedAt: number;
+}
+
+/**
+ * How this design's copy of a kit lockup compares with the kit's: not in the design, the same, the
+ * kit has a newer version (saved after the one the design has), or changed here since.
+ */
+export type KitLockupStatus = 'absent' | 'same' | 'kit-newer' | 'changed-here';
+
+export function kitLockupStatus(doc: Pick<DesignDocument, 'lockups'>, entry: KitLockupVersion): KitLockupStatus {
+  const mine = doc.lockups?.items[entry.lockup.id as LockupId];
+  if (!mine) return 'absent';
+  if (sameLockup(mine, entry.lockup)) return 'same';
+  return (mine.kit?.savedAt ?? 0) < entry.savedAt ? 'kit-newer' : 'changed-here';
+}
+
+/** A kit's lockup as this design's: the same id, marked with the kit version it came from. */
+export function lockupFromKit(entry: KitLockupVersion, kitId: string): Lockup {
+  return { ...clone(entry.lockup), kit: { kitId, savedAt: entry.savedAt } };
+}
+
+/** This design's lockup as a brand kit keeps it: without the design's own note of where it came from. */
+export function lockupForKit(lockup: Lockup): Lockup {
+  const copy = clone(lockup);
+  delete copy.kit;
+  return copy;
 }
 
 /**

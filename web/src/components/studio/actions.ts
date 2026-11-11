@@ -8,15 +8,34 @@ import { getGarment, partColor } from '@/domain/garments';
 import { normalizeDeg } from '@/domain/geometry';
 import type { Graphic } from '@/domain/graphics';
 import { LIMITS } from '@/domain/limits';
-import { boardFit, detachedLayers, isPlacement, lockupContent, lockupFromContent, lockupFromLayers, lockupsOf, MAX_LOCKUP_LAYERS, MAX_LOCKUPS, newLockupId, newPlacement, nextLockupName, placementsOf } from '@/domain/lockups';
-import { isAreaId, isLockupId, type AreaId, type ArtboardId, type ArtworkLayer, type LayerShadow, type LayerStyle, type LockupId, type ShapeContent } from '@/domain/schema';
+import {
+  boardFit,
+  detachedLayers,
+  isPlacement,
+  layerAssetIds,
+  lockupContent,
+  lockupForKit,
+  lockupFromContent,
+  lockupFromKit,
+  lockupFromLayers,
+  lockupsOf,
+  MAX_LOCKUP_LAYERS,
+  MAX_LOCKUPS,
+  newLockupId,
+  newPlacement,
+  nextLockupName,
+  placementsOf,
+} from '@/domain/lockups';
+import { isAreaId, isLockupId, lockupSchema, type AreaId, type ArtboardId, type ArtworkLayer, type LayerShadow, type LayerStyle, type Lockup, type LockupId, type ShapeContent } from '@/domain/schema';
 import { mapSubpaths, parsePath } from '@/domain/path-edit';
 import { penPathData, type PenPoint } from '@/domain/pen';
 import { shapePathData } from '@/domain/shape-path';
-import { AssetError, importImageFile } from '@/lib/assets';
+import { AssetError, importImageFile, loadAssetImage } from '@/lib/assets';
 import type { CombineOp } from '@/lib/combine';
+import { canvasToBlob } from '@/lib/download';
+import { KitLockupError, saveKitLockup, type KitLockup } from '@/lib/local-db';
 import { placeOnPath, textPathFrom } from '@/lib/path-text';
-import { textAspect } from '@/lib/render/zone-renderer';
+import { drawZone, ensureFonts, isOnPath, textAspect } from '@/lib/render/zone-renderer';
 import { toast } from '@/components/ui/primitives';
 import { useStudio } from '@/stores/studio-store';
 
@@ -259,6 +278,82 @@ export function deleteLockup(lockupId: string) {
   s.dispatch(cmd.removeLockup(lockup.id as LockupId, lockup.name));
 }
 
+// ---- Lockups in brand kits ----
+
+/** A small picture of a lockup's board for its brand kit card; undefined when its images or fonts aren't ready. */
+async function lockupThumbnail(lockup: Lockup): Promise<Blob | undefined> {
+  const ids = lockup.orderedLayerIds.flatMap((id) => (lockup.layers[id] ? layerAssetIds(lockup.layers[id]) : []));
+  await Promise.all(ids.map((id) => loadAssetImage(id).catch(() => undefined)));
+  await ensureFonts([lockup]).catch(() => false);
+  const ppm = 192 / Math.max(lockup.widthMm, lockup.heightMm, 1);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(lockup.widthMm * ppm));
+  canvas.height = Math.max(1, Math.round(lockup.heightMm * ppm));
+  if (!drawZone(canvas.getContext('2d')!, lockup, { pxPerMm: ppm })) return undefined;
+  return canvasToBlob(canvas);
+}
+
+/**
+ * Save a lockup of this design to the linked brand kit, replacing the version kept there, so any
+ * project can place it. The design notes the version it now matches.
+ */
+export async function saveLockupToKit(lockupId: string) {
+  const s = useStudio.getState();
+  const doc = s.document;
+  const lockup = doc?.lockups?.items[lockupId as LockupId];
+  if (!doc || !lockup) return;
+  if (!doc.brandKitId) return void toast('Link a brand kit in the Brand tab first, then save the lockup to it.');
+  if (!lockup.orderedLayerIds.length) return void toast(`${lockup.name} is empty: add artwork to it first.`);
+  const savedAt = Date.now();
+  let kitName: string;
+  try {
+    const thumbnail = await lockupThumbnail(lockup).catch(() => undefined);
+    kitName = (await saveKitLockup(doc.brandKitId, { lockup: lockupForKit(lockup), savedAt, thumbnail })).name;
+  } catch (error) {
+    return void toast(error instanceof KitLockupError ? error.message : 'The lockup couldn’t be saved to the brand kit. Try again.', 'error');
+  }
+  useStudio.getState().dispatch(cmd.markLockupKit(lockup.id as LockupId, { kitId: doc.brandKitId, savedAt }));
+  toast(`Saved ${lockup.name} to ${kitName}. Projects linked to it can place it from the Brand tab.`, 'success');
+}
+
+/** A kit's lockup checked before it goes into a design (kits are stored on this device and could be damaged). */
+function checkedKitLockup(entry: KitLockup): KitLockup | null {
+  const parsed = lockupSchema.safeParse(entry.lockup);
+  if (parsed.success) return { ...entry, lockup: parsed.data };
+  toast(`${entry.lockup?.name ?? 'This lockup'} in the brand kit is damaged and can’t be used. Save it to the kit again from a project that has it.`, 'error');
+  return null;
+}
+
+/**
+ * Place a brand kit's lockup on the active zone or design area. A design that already has the
+ * lockup places its own copy (the Brand tab offers the kit's newer version separately).
+ */
+export function placeKitLockup(entry: KitLockup, kitId: string) {
+  const c = context();
+  if (!c?.s.document) return;
+  if (isLockupId(c.zoneId)) return void toast('A lockup can’t hold another lockup: place it on a zone or design area.');
+  const existing = c.s.document.lockups?.items[entry.lockup.id as LockupId];
+  const checked = existing ? entry : checkedKitLockup(entry);
+  if (!checked) return;
+  const lockup = existing ?? lockupFromKit(checked, kitId);
+  const W = c.spec.printableWidthMm;
+  const H = c.spec.printableHeightMm;
+  const placement = newPlacement(lockup, newId(), { cx: W / 2, cy: H / 2, maxW: W * 0.9, maxH: H * 0.9 });
+  const command = existing ? cmd.addLayer(c.zoneId, placement) : cmd.batch(`Place ${lockup.name} from the brand kit`, [cmd.addLockup(lockup), cmd.addLayer(c.zoneId, placement)]);
+  if (c.s.dispatch(command)) c.s.select([placement.id]);
+}
+
+/** Bring this design's copy of a kit lockup up to the kit's version; every placement follows, in one undo step. */
+export function updateLockupFromKit(entry: KitLockup, kitId: string) {
+  const s = useStudio.getState();
+  if (!s.document?.lockups?.items[entry.lockup.id as LockupId]) return;
+  const checked = checkedKitLockup(entry);
+  if (!checked) return;
+  if (s.dispatch(cmd.replaceLockup(lockupFromKit(checked, kitId), `Update ${checked.lockup.name} from the brand kit`))) {
+    toast(`${checked.lockup.name} now matches the brand kit, on every placement. Undo brings back this design’s version.`, 'success');
+  }
+}
+
 /** Run `fn` with the 2D artboard on screen: at once, or once it is shown when only the 3D view is open. */
 function onArtboard(fn: () => void) {
   const s = useStudio.getState();
@@ -272,12 +367,17 @@ function onArtboard(fn: () => void) {
   wait();
 }
 
-/** Edit the selected shape's points on the 2D artboard (spec ED2-09). */
+/** Whether a layer has points to edit: a shape's outline, or the line text on a path follows. */
+export function hasEditablePoints(layer: ArtworkLayer | undefined): layer is ArtworkLayer {
+  return !!layer && !layer.locked && (layer.content.kind === 'shape' || (layer.content.kind === 'text' && isOnPath(layer.content)));
+}
+
+/** Edit the selected shape's points (spec ED2-09), or the line its text follows (TYP-02), on the 2D artboard. */
 export function editPoints() {
   const { document, selectedLayerIds, activeZoneId } = useStudio.getState();
   const zone = document ? artboardOf(document, activeZoneId) : undefined;
   const layer = selectedLayerIds.length === 1 ? zone?.layers[selectedLayerIds[0]] : undefined;
-  if (layer?.content.kind !== 'shape' || layer.locked) return;
+  if (!hasEditablePoints(layer)) return;
   onArtboard(() => window.dispatchEvent(new CustomEvent('wovexa:edit-points', { detail: { layerId: layer.id } })));
 }
 
@@ -513,6 +613,17 @@ export async function combineSelection(op: CombineOp) {
   const at = zone.orderedLayerIds.indexOf(ids[0]);
   c.s.dispatch(cmd.batch(COMBINE_LABELS[op], [cmd.removeLayers(c.zoneId, ids), cmd.addLayer(c.zoneId, layer, at)]));
   c.s.select([layer.id]);
+}
+
+/** Open tracing into vector shapes for the one selected image (showing the inspector first on small screens). */
+export function openTrace() {
+  const { document, selectedLayerIds, activeZoneId } = useStudio.getState();
+  const zone = document ? artboardOf(document, activeZoneId) : undefined;
+  const layer = selectedLayerIds.length === 1 ? zone?.layers[selectedLayerIds[0]] : undefined;
+  if (layer?.content.kind !== 'image') return;
+  if (layer.locked) return void toast('Unlock the image to trace it.');
+  window.dispatchEvent(new CustomEvent('wovexa:edit-layer', { detail: { layerId: layer.id } }));
+  setTimeout(() => window.dispatchEvent(new CustomEvent('wovexa:trace', { detail: { layerId: layer.id } })), 150);
 }
 
 /** Open the crop, or the photo's frame, for the one selected image (showing the inspector first on small screens). */

@@ -1,26 +1,54 @@
 'use client';
 /**
- * Editing a shape's points (spec ED2-09), over the 2D artboard: drag a point or its handles, click
- * the outline to add a point there, double-click a point to switch it between corner and curve,
- * Delete removes the chosen point, arrows nudge it, Enter or Escape (or a click off the shape)
- * finishes. Alt while dragging a handle breaks a smooth point into a corner. Each drag is one undo step.
+ * Editing a path's points over the 2D artboard: a shape's outline (spec ED2-09) or the line text
+ * runs along (TYP-02). Drag a point or its handles, click the line to add a point there,
+ * double-click a point to switch it between corner and curve, Delete removes the chosen point,
+ * arrows nudge it, Enter or Escape (or a click off the line) finishes. Alt while dragging a handle
+ * breaks a smooth point into a corner. Each drag is one undo step.
  */
 import type { Canvas as FabricCanvas } from 'fabric';
 import { Check, Spline, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { deleteNode, isSmooth, mapSubpaths, moveHandle, moveNode, nearestOnPath, parsePath, pathData, splitSegment, toggleSmooth, type Subpath } from '@/domain/path-edit';
-import type { ArtworkLayer, ShapeContent } from '@/domain/schema';
-import { shapeToBoxPath } from '@/domain/shape-path';
+import { deleteNode, isSmooth, mapSubpaths, moveHandle, moveNode, nearestOnPath, parsePath, pathData, splitSegment, toggleSmooth, type PathSpace, type Subpath } from '@/domain/path-edit';
+import type { LayerTransform } from '@/domain/schema';
 
 /** Clicks within this many screen pixels of the outline add a point; handles grab from a little further. */
 const OUTLINE_PX = 8;
 
 type Drag = { kind: 'node'; sub: number; index: number; from: [number, number]; start: Subpath[]; moved: boolean } | { kind: 'handle'; sub: number; index: number; which: 'in' | 'out'; moved: boolean };
 
-export function PathEditOverlay({ fabric, layer, onCommit, onDone }: { fabric: () => FabricCanvas | null; layer: ArtworkLayer; onCommit: (subpaths: Subpath[]) => void; onDone: () => void }) {
+const COPY = {
+  shape: {
+    label: 'Editing points: drag a point or its handles, click the outline to add a point, double-click a point for a corner or a curve, Delete removes it, Enter finishes',
+    idle: 'Drag points; click the outline to add one',
+  },
+  text: {
+    label: 'Editing the line the text follows: drag a point or its handles, click the line to add a point, double-click a point for a corner or a curve, Delete removes it, Enter finishes',
+    idle: 'Drag points to reshape the line the text follows; click it to add one',
+  },
+};
+
+export function PathEditOverlay({
+  fabric,
+  transform: t,
+  source,
+  space,
+  what = 'shape',
+  onCommit,
+  onDone,
+}: {
+  fabric: () => FabricCanvas | null;
+  /** Where the layer sits on the artboard. */
+  transform: LayerTransform;
+  /** The path being edited, in its own units. */
+  source: string;
+  /** Where those units land in the layer. */
+  space: PathSpace;
+  what?: 'shape' | 'text';
+  onCommit: (subpaths: Subpath[]) => void;
+  onDone: () => void;
+}) {
   const ref = useRef<SVGSVGElement>(null);
-  const t = layer.transform;
-  const source = shapeToBoxPath(layer.content as ShapeContent, t.widthMm, t.heightMm);
   const [subs, setSubs] = useState(() => parsePath(source));
   const [synced, setSynced] = useState(source);
   // An undo, or the committed edit coming back refitted, replaces what is shown.
@@ -47,10 +75,9 @@ export function PathEditOverlay({ fabric, layer, onCommit, onDone }: { fabric: (
   const cos = Math.cos(a);
   const sin = Math.sin(a);
   const vpt = () => fabric()?.viewportTransform ?? [1, 0, 0, 1, 0, 0];
-  /** Box units (0–100 across the layer) to screen pixels. */
+  /** Path units to screen pixels: into the layer, turned and mirrored with it, then the view. */
   const toScreen = (u: number, v: number): [number, number] => {
-    let lx = (u / 100 - 0.5) * t.widthMm;
-    let ly = (v / 100 - 0.5) * t.heightMm;
+    let [lx, ly] = space.toLocal(u, v);
     if (t.flipX) lx = -lx;
     if (t.flipY) ly = -ly;
     const x = t.centerXmm + lx * cos - ly * sin;
@@ -58,16 +85,24 @@ export function PathEditOverlay({ fabric, layer, onCommit, onDone }: { fabric: (
     const p = vpt();
     return [p[0] * x + p[4], p[3] * y + p[5]];
   };
-  /** Screen pixels to box units. */
-  const toBox = (px: number, py: number): [number, number] => {
-    const p = vpt();
-    const dx = (px - p[4]) / p[0] - t.centerXmm;
-    const dy = (py - p[5]) / p[3] - t.centerYmm;
+  /** An offset on the artboard (mm) in the layer's own frame. */
+  const unturn = (dx: number, dy: number): [number, number] => {
     let lx = dx * cos + dy * sin;
     let ly = -dx * sin + dy * cos;
     if (t.flipX) lx = -lx;
     if (t.flipY) ly = -ly;
-    return [(lx / t.widthMm + 0.5) * 100, (ly / t.heightMm + 0.5) * 100];
+    return [lx, ly];
+  };
+  /** Screen pixels to path units. */
+  const toBox = (px: number, py: number): [number, number] => {
+    const p = vpt();
+    return space.fromLocal(...unturn((px - p[4]) / p[0] - t.centerXmm, (py - p[5]) / p[3] - t.centerYmm));
+  };
+  /** A nudge across the artboard (mm, as the arrow keys point on screen) in path units. */
+  const nudgeUnits = (dx: number, dy: number): [number, number] => {
+    const [u0, v0] = space.fromLocal(0, 0);
+    const [u1, v1] = space.fromLocal(...unturn(dx, dy));
+    return [u1 - u0, v1 - v0];
   };
   const local = (e: { clientX: number; clientY: number }): [number, number] => {
     const r = ref.current!.getBoundingClientRect();
@@ -107,9 +142,9 @@ export function PathEditOverlay({ fabric, layer, onCommit, onDone }: { fabric: (
       } else if (nudge && sel) {
         e.preventDefault();
         e.stopPropagation();
-        // Half a millimetre, or 5 mm with Shift, in the box's own units.
+        // Half a millimetre, or 5 mm with Shift, the way the arrow points on screen.
         const mm = e.shiftKey ? 5 : 0.5;
-        commit(moveNode(subs, sel.sub, sel.index, (nudge[0] * mm * 100) / t.widthMm, (nudge[1] * mm * 100) / t.heightMm));
+        commit(moveNode(subs, sel.sub, sel.index, ...nudgeUnits(nudge[0] * mm, nudge[1] * mm)));
       }
     };
     window.addEventListener('keydown', key, true);
@@ -197,7 +232,7 @@ export function PathEditOverlay({ fabric, layer, onCommit, onDone }: { fabric: (
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         role="application"
-        aria-label="Editing points: drag a point or its handles, click the outline to add a point, double-click a point for a corner or a curve, Delete removes it, Enter finishes"
+        aria-label={COPY[what].label}
       >
         <path d={outline} fill="none" stroke="var(--accent)" strokeWidth={1.5} />
         {/* A wider invisible outline, so a point can be added anywhere along it. */}
@@ -223,7 +258,7 @@ export function PathEditOverlay({ fabric, layer, onCommit, onDone }: { fabric: (
       </svg>
       <div className="absolute left-1/2 top-7 z-20 flex w-max max-w-[calc(100%-1rem)] -translate-x-1/2 items-center gap-1 rounded-xl border border-line bg-floating/95 p-1 pl-2.5 text-xs shadow-sm backdrop-blur [&>button]:flex-none">
         <Spline size={14} className="flex-none text-[var(--accent)]" aria-hidden />
-        <span className="mr-1 hidden min-w-0 truncate text-fg-2 sm:block">{sel ? 'Drag the point or its handles' : 'Drag points; click the outline to add one'}</span>
+        <span className="mr-1 hidden min-w-0 truncate text-fg-2 sm:block">{sel ? 'Drag the point or its handles' : COPY[what].idle}</span>
         <button className="icon-btn h-8 w-8" disabled={!sel} onClick={() => sel && commit(toggleSmooth(subs, sel.sub, sel.index))} aria-label="Switch the point between corner and curve" title="Corner or curve (double-click a point)">
           <Spline size={15} />
         </button>

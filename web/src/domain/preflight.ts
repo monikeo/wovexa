@@ -4,10 +4,11 @@
  */
 import { areaSpec, designAreas } from './areas';
 import { getGarment, PRINT_METHOD_LABELS, type ZoneSpec } from './garments';
+import { gradingTable } from './grading';
 import { mmToInch, overflow, rotatedBounds, roundMm } from './geometry';
 import { detachedLayers, type Placement } from './lockups';
 import { projectedAsArtwork, projectedLayers } from './projected';
-import { ZONE_IDS, type AreaId, type ArtboardId, type ArtworkLayer, type DesignDocument, type ImageContent, type PrintMethod, type ProjectedLayer } from './schema';
+import { ZONE_IDS, type AreaId, type ArtboardId, type ArtworkLayer, type DesignDocument, type ImageContent, type PrintMethod, type ProjectedLayer, type ZoneId } from './schema';
 
 export type Severity = 'error' | 'warning' | 'info';
 
@@ -31,7 +32,13 @@ export interface PreflightIssue {
     | 'allover_print'
     | 'cross_seam'
     | 'flat_finish'
-    | 'empty_design';
+    | 'empty_design'
+    /** Ink within the seam clearance band: near a seam, edge or trim, where prints come out uneven. */
+    | 'seam_clearance'
+    /** Letters the chosen font doesn't have, which print in a stand-in font. */
+    | 'missing_glyphs'
+    /** Artwork graded by size that grows past its print area on some sizes. */
+    | 'graded_overflow';
   message: string;
   /** Action-oriented resolution, only when it can be computed exactly. */
   fix?: string;
@@ -290,6 +297,33 @@ export function runPreflight(doc: DesignDocument, opts: PreflightOptions = DEFAU
       });
     }
     for (const layer of layers) issues.push(...checkLayer(layer, spec, zone.printMethod, opts));
+  }
+
+  // Graded artwork: the sizes where it grows past its print area, which cut it off there (one issue per zone).
+  const table = gradingTable(doc);
+  const overflowing = new Map<ZoneId, { label: string; sizes: number[]; worst: { mm: number; factor: number } }>();
+  table.forEach((size, index) => {
+    for (const z of size.zones) {
+      if (z.overflowMm <= 1) continue;
+      const entry = overflowing.get(z.zoneId) ?? { label: z.label, sizes: [], worst: { mm: 0, factor: z.factor } };
+      entry.sizes.push(index);
+      if (z.overflowMm > entry.worst.mm) entry.worst = { mm: z.overflowMm, factor: z.factor };
+      overflowing.set(z.zoneId, entry);
+    }
+  });
+  for (const [zoneId, e] of overflowing) {
+    // A run of sizes in order reads as a range: "L to 8XL".
+    const labels = e.sizes.map((i) => table[i].label);
+    const run = e.sizes.length > 2 && e.sizes.every((s, k) => k === 0 || s === e.sizes[k - 1] + 1);
+    const sizes = labels.length === 1 ? labels[0] : run ? `${labels[0]} to ${labels[labels.length - 1]}` : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+    issues.push({
+      id: `${zoneId}:graded`,
+      zoneId,
+      severity: 'warning',
+      code: 'graded_overflow',
+      message: `On ${sizes} the artwork grows past the ${e.label.toLowerCase()} print area (by up to ${roundMm(e.worst.mm)} mm at ${Math.round(e.worst.factor * 100)}%), so it is cut off there`,
+      fix: 'Make the artwork smaller or move it in from the edges, or design on a bigger base size',
+    });
   }
 
   for (const layer of projectedLayers(doc)) {

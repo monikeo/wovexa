@@ -106,10 +106,15 @@ export async function hasFont(id: string) {
   return !!(await getFont(id));
 }
 
-/** Project titles that use a font, so deleting it can be refused while in use. */
+/** Projects (and brand kits, through their lockups) that use a font, so deleting it can be refused while in use. */
 export async function fontUsage(id: string): Promise<string[]> {
-  const docs = await (await db()).getAll('documents');
-  return docs.filter(({ document }) => JSON.stringify(document).includes(`"${id}"`)).map(({ document }) => (document as { title?: string }).title ?? 'Untitled');
+  const database = await db();
+  const [docs, kits] = await Promise.all([database.getAll('documents'), database.getAll('brandKits')]);
+  const uses = (value: unknown) => JSON.stringify(value).includes(`"${id}"`);
+  return [
+    ...docs.filter(({ document }) => uses(document)).map(({ document }) => (document as { title?: string }).title ?? 'Untitled'),
+    ...kits.filter((k) => uses(k.lockups ?? [])).map((k) => `brand kit ${k.name}`),
+  ];
 }
 
 export async function deleteFont(id: string) {

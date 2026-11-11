@@ -30,6 +30,14 @@ export interface Sketch {
   lines?: Pt[][];
 }
 
+/** How far into the garment from a seam, edge or trim a print should stay clear, in mm. */
+export const SEAM_CLEARANCE_MM = 20;
+
+/** The lines a print keeps clear of: the garment's outline, its parts' edges, trims and seams. */
+export function seamEdges(sketch: Sketch): Pt[][] {
+  return [sketch.body, ...sketch.shapes.filter((s) => s.part !== 'body' && s.part !== 'inside').map((s) => s.points), ...sketch.bands.map((b) => b.points), ...sketch.seams];
+}
+
 const mirror = (pts: Pt[]): Pt[] => pts.map(([x, y]) => [-x, y] as Pt).reverse();
 const shift = (pts: Pt[], dx: number): Pt[] => pts.map(([x, y]) => [x + dx, y] as Pt);
 

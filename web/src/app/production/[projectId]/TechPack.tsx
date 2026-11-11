@@ -14,8 +14,10 @@ import { areaSpec, describeAreaPlacement, designAreas } from '@/domain/areas';
 import * as cmd from '@/domain/commands';
 import { newId } from '@/domain/factory';
 import { getGarment, getSize, partColor, PRINT_METHOD_LABELS, zoneSpecOrFirst } from '@/domain/garments';
+import { gradingTable } from '@/domain/grading';
 import { detachedLayers, isPlacement } from '@/domain/lockups';
-import { effectiveDpi, runPreflight, summarize } from '@/domain/preflight';
+import { effectiveDpi, summarize } from '@/domain/preflight';
+import { fullPreflight } from '@/lib/preflight-browser';
 import { migrateDesignDocument, type BomItem, type DesignArea, type DesignDocument, type ZoneId } from '@/domain/schema';
 import { prepareDocument } from '@/lib/export/package';
 import { renderZoneArtwork } from '@/lib/render/zone-renderer';
@@ -98,10 +100,11 @@ function TechPackBody({ doc, editable, header, projectId }: { doc: DesignDocumen
   const size = getSize(model, doc.garment.sizeCode);
   const fabric = model.fabricPresets.find((f) => f.id === doc.garment.fabricPresetId);
   const colorway = doc.colorways.find((c) => c.id === doc.activeColorwayId) ?? doc.colorways[0];
-  const { errors, warnings } = summarize(runPreflight(doc));
+  const { errors, warnings } = summarize(fullPreflight(doc).issues);
   const zones = model.zoneOrder.filter((z) => doc.zones[z].orderedLayerIds.length > 0);
   const areas = designAreas(doc).filter((a) => a.orderedLayerIds.length > 0);
   const sketchZones: ZoneId[] = zones.length ? zones : ['front'];
+  const graded = gradingTable(doc);
   const p = doc.production;
   const approval = header.version?.approval;
   const setBom = (row: BomItem, patch: Partial<Omit<BomItem, 'id'>>) => dispatch(cmd.updateBomItem(row.id, patch));
@@ -306,6 +309,47 @@ function TechPackBody({ doc, editable, header, projectId }: { doc: DesignDocumen
           Print checks: {errors} failing, {warnings} to review.
         </p>
       </section>
+
+      {graded.length && graded[0].zones.length ? (
+        <section className="mt-10 break-inside-avoid" aria-labelledby="graded">
+          <h2 id="graded" className="text-sm font-semibold">
+            Artwork graded by size
+          </h2>
+          <p className="mt-1 text-xs text-fg-2">
+            Designed on size {doc.garment.grading?.baseSize}. Every size prints the same artwork scaled from the top centre of its print area: the chest across a front or back, the overall grade along a sleeve, the length down a leg. The schedule above is the base size.
+          </p>
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full min-w-[480px] border-collapse text-sm">
+              <thead>
+                <tr className="border-b-2 border-fg text-left">
+                  <th className="py-2 pr-3 font-semibold">Size</th>
+                  {graded[0].zones.map((z) => (
+                    <th key={z.zoneId} className="py-2 pr-3 text-right font-semibold">
+                      {z.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {graded.map((row) => (
+                  <tr key={row.code} className={`border-b border-line ${row.base ? 'font-semibold' : ''}`}>
+                    <td className="py-2 pr-3">
+                      {row.label}
+                      {row.base ? ' (base)' : ''}
+                    </td>
+                    {row.zones.map((z) => (
+                      <td key={z.zoneId} className={`num py-2 pr-3 text-right ${z.overflowMm > 1 ? 'text-danger' : ''}`}>
+                        {Math.round(z.factor * 100)}%, {fmt(z.widthMm)} × {fmt(z.heightMm)}
+                        {z.overflowMm > 1 ? `, ${fmt(z.overflowMm)} past` : ''}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
 
       <section className="mt-10" aria-labelledby="bom">
         <div className="flex flex-wrap items-end justify-between gap-2">

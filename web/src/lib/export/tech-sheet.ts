@@ -5,6 +5,7 @@
  * linked by their path inside the package, so it opens straight from the unzipped folder.
  */
 import { partColor, PRINT_METHOD_LABELS, sizeChart, sizeLabel, type GarmentModel, type GarmentSize } from '@/domain/garments';
+import type { GradedSize } from '@/domain/grading';
 import type { DesignDocument, ZoneId } from '@/domain/schema';
 import type { MarkerSummary } from './marker';
 import type { Ink } from './separations';
@@ -27,6 +28,27 @@ export interface TechSheetInput {
   issues: { severity: string; message: string; zoneId?: string }[];
   team?: { people: number; sizes: { size: string; count: number }[]; file: string };
   marker?: MarkerSummary;
+  /** Artwork graded by size: each size's grade and artwork size, with the folder of its print files when exported. */
+  grading?: { base: string; sizes: GradedSize[]; folders: Record<string, string> };
+}
+
+/** The graded artwork table: every size's grade per print area, from the base. */
+export function gradingSection(model: GarmentModel, grading: NonNullable<TechSheetInput['grading']>): string {
+  const zones = grading.sizes[0]?.zones ?? [];
+  if (!zones.length) return '';
+  const head = zones.map((z) => `<th>${esc(model.zones[z.zoneId]?.label ?? z.label)}</th>`).join('');
+  const rows = grading.sizes
+    .map((s) => {
+      const cells = s.zones
+        .map((z) => `<td>${Math.round(z.factor * 100)}%<br><span class="muted small">${Math.round(z.widthMm)} × ${Math.round(z.heightMm)} mm</span>${z.overflowMm > 1 ? `<br><span class="warn small">${Math.round(z.overflowMm)} mm past the print area</span>` : ''}</td>`)
+        .join('');
+      const folder = grading.folders[s.code];
+      return `<tr${s.base ? ' class="sel"' : ''}><td>${esc(s.label)}${s.base ? ' <span class="pill">Base</span>' : ''}${folder ? `<br><a class="small" href="${esc(folder)}">${esc(folder)}</a>` : ''}</td>${cells}</tr>`;
+    })
+    .join('');
+  return `<h2>Artwork graded by size</h2>
+  <p class="small">Designed on size ${esc(grading.base)}. Every size prints the same artwork scaled from the top centre of its print area by the percentage shown: the chest across a front or back, the overall grade along a sleeve, the length down a leg. Design areas and artwork across seams keep their size.</p>
+  <table class="grid"><tr><th>Size</th>${head}</tr>${rows}</table>`;
 }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -212,6 +234,8 @@ export function buildTechSheet(input: TechSheetInput): string {
   ${colourways}
 
   ${team}
+
+  ${input.grading ? gradingSection(model, input.grading) : ''}
 
   ${measurements}
 

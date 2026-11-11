@@ -73,6 +73,35 @@ export async function dropPhoto(page: Page) {
   await expect.poll(async () => (await frontLayers(page)).some((l) => l.content.kind === 'image')).toBe(true);
 }
 
+/** Drop a generated flat logo (a red disc with a navy ring round a white middle, on white) on the stage. */
+export async function dropLogo(page: Page) {
+  await page.evaluate(async () => {
+    const c = document.createElement('canvas');
+    c.width = 600;
+    c.height = 600;
+    const g = c.getContext('2d')!;
+    g.fillStyle = '#FFFFFF';
+    g.fillRect(0, 0, 600, 600);
+    for (const [r, colour] of [
+      [240, '#DC1E28'],
+      [160, '#141E5A'],
+      [70, '#FFFFFF'],
+    ] as const) {
+      g.fillStyle = colour;
+      g.beginPath();
+      g.arc(300, 300, r, 0, Math.PI * 2);
+      g.fill();
+    }
+    const blob = await new Promise<Blob>((r) => c.toBlob((b) => r(b!), 'image/png'));
+    const data = new DataTransfer();
+    data.items.add(new File([blob], 'Club logo.png', { type: 'image/png' }));
+    const stage = document.querySelector('main[aria-label="Design stage"]')!;
+    const r = stage.getBoundingClientRect();
+    stage.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }));
+  });
+  await expect.poll(async () => (await frontLayers(page)).some((l) => l.content.kind === 'image')).toBe(true);
+}
+
 /** The files in a ZIP, by name (stored and deflated entries). */
 export function unzip(bytes: Buffer): Record<string, Buffer> {
   let eocd = bytes.length - 22;

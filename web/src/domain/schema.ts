@@ -427,6 +427,8 @@ export const lockupSchema = z.object({
   orderedLayerIds: z.array(id).max(60),
   layers: z.record(id, artworkLayerSchema),
   guides: guidesSchema.optional(),
+  /** The brand kit version this lockup was placed from or last saved to, so a newer one there can be offered. */
+  kit: z.object({ kitId: id, savedAt: finite.min(0) }).optional(),
 });
 export type Lockup = z.infer<typeof lockupSchema>;
 
@@ -535,6 +537,11 @@ export const designDocumentSchema = z.object({
         credit: z.object({ title: z.string().max(200).optional(), author: z.string().max(200).optional(), license: z.string().max(200).optional(), source: z.string().max(500).optional() }).optional(),
       })
       .optional(),
+    /**
+     * Artwork graded by size: designed on `baseSize`, every other size prints it scaled by how much
+     * that size's garment differs (see domain/grading). Absent: one artwork size for every size.
+     */
+    grading: z.object({ baseSize: z.string().min(1).max(8) }).optional(),
   }),
   activeColorwayId: id,
   colorways: z.array(colorwaySchema).min(1).max(24),
