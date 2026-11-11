@@ -44,6 +44,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { selectionUnits, type AlignMode, type CopyPlan } from '@/domain/arrange';
 import * as cmd from '@/domain/commands';
 import { changeCase, isCase, type LetterCase } from '@/domain/letter-case';
+import { LIMITS } from '@/domain/limits';
 import { isPlacement, placementsOf } from '@/domain/lockups';
 import { checkLayer, checkProjectedLayer, DEFAULT_PREFLIGHT, effectiveDpi, shownPixels } from '@/domain/preflight';
 import { projectedAsArtwork } from '@/domain/projected';
@@ -412,6 +413,7 @@ function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextCon
         className="field min-h-[68px] py-2 text-sm"
         value={draft}
         aria-label="Text content"
+        maxLength={LIMITS.textChars}
         rows={2}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commitText}

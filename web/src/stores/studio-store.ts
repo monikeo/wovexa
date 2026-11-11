@@ -10,8 +10,8 @@ import { artboardOf, artboardSpec, hasArtboard, lockupSpec } from '@/domain/area
 import type { Command } from '@/domain/commands';
 import { getGarment } from '@/domain/garments';
 import { applyCommand, emptyHistory, redo as redoHistory, undo as undoHistory, type History } from '@/domain/history';
-import { isAreaId, isLockupId, type ArtboardId, type Colorway, type DesignDocument, type LayerTransform, type ProjectedTransform, type ProjectorSpec, type Scene } from '@/domain/schema';
-import { getProject, loadDocument, saveDocument, type ProjectMeta } from '@/lib/local-db';
+import { isAreaId, isLockupId, parseDesignDocument, type ArtboardId, type Colorway, type DesignDocument, type LayerTransform, type ProjectedTransform, type ProjectorSpec, type Scene } from '@/domain/schema';
+import { getProject, loadDocument, requestPersistentStorage, saveDocument, type ProjectMeta } from '@/lib/local-db';
 import { renderThumbnail } from '@/lib/thumbnail';
 
 export type SaveState = 'saved' | 'unsaved' | 'saving' | 'error';
@@ -32,6 +32,18 @@ interface StudioState {
   /** Set when the stored document was upgraded from an older format on open. */
   upgradedFrom: number | null;
   panel: StudioPanel;
+  /** The last edit refused for going past a limit of the design, to tell the person why. */
+  refusal: { text: string; at: number } | null;
+  /**
+   * Whether this tab edits the open project. One tab at a time does, so two never save over each
+   * other: `elsewhere` when another tab already had it open, `lost` when another tab took it over.
+   * Edits and saves stop in both. `unknown` until claimed (and where the browser can't tell).
+   */
+  editLock: 'unknown' | 'held' | 'elsewhere' | 'lost';
+  claimEditing: (steal?: boolean) => Promise<void>;
+  releaseEditing: () => void;
+  /** Edit here instead of the other tab, starting from what it last saved. */
+  takeOverEditing: () => Promise<void>;
 
   /** The zone or design area being designed on. */
   activeZoneId: ArtboardId;
@@ -67,11 +79,22 @@ const THUMBNAIL_INTERVAL_MS = 0;
 let lastThumbnailAt = 0;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let saveChain: Promise<void> = Promise.resolve();
+/** Whether this session already asked the browser to keep the site's data. */
+let askedPersistence = false;
+/** The editing lock this tab holds: which project, and how to let it go. */
+let heldFor: string | null = null;
+let releaseHeld: (() => void) | null = null;
 
 export const useStudio = create<StudioState>((set, get) => {
   function scheduleSave() {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => void get().saveNow(), SAVE_DEBOUNCE_MS);
+  }
+
+  /** Whether this tab may change and save the open project (another tab isn't editing it). */
+  function editable() {
+    const lock = get().editLock;
+    return lock !== 'elsewhere' && lock !== 'lost';
   }
 
   function afterChange(document: DesignDocument, history: History) {
@@ -99,6 +122,8 @@ export const useStudio = create<StudioState>((set, get) => {
     lastSavedAt: null,
     upgradedFrom: null,
     panel: null,
+    refusal: null,
+    editLock: 'unknown',
 
     activeZoneId: 'front',
     selectedLayerIds: [],
@@ -147,22 +172,23 @@ export const useStudio = create<StudioState>((set, get) => {
 
     dispatch(command) {
       const { document, history } = get();
-      if (!document) return false;
+      if (!document || !editable()) return false;
       const result = applyCommand(document, history, command);
       if (result.changed) afterChange(result.document, result.history);
+      else if (result.refused) set({ refusal: { text: result.refused, at: Date.now() } });
       return result.changed;
     },
 
     undo() {
       const { document, history } = get();
-      if (!document) return;
+      if (!document || !editable()) return;
       const result = undoHistory(document, history);
       if (result.changed) afterChange(result.document, result.history);
     },
 
     redo() {
       const { document, history } = get();
-      if (!document) return;
+      if (!document || !editable()) return;
       const result = redoHistory(document, history);
       if (result.changed) afterChange(result.document, result.history);
     },
@@ -174,6 +200,15 @@ export const useStudio = create<StudioState>((set, get) => {
       saveChain = saveChain.then(async () => {
         const document = get().document;
         if (!document || get().saveState === 'saved') return;
+        // Another tab edits this project now: what it saves is the project, not this tab's copy.
+        if (!editable()) return;
+        // Never write a design that couldn't be opened again: the last good copy stays on the device.
+        const check = parseDesignDocument(document);
+        if (!check.ok) {
+          console.error('Not saved, the design is invalid:', check.errors);
+          set({ saveState: 'error', saveError: 'Your last change made the design invalid, so it wasn’t saved. Undo it to keep working; your last good version is on this device.' });
+          return;
+        }
         set({ saveState: 'saving' });
         try {
           let thumbnail: Blob | undefined;
@@ -185,12 +220,73 @@ export const useStudio = create<StudioState>((set, get) => {
           // Another edit may have arrived while writing; keep it marked unsaved.
           const stillCurrent = get().document === document;
           set({ meta, lastSavedAt: Date.now(), saveError: null, saveState: stillCurrent ? 'saved' : 'unsaved' });
+          // An installed app gets persistent storage without a prompt: ask once there is work to keep.
+          if (!askedPersistence && typeof matchMedia !== 'undefined' && matchMedia('(display-mode: standalone)').matches) {
+            askedPersistence = true;
+            void requestPersistentStorage();
+          }
           if (!stillCurrent) scheduleSave();
         } catch (error) {
           set({ saveState: 'error', saveError: error instanceof Error ? error.message : 'Could not save on this device' });
         }
       });
       return saveChain;
+    },
+
+    claimEditing(steal = false) {
+      const projectId = get().projectId;
+      if (!projectId) return Promise.resolve();
+      const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+      // Without the Web Locks API every tab edits, as before.
+      if (!locks) {
+        set({ editLock: 'held' });
+        return Promise.resolve();
+      }
+      if (heldFor === projectId && releaseHeld && !steal) return Promise.resolve();
+      get().releaseEditing();
+      return new Promise<void>((settled) => {
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => (release = resolve));
+        locks
+          .request(`wovexa:project:${projectId}`, steal ? { steal: true } : { ifAvailable: true }, async (lock) => {
+            if (!lock) {
+              if (get().projectId === projectId) set({ editLock: 'elsewhere' });
+              settled();
+              return;
+            }
+            releaseHeld = release;
+            heldFor = projectId;
+            if (get().projectId === projectId) set({ editLock: 'held' });
+            settled();
+            // Held until this tab lets go (it leaves the studio) or another tab takes it over.
+            await held;
+          })
+          .catch(() => {
+            // Another tab took editing over: the request is aborted.
+            if (heldFor === projectId) {
+              releaseHeld = null;
+              heldFor = null;
+            }
+            if (get().projectId === projectId) set({ editLock: 'lost' });
+            settled();
+          });
+      });
+    },
+    releaseEditing() {
+      releaseHeld?.();
+      releaseHeld = null;
+      heldFor = null;
+      if (get().editLock !== 'unknown') set({ editLock: 'unknown' });
+    },
+    async takeOverEditing() {
+      const projectId = get().projectId;
+      if (!projectId) return;
+      await get().claimEditing(true);
+      if (get().editLock !== 'held' || get().projectId !== projectId) return;
+      // The other tab may have saved since this one opened the project: start from what is saved.
+      const result = await loadDocument(projectId);
+      if (!result.ok || get().projectId !== projectId) return;
+      set({ document: result.document, meta: result.meta, history: emptyHistory(), saveState: 'saved', selectedLayerIds: [], selectedProjectionId: null });
     },
 
     setActiveZone(zoneId) {

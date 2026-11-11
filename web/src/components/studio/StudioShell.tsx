@@ -164,6 +164,20 @@ function SaveStatus() {
     () => navigator.onLine,
     () => true,
   );
+  // An edit refused for going past a limit of the design says which limit.
+  const refusal = useStudio((s) => s.refusal);
+  useEffect(() => {
+    if (refusal) toast(refusal.text, 'error');
+  }, [refusal]);
+  // Say why a save failed where it can be read, not only in a tooltip; once, not on every edit.
+  const told = useRef<{ text: string; at: number } | null>(null);
+  useEffect(() => {
+    if (saveState !== 'error' || !error) return;
+    const last = told.current;
+    if (last && last.text === error && Date.now() - last.at < 15_000) return;
+    told.current = { text: error, at: Date.now() };
+    toast(error, 'error');
+  }, [saveState, error]);
   if (saveState === 'error') {
     return (
       <button className="text-xs font-medium text-danger underline" onClick={() => void saveNow()} title={error ?? undefined}>

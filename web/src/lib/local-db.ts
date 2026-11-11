@@ -559,6 +559,22 @@ export async function clearLocalData() {
   await tx.done;
 }
 
+/**
+ * Whether the browser keeps this site's data when space runs low (persistent storage), or may
+ * clear it; null where the browser doesn't say. Projects live only here, so this is their safety.
+ */
+export async function storagePersisted(): Promise<boolean | null> {
+  if (typeof navigator === 'undefined' || !navigator.storage?.persisted) return null;
+  return navigator.storage.persisted().catch(() => null);
+}
+
+/** Ask the browser to keep this site's data (some browsers ask the person). True when it will. */
+export async function requestPersistentStorage(): Promise<boolean> {
+  if (typeof navigator === 'undefined' || !navigator.storage?.persist) return false;
+  if (await storagePersisted()) return true;
+  return navigator.storage.persist().catch(() => false);
+}
+
 export async function storageEstimate(): Promise<{ usage: number; quota: number } | null> {
   if (typeof navigator === 'undefined' || !navigator.storage?.estimate) return null;
   const { usage = 0, quota = 0 } = await navigator.storage.estimate();

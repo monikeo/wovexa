@@ -38,7 +38,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | PRJ-01 | P0 | Create projects | Done | Blank project or from built-in/user templates; garment and colourway chosen at creation. |
 | PRJ-02 | P0 | Project cards | Done | Cards with rendered thumbnail, garment, last edited and approval status. |
 | PRJ-03 | P0 | CRUD | Done | Rename, duplicate, archive/restore, and delete into Recently deleted: restorable for 30 days (with a countdown, and a banner if the project is opened), then deleted for good; or delete forever at once, confirmed. |
-| PRJ-04 | P0 | Autosave / status | Partial | Saved / Saving / Unsaved / Offline / Failed-with-retry. "Sync conflict" waits for server sync. |
+| PRJ-04 | P0 | Autosave / status | Partial | Saved / Saving / Unsaved / Offline / Failed-with-retry, with the reason shown when a save fails. A design that no longer validates is never written over the last good copy. A project is edited in one tab at a time (Web Locks): a second tab waits or takes editing over and starts from the latest save, so two tabs never save over each other. "Sync conflict" waits for server sync. |
 | PRJ-05 | P1 | Collections / folders | Not started |  |
 | PRJ-06 | P1 | Search and filtering | Partial | Title search and sort. No tag, collaborator or date filters yet. |
 | PRJ-07 | P1 | Project tags / notes | Not started |  |
@@ -323,7 +323,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | PWA-06 | – | sync queue retries with backoff/idempotency | Not started |  |
 | PWA-07 | – | define clear conflict resolution: if server version diverges, offer keep local copy, op… | Not started |  |
 | PWA-08 | – | service worker updates should activate safely after current edits checkpoint and show n… | Done | New service worker activates only when the page asks. |
-| PWA-09 | – | graceful quota-exceeded behavior and selective cache cleanup | Partial | Save errors surface with retry; no selective cleanup UI. |
+| PWA-09 | – | graceful quota-exceeded behavior and selective cache cleanup | Partial | Save errors surface with retry. Settings shows whether the browser keeps the site's data when space runs low (persistent storage) and asks for it; an installed app asks by itself after the first save. No selective cleanup UI. |
 | PWA-10 | – | installation, push, share-target, clipboard and file APIs guarded by feature tests and… | Partial | Install, clipboard, EyeDropper and file APIs are feature-tested; no push or share-target. |
 | PWA-11 | P2 | opt-in reminders for approval requests or completed render jobs where permissions/platf… | Not started |  |
 | PWA-12 | P2 | device-to-device open via QR/deep link to last-saved server version, respecting permiss… | Not started |  |
@@ -335,12 +335,12 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | SEC-01 | – | Supabase RLS on private data plus direct authorization checks on routes and workers | Partial | RLS migration and route checks written; not yet run against a live Supabase project. |
 | SEC-02 | – | Do not expose service role, privileged tokens, renderer credentials or AI-provider secr… | Done | Only the publishable key reaches the client. |
 | SEC-03 | – | Treat SVGs, PDFs, uploaded fonts and 3D models as untrusted | Partial | SVGs sanitized, fonts validated by loading, size limits. No server-side scanning yet. |
-| SEC-04 | – | Validate file type by content sniffing/signature as appropriate, not filename alone | Partial | Uploads checked by content signature. No CSP headers yet. |
+| SEC-04 | – | Validate file type by content sniffing/signature as appropriate, not filename alone | Partial | Uploads checked by content signature. |
 | SEC-05 | – | Use signed URLs with limited scope and expiration for private files, and encrypt transp… | Not started | No server storage yet. |
 | SEC-06 | – | Rate-limit logins, invitations, export starts, AI requests, large asset uploads and pub… | Not started |  |
-| SEC-07 | – | Object/bucket quotas, max layers, max uploaded image megapixels, max vector nodes, max… | Partial | Megapixel, file size, layer count, texture and export size limits; video length capped by the UI. |
+| SEC-07 | – | Object/bucket quotas, max layers, max uploaded image megapixels, max vector nodes, max… | Partial | Megapixel, file size, texture and export size limits; video length capped by the UI. Every edit is checked against the design's limits (layers per print area, lockup and seams, areas, lockups, text length, path size) and refused with the reason when it would go past one. API bodies are counted as they arrive and cut off at their limits. No server-side quotas yet. |
 | SEC-08 | – | Worker egress policies and sandboxing | Not started | No workers yet. |
-| SEC-09 | – | CSRF mitigation, secure cookies/session settings, strong CSP and dependency scans for a… | Not started | No CSP, CSRF or dependency scanning configured yet. |
+| SEC-09 | – | CSRF mitigation, secure cookies/session settings, strong CSP and dependency scans for a… | Partial | Write routes refuse other origins (and origin-less requests the browser marks cross-site); a CSP that blocks plugins, base-tag hijacks, framing and off-site form posts, with nosniff, referrer and permissions policies. Scripts aren't restricted by the CSP yet (that needs per-request nonces). GitHub Dependabot scans dependencies. |
 | SEC-10 | – | Audit important events: membership change, asset/share publication, approval, approved… | Not started |  |
 | SEC-11 | – | Backups and restore drills for Postgres and documented artifact retention | Not started |  |
 | SEC-12 | – | Project-specific permissions for comments, export, approve and delete | Not started |  |
@@ -350,7 +350,7 @@ Nothing here has been run against a live Supabase project: the app works fully i
 | ID | Priority | Feature | Status | Notes |
 | --- | --- | --- | --- | --- |
 | REL-01 | – | local-first optimistic commands with bounded history | Done | Local-first commands, bounded history, debounced autosave and flush on hide. |
-| REL-02 | – | autosave error handling and visible conflict recovery | Done | Failed saves show an error with retry; never shown as saved. |
+| REL-02 | – | autosave error handling and visible conflict recovery | Done | Failed saves show an error with retry, and why; never shown as saved. Pages that fail to render show a way back instead of a blank screen; the studio saves pending edits first (when the design still validates) and reopens as it was. |
 | REL-03 | – | periodic named snapshots and on-demand restore, separate from frequent local Undo stack | Done | Named snapshots separate from undo, with restore. |
 | REL-04 | – | request idempotency across upload intents, exports, payments and version approval | Not started |  |
 | REL-05 | – | job lease expiration and retry with poison-job dead-letter state | Not started |  |

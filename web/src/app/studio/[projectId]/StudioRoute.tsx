@@ -1,6 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { useEffect, useSyncExternalStore } from 'react';
+import { EditLockNotice } from '@/components/studio/EditLockNotice';
 import { StudioShell } from '@/components/studio/StudioShell';
 import { useStudio } from '@/stores/studio-store';
 
@@ -24,7 +25,22 @@ export function StudioRoute({ projectId: routed }: { projectId: string }) {
     void load(projectId);
   }, [projectId, load]);
 
-  if (status === 'ready' && loadedId === projectId) return <StudioShell />;
+  // Edit the project in this tab only while no other tab does; let go on leaving the studio.
+  const opened = status === 'ready' && loadedId === projectId;
+  useEffect(() => {
+    if (!opened) return;
+    void useStudio.getState().claimEditing();
+    return () => useStudio.getState().releaseEditing();
+  }, [opened, projectId]);
+
+  if (opened) {
+    return (
+      <>
+        <StudioShell />
+        <EditLockNotice />
+      </>
+    );
+  }
 
   if (status === 'missing' || status === 'invalid') {
     return (

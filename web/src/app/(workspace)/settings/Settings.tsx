@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { formatBytes } from '@/lib/assets';
-import { clearLocalData, storageEstimate } from '@/lib/local-db';
+import { clearLocalData, requestPersistentStorage, storageEstimate, storagePersisted } from '@/lib/local-db';
 import { setPreference, usePreference, type Preferences } from '@/lib/preferences';
 import { isSupabaseConfigured } from '@/lib/supabase/config';
 import { ConfirmDialog, toast } from '@/components/ui/primitives';
@@ -28,8 +28,10 @@ function Choice<K extends keyof Preferences>({ name, label, help, options }: { n
 
 export function Settings() {
   const [usage, setUsage] = useState<{ usage: number; quota: number } | null>(null);
+  const [persisted, setPersisted] = useState<boolean | null>(null);
   const [confirm, setConfirm] = useState(false);
   useEffect(() => void storageEstimate().then(setUsage), []);
+  useEffect(() => void storagePersisted().then(setPersisted), []);
 
   return (
     <>
@@ -61,6 +63,27 @@ export function Settings() {
             {usage ? `Using ${formatBytes(usage.usage)} of about ${formatBytes(usage.quota)} available to this site.` : 'Storage use is not reported by this browser.'} Clearing
             browser data for this site deletes projects that aren’t synced.
           </p>
+          {persisted === null ? null : persisted ? (
+            <p className="mt-3 text-sm text-fg-2">
+              <span className="font-semibold text-fg">Protected.</span> The browser keeps your projects even when the device runs low on space.
+            </p>
+          ) : (
+            <div className="mt-3 max-w-xl text-sm text-fg-2">
+              <p>
+                <span className="font-semibold text-fg">Not protected yet.</span> When the device runs low on space, or after weeks without a visit in some browsers, the browser may clear this site’s data, and your projects with it.
+              </p>
+              <button
+                className="btn btn-outline mt-3"
+                onClick={async () => {
+                  const kept = await requestPersistentStorage();
+                  setPersisted(kept);
+                  toast(kept ? 'Your projects are protected on this device.' : 'The browser didn’t agree this time. Installing WOVEXA as an app, or bookmarking it, usually lets it protect your projects.', kept ? 'success' : undefined);
+                }}
+              >
+                Protect my projects
+              </button>
+            </div>
+          )}
           <button className="btn btn-outline mt-4 text-danger" onClick={() => setConfirm(true)}>
             Delete all local projects and artwork…
           </button>

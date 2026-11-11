@@ -4,6 +4,7 @@
  */
 import { applyPatches, enablePatches, produceWithPatches, type Patch } from 'immer';
 import type { Command } from './commands';
+import { limitProblem } from './limits';
 import { syncPlacements } from './lockups';
 import type { DesignDocument } from './schema';
 
@@ -33,11 +34,17 @@ export interface ApplyResult {
   document: DesignDocument;
   history: History;
   changed: boolean;
+  /** Why the edit was refused, when it would have taken the design past one of its limits. */
+  refused?: string;
 }
 
 export function applyCommand(doc: DesignDocument, history: History, command: Command, now = Date.now()): ApplyResult {
   let [next, patches, inverse] = produceWithPatches(doc, command.recipe);
   if (patches.length === 0) return { document: doc, history, changed: false };
+  // An edit that would take the design past a limit is refused, with the reason (a design already
+  // past one, from before the check, can still be edited back within it).
+  const problem = limitProblem(next);
+  if (problem && !limitProblem(doc)) return { document: doc, history, changed: false, refused: problem };
   // An edit to a lockup reaches every placement of it in the same undo step.
   if (next.lockups !== doc.lockups) {
     const edited = next;
