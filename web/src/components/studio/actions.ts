@@ -7,6 +7,7 @@ import { artboardOf, artboardSpec, designAreas, hasArtboard } from '@/domain/are
 import { getGarment, partColor } from '@/domain/garments';
 import { normalizeDeg } from '@/domain/geometry';
 import type { Graphic } from '@/domain/graphics';
+import { LIMITS } from '@/domain/limits';
 import { boardFit, detachedLayers, isPlacement, lockupContent, lockupFromContent, lockupFromLayers, lockupsOf, MAX_LOCKUP_LAYERS, MAX_LOCKUPS, newLockupId, newPlacement, nextLockupName, placementsOf } from '@/domain/lockups';
 import { isAreaId, isLockupId, type AreaId, type ArtboardId, type ArtworkLayer, type LayerShadow, type LayerStyle, type LockupId, type ShapeContent } from '@/domain/schema';
 import { mapSubpaths, parsePath } from '@/domain/path-edit';
@@ -137,6 +138,7 @@ export function putTextOnShape() {
     return [t.centerXmm + lx * Math.cos(a) - ly * Math.sin(a), t.centerYmm + lx * Math.sin(a) + ly * Math.cos(a)];
   });
   const { onPath, box } = textPathFrom(drawn);
+  if (onPath.d.length > LIMITS.textPathChars) return void toast('That outline is too detailed for text to follow. Use a simpler shape, or draw the line with the pen.', 'error');
   const content = { ...text.content, onPath, curveDeg: 0, wave: undefined };
   c.s.dispatch(cmd.updateLayer(c.zoneId, text.id, { content: { onPath, curveDeg: 0, wave: undefined }, transform: placeOnPath(content, box) }, 'Put text on the outline'));
   c.s.select([text.id]);
@@ -491,6 +493,7 @@ export async function combineSelection(op: CombineOp) {
     return void toast('These layers could not be combined.', 'error');
   }
   if (!result) return void toast(op === 'intersect' ? 'These layers don’t overlap, so nothing is left.' : 'Nothing is left once they are combined.');
+  if (result.path.length > LIMITS.pathChars) return void toast('The combined shape would be too detailed to keep. Combine fewer or simpler layers.', 'error');
   const bottom = layers[0];
   const b = bottom.content;
   const stroke = b.kind === 'shape' ? { strokeColor: b.strokeColor, strokeWidthMm: b.strokeWidthMm, hollow: b.hollow } : {};

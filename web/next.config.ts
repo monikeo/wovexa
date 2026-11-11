@@ -30,6 +30,10 @@ const nextConfig: NextConfig = {
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
           { key: 'X-Frame-Options', value: 'DENY' },
           { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+          // The parts of a content security policy that cost nothing: no plugins, no <base> that
+          // repoints relative links, no framing, and forms that post only here. Scripts aren't
+          // restricted: that needs a nonce per request, which statically prerendered pages can't carry.
+          { key: 'Content-Security-Policy', value: "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'" },
         ],
       },
       {

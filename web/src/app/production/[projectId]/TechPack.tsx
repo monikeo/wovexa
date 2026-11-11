@@ -449,12 +449,34 @@ function DraftTechPack({ projectId }: { projectId: string }) {
   const loadedId = useStudio((s) => s.projectId);
   const doc = useStudio((s) => s.document);
   const load = useStudio((s) => s.load);
+  const lock = useStudio((s) => s.editLock);
+  const takeOver = useStudio((s) => s.takeOverEditing);
   useEffect(() => {
     void load(projectId);
   }, [projectId, load]);
+  // Edits here save the project too, so only while no other tab is editing it.
+  const opened = status === 'ready' && loadedId === projectId;
+  useEffect(() => {
+    if (!opened) return;
+    void useStudio.getState().claimEditing();
+    return () => useStudio.getState().releaseEditing();
+  }, [opened, projectId]);
   if (status === 'missing' || status === 'invalid') return <Missing />;
-  if (status !== 'ready' || loadedId !== projectId || !doc) return <p className="p-8 text-sm text-fg-2">Loading tech pack…</p>;
-  return <TechPackBody doc={doc} editable header={{ kind: 'draft' }} projectId={projectId} />;
+  if (!opened || !doc) return <p className="p-8 text-sm text-fg-2">Loading tech pack…</p>;
+  const elsewhere = lock === 'elsewhere' || lock === 'lost';
+  return (
+    <>
+      {elsewhere ? (
+        <p className="no-print mx-auto mt-4 flex max-w-5xl flex-wrap items-center gap-3 rounded-xl border border-line px-4 py-3 text-sm text-fg-2" role="status">
+          This project is being edited in another tab, so the tech pack is view only here.
+          <button className="btn btn-outline min-h-8 px-3 text-xs" onClick={() => void takeOver()}>
+            Edit here instead
+          </button>
+        </p>
+      ) : null}
+      <TechPackBody doc={doc} editable={!elsewhere} header={{ kind: 'draft' }} projectId={projectId} />
+    </>
+  );
 }
 
 function VersionTechPack({ projectId, versionId }: { projectId: string; versionId: string }) {

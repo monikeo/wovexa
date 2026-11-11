@@ -173,6 +173,22 @@ test('subtracts one shape from another into a single path', async ({ page }) => 
   await expect.poll(async () => (await frontLayers(page)).map((l) => (l.content.kind === 'shape' ? l.content.shape : l.content.kind))).toEqual(['path']);
 });
 
+test('edits a project in one tab at a time, and lets editing move with the latest work', async ({ page, context }) => {
+  const saved = (p: typeof page) => expect.poll(() => p.evaluate(() => (window as unknown as { __wovexaStudio: { getState: () => { saveState: string } } }).__wovexaStudio.getState().saveState)).toBe('saved');
+  await addText(page, 'FIRST');
+  await saved(page);
+  const second = await context.newPage();
+  await second.goto(page.url());
+  await expect(second.getByRole('alertdialog')).toContainText('open in another tab');
+  // The first tab keeps editing; the second picks that up when editing moves to it.
+  await addText(page, 'SECOND');
+  await saved(page);
+  await second.getByRole('button', { name: 'Edit here instead' }).click();
+  await expect(second.getByRole('alertdialog')).toBeHidden();
+  await expect.poll(async () => (await frontLayers(second)).length).toBe(2);
+  await expect(page.getByRole('alertdialog')).toContainText('Editing moved to another tab');
+});
+
 test('exports a CMYK PDF/X-1a print file', async ({ page }) => {
   await addText(page, 'PRINT');
   await palette(page, 'export files');
