@@ -11,8 +11,8 @@ import type { Command } from '@/domain/commands';
 import { getGarment } from '@/domain/garments';
 import { applyCommand, emptyHistory, redo as redoHistory, undo as undoHistory, type History } from '@/domain/history';
 import { isAreaId, isLockupId, parseDesignDocument, type ArtboardId, type Colorway, type DesignDocument, type LayerTransform, type ProjectedTransform, type ProjectorSpec, type Scene } from '@/domain/schema';
-import { getProject, loadDocument, requestPersistentStorage, saveDocument, type ProjectMeta } from '@/lib/local-db';
-import { renderThumbnail } from '@/lib/thumbnail';
+import { getProject, loadDocument, projectLockName, requestPersistentStorage, saveDocument, type ProjectMeta } from '@/lib/local-db';
+import { thumbnailWithin } from '@/lib/thumbnail';
 
 export type SaveState = 'saved' | 'unsaved' | 'saving' | 'error';
 export type ViewMode = '2d' | 'split' | '3d';
@@ -84,6 +84,15 @@ let askedPersistence = false;
 /** The editing lock this tab holds: which project, and how to let it go. */
 let heldFor: string | null = null;
 let releaseHeld: (() => void) | null = null;
+/** Counts claims dropped: a lock request belongs to the latest claim only while this is unchanged. */
+let claims = 0;
+/** This tab's lock requests, one after another. */
+let lockQueue: Promise<unknown> = Promise.resolve();
+/**
+ * The open copy was left while another tab edited the project: it is never saved, and opening
+ * the project again reads what is stored instead.
+ */
+let staleCopy = false;
 
 export const useStudio = create<StudioState>((set, get) => {
   function scheduleSave() {
@@ -94,7 +103,15 @@ export const useStudio = create<StudioState>((set, get) => {
   /** Whether this tab may change and save the open project (another tab isn't editing it). */
   function editable() {
     const lock = get().editLock;
-    return lock !== 'elsewhere' && lock !== 'lost';
+    return !staleCopy && lock !== 'elsewhere' && lock !== 'lost';
+  }
+
+  /** Let go of this tab's editing lock, if it holds one, and drop a claim still waiting for it. */
+  function letGo() {
+    claims++;
+    releaseHeld?.();
+    releaseHeld = null;
+    heldFor = null;
   }
 
   function afterChange(document: DesignDocument, history: History) {
@@ -135,8 +152,27 @@ export const useStudio = create<StudioState>((set, get) => {
     layersOpen: false,
 
     async load(projectId) {
-      if (get().projectId === projectId && (get().status === 'ready' || get().status === 'loading')) return;
-      set({ status: 'loading', projectId, document: null, history: emptyHistory(), selectedLayerIds: [], selectedProjectionId: null, loadErrors: [] });
+      const current = get();
+      if (current.projectId === projectId && current.status === 'loading') return;
+      const reopening = current.projectId === projectId && current.status === 'ready';
+      if (reopening) {
+        // Still open from before (the studio and its tech pack share it): keep this copy and its
+        // undo history, unless another tab saved the project since or edited it while this one couldn't.
+        if (!staleCopy) {
+          if (current.saveState !== 'saved') await get().saveNow();
+          const stored = await getProject(projectId).catch(() => undefined);
+          if (get().projectId !== projectId || get().status !== 'ready') return;
+          if (stored && stored.updatedAt === get().meta?.updatedAt) return;
+        }
+      } else if (current.document && current.saveState !== 'saved') {
+        // Changes still waiting to be written belong to the project being left: write them first.
+        await get().saveNow();
+        if (get().projectId === projectId && get().status === 'loading') return;
+      }
+      staleCopy = false;
+      // Reopening, the studio is still on screen until 'loading' closes it, and its 3D view reads the
+      // document as it goes: the old one stays (nothing saves it) until the stored one replaces it.
+      set({ status: 'loading', projectId, ...(reopening ? { saveState: 'saved' as const } : { document: null }), history: emptyHistory(), selectedLayerIds: [], selectedProjectionId: null, loadErrors: [] });
       try {
         const result = await loadDocument(projectId);
         if (get().projectId !== projectId) return;
@@ -214,7 +250,12 @@ export const useStudio = create<StudioState>((set, get) => {
           let thumbnail: Blob | undefined;
           if (Date.now() - lastThumbnailAt > THUMBNAIL_INTERVAL_MS) {
             lastThumbnailAt = Date.now();
-            thumbnail = await renderThumbnail(document).catch(() => undefined);
+            thumbnail = await thumbnailWithin(document);
+          }
+          // Left while the thumbnail drew, after another tab took the project over.
+          if (!editable()) {
+            set({ saveState: 'unsaved' });
+            return;
           }
           const meta = await saveDocument(document, thumbnail ? { thumbnail } : undefined);
           // Another edit may have arrived while writing; keep it marked unsaved.
@@ -243,40 +284,56 @@ export const useStudio = create<StudioState>((set, get) => {
         return Promise.resolve();
       }
       if (heldFor === projectId && releaseHeld && !steal) return Promise.resolve();
-      get().releaseEditing();
+      letGo();
+      const claim = claims;
       return new Promise<void>((settled) => {
-        let release!: () => void;
-        const held = new Promise<void>((resolve) => (release = resolve));
-        locks
-          .request(`wovexa:project:${projectId}`, steal ? { steal: true } : { ifAvailable: true }, async (lock) => {
-            if (!lock) {
-              if (get().projectId === projectId) set({ editLock: 'elsewhere' });
+        // One request at a time: an earlier one of this tab's still being granted would hold the
+        // lock against this one, and the tab would read as open elsewhere by itself.
+        lockQueue = lockQueue.then(() => {
+          // Dropped while waiting (the tab left the project, or claimed it again).
+          if (claim !== claims) return settled();
+          let release!: () => void;
+          const held = new Promise<void>((resolve) => (release = resolve));
+          return locks
+            .request(projectLockName(projectId), steal ? { steal: true } : { ifAvailable: true }, async (lock) => {
+              // Granted after the claim was dropped: let go at once.
+              if (claim !== claims) return settled();
+              if (!lock) {
+                if (get().projectId === projectId) set({ editLock: 'elsewhere' });
+                settled();
+                return;
+              }
+              releaseHeld = release;
+              heldFor = projectId;
+              if (get().projectId === projectId) set({ editLock: 'held' });
               settled();
-              return;
-            }
-            releaseHeld = release;
-            heldFor = projectId;
-            if (get().projectId === projectId) set({ editLock: 'held' });
-            settled();
-            // Held until this tab lets go (it leaves the studio) or another tab takes it over.
-            await held;
-          })
-          .catch(() => {
-            // Another tab took editing over: the request is aborted.
-            if (heldFor === projectId) {
-              releaseHeld = null;
-              heldFor = null;
-            }
-            if (get().projectId === projectId) set({ editLock: 'lost' });
-            settled();
-          });
+              // Held until this tab lets go (it leaves the studio) or another tab takes it over.
+              await held;
+            })
+            .catch(() => {
+              if (claim !== claims) return settled();
+              // Another tab took editing over: the request is aborted.
+              if (heldFor === projectId) {
+                releaseHeld = null;
+                heldFor = null;
+              }
+              if (get().projectId === projectId) set({ editLock: 'lost' });
+              settled();
+            });
+        });
       });
     },
     releaseEditing() {
-      releaseHeld?.();
-      releaseHeld = null;
-      heldFor = null;
-      if (get().editLock !== 'unknown') set({ editLock: 'unknown' });
+      letGo();
+      const lock = get().editLock;
+      if (lock === 'elsewhere' || lock === 'lost') {
+        // Another tab edits the project: this copy is out of date, so nothing in it is written later
+        // (on leaving, or when the tab is hidden) and opening the project again reads what's stored.
+        staleCopy = true;
+        if (saveTimer) clearTimeout(saveTimer);
+        saveTimer = null;
+      }
+      if (lock !== 'unknown') set({ editLock: 'unknown' });
     },
     async takeOverEditing() {
       const projectId = get().projectId;
@@ -286,6 +343,7 @@ export const useStudio = create<StudioState>((set, get) => {
       // The other tab may have saved since this one opened the project: start from what is saved.
       const result = await loadDocument(projectId);
       if (!result.ok || get().projectId !== projectId) return;
+      staleCopy = false;
       set({ document: result.document, meta: result.meta, history: emptyHistory(), saveState: 'saved', selectedLayerIds: [], selectedProjectionId: null });
     },
 

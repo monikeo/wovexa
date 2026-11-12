@@ -3,6 +3,7 @@ import { stat, writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { VIEW_FILE } from '@/domain/model-library';
 import { apiError } from '@/lib/api';
+import { readBodyBytes } from '@/lib/request-body';
 import { modelPath, versionOf } from '../library';
 
 /** A saved 2D view is a PNG this size at most. */
@@ -61,8 +62,10 @@ export async function PUT(request: Request, { params }: { params: Promise<{ path
   const model = modelPath(`${rel.slice(0, view.index)}.glb`);
   const info = model ? await stat(model).catch(() => null) : null;
   if (!info?.isFile()) return apiError(404, 'not_found', 'No such 3D model.');
-  const bytes = new Uint8Array(await request.arrayBuffer());
-  if (bytes.byteLength > MAX_VIEW_BYTES) return apiError(413, 'too_large', 'A 2D view can be 8 MB at most.');
+  // Counted as it arrives, so a bigger upload stops at the limit instead of filling memory.
+  const body = await readBodyBytes(request, MAX_VIEW_BYTES);
+  if (!body.ok && body.reason === 'too_large') return apiError(413, 'too_large', 'A 2D view can be 8 MB at most.');
+  const bytes = body.ok ? body.bytes : new Uint8Array(0);
   if (!PNG_SIGNATURE.every((b, i) => bytes[i] === b)) return apiError(400, 'bad_request', 'A 2D view must be a PNG.');
   await writeFile(full, bytes);
   return new Response(null, { status: 204 });

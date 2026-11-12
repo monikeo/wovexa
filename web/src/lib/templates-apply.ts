@@ -6,7 +6,7 @@ import { migrateDesignDocument, type DesignDocument } from '@/domain/schema';
 import { documentFromSnapshot, instantiateTemplate, type TemplateDef } from '@/domain/templates';
 import { createProjectFromDocument, type ProjectMeta, type StoredTemplate } from './local-db';
 import { ensureFonts, textAspect } from './render/zone-renderer';
-import { renderThumbnail } from './thumbnail';
+import { thumbnailWithin } from './thumbnail';
 
 /** Size every text box (in zones and design areas) to its font's real proportions, keeping each box's width and centre. */
 export async function fitTextBoxes(doc: DesignDocument): Promise<DesignDocument> {
@@ -28,7 +28,7 @@ export async function previewTemplate(def: TemplateDef): Promise<DesignDocument>
 
 export async function projectFromTemplate(def: TemplateDef): Promise<ProjectMeta> {
   const doc = await fitTextBoxes(instantiateTemplate(def, newId()));
-  return createProjectFromDocument(doc, await renderThumbnail(doc).catch(() => undefined));
+  return createProjectFromDocument(doc, await thumbnailWithin(doc));
 }
 
 export async function projectFromUserTemplate(template: StoredTemplate): Promise<ProjectMeta> {

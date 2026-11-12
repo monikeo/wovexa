@@ -88,18 +88,22 @@ export function AssetLibrary() {
       <ConfirmDialog
         open={!!pending}
         title={`Delete ${pending?.name ?? ''}?`}
-        body="The original file is removed from this browser. Projects that use it will show an empty placeholder."
+        body="The original file is removed from this browser. Artwork still used in a project, a saved version, a template or a brand kit isn’t deleted."
         confirmLabel="Delete artwork"
         onCancel={() => setPending(null)}
         onConfirm={async () => {
           if (!pending) return;
-          const usedIn = await assetUsage(pending.id);
-          if (usedIn.length) {
-            toast(`Still used in ${usedIn.slice(0, 2).join(', ')}${usedIn.length > 2 ? ` and ${usedIn.length - 2} more` : ''}. Remove it there first.`, 'error');
-          } else {
-            await deleteAsset(pending.id);
-            toast('Artwork deleted.');
-            void refresh();
+          try {
+            const usedIn = await assetUsage(pending.id);
+            if (usedIn.length) {
+              toast(`Kept: it’s still used in ${usedIn.slice(0, 2).join(', ')}${usedIn.length > 2 ? ` and ${usedIn.length - 2} more` : ''}.`, 'error');
+            } else {
+              await deleteAsset(pending.id);
+              toast('Artwork deleted.');
+              void refresh();
+            }
+          } catch {
+            toast('The artwork couldn’t be deleted: this browser’s storage refused the change. Try again.', 'error');
           }
           setPending(null);
         }}

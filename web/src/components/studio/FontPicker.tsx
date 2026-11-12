@@ -34,6 +34,8 @@ export function FontPicker({ family, fontAssetId, sample, brandFonts, onChange }
   const [filter, setFilter] = useState<Filter>('all');
   const [active, setActive] = useState(0);
   const [uploaded, setUploaded] = useState<StoredFont[]>([]);
+  /** The uploaded font whose delete button was pressed once, waiting for the second press. */
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -198,19 +200,34 @@ export function FontPicker({ family, fontAssetId, sample, brandFonts, onChange }
                         </div>
                       </div>
                       {selected ? <Check size={14} className="flex-none text-accent" /> : null}
-                      {o.fontAssetId ? (
+                      {o.fontAssetId && confirmingDelete === o.fontAssetId ? (
+                        // A second click deletes: the file (and its licence note) is gone for good.
+                        <button
+                          type="button"
+                          className="btn btn-danger min-h-7 flex-none px-2 text-xs"
+                          aria-label={`Delete uploaded font ${o.family} for good`}
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            setConfirmingDelete(null);
+                            try {
+                              await deleteFont(o.fontAssetId!);
+                              setUploaded((list) => list.filter((f) => f.id !== o.fontAssetId));
+                              toast(`Deleted ${o.family} from this device.`);
+                            } catch (error) {
+                              toast(error instanceof Error ? error.message : 'The font could not be deleted.', 'error');
+                            }
+                          }}
+                        >
+                          Delete
+                        </button>
+                      ) : o.fontAssetId ? (
                         <button
                           type="button"
                           className="icon-btn hover-reveal h-7 w-7 text-fg-3"
                           aria-label={`Delete uploaded font ${o.family}`}
-                          onClick={async (e) => {
+                          onClick={(e) => {
                             e.stopPropagation();
-                            try {
-                              await deleteFont(o.fontAssetId!);
-                              setUploaded((list) => list.filter((f) => f.id !== o.fontAssetId));
-                            } catch (error) {
-                              toast(error instanceof Error ? error.message : 'The font could not be deleted.', 'error');
-                            }
+                            setConfirmingDelete(o.fontAssetId!);
                           }}
                         >
                           <Trash2 size={13} />

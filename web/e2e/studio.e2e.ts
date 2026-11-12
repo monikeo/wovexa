@@ -189,6 +189,35 @@ test('edits a project in one tab at a time, and lets editing move with the lates
   await expect(page.getByRole('alertdialog')).toContainText('Editing moved to another tab');
 });
 
+test('reopens a project with the work another tab saved since, never its own older copy', async ({ page, context }) => {
+  type Studio = { __wovexaStudio?: { getState: () => { saveState: string; status: string } } };
+  const saved = (p: typeof page) => expect.poll(() => p.evaluate(() => (window as unknown as Studio).__wovexaStudio?.getState().saveState)).toBe('saved');
+  const ready = (p: typeof page) => p.waitForFunction(() => (window as unknown as Studio).__wovexaStudio?.getState().status === 'ready');
+  await addText(page, 'FIRST');
+  await saved(page);
+  const studio = new URL(page.url()).pathname;
+  // Off to the projects page in the app: this tab keeps its copy of the project in memory.
+  await page.getByRole('link', { name: 'Back to projects' }).click();
+  await page.waitForURL(/\/dashboard/);
+  const second = await context.newPage();
+  await second.goto(studio);
+  await ready(second);
+  await expect.poll(async () => (await frontLayers(second)).length).toBe(1);
+  await addText(second, 'SECOND');
+  await saved(second);
+  await second.close();
+  // Opening it again here shows the second tab's work, and carries on from it.
+  await page.locator(`a[href="${studio}"]`).first().click();
+  await page.waitForURL(/\/studio\//);
+  await expect.poll(async () => (await frontLayers(page)).length).toBe(2);
+  await expect(page.getByRole('alertdialog')).toBeHidden();
+  await addText(page, 'THIRD');
+  await saved(page);
+  await page.reload();
+  await ready(page);
+  await expect.poll(async () => (await frontLayers(page)).map((l) => (l.content.kind === 'text' ? l.content.value : l.content.kind))).toEqual(['FIRST', 'SECOND', 'THIRD']);
+});
+
 test('traces a logo into colour shapes, keeping the image hidden underneath', async ({ page }) => {
   await dropLogo(page);
   await palette(page, 'trace image to vector shapes');

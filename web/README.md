@@ -62,9 +62,10 @@ Key rules from the spec that the code follows:
 
 ## Cloud sync with Supabase (optional)
 
-1. Create a Supabase project, then apply `supabase/migrations/20261108000000_initial_schema.sql` (`supabase db push`, or paste it into the SQL editor).
-2. Run the permission checks listed at the end of that file in a branch or local stack.
-3. Add to `.env.local`:
+1. Create a Supabase project, then apply every file in `supabase/migrations/`, oldest first (`supabase db push` does this; in the SQL editor, paste them one at a time in name order).
+2. Run the permission checks listed at the end of each file in a branch or local stack.
+3. In Authentication → URL Configuration, add your site's `/auth/callback` to the redirect URLs (and `http://localhost:3000/auth/callback` while developing): sign-in links come back there to start the session.
+4. Add to `.env.local`:
 
    ```
    NEXT_PUBLIC_SUPABASE_URL=https://<project>.supabase.co
@@ -73,7 +74,7 @@ Key rules from the spec that the code follows:
 
    Never put the service role key in a `NEXT_PUBLIC_` variable.
 
-The migration, `/api/projects` and `/api/projects/[id]/document` (revision-checked saves returning 409 on conflict) are written but **have not been run against a live Supabase project yet**. The studio does not call them yet: the client sync coordinator is the next piece of work.
+The migrations, `/api/projects` and `/api/projects/[id]/document` (revision-checked saves returning 409 on conflict) are written but **have not been run against a live Supabase project yet**; the migrations' permission checks pass in PGlite (Postgres in WebAssembly) with stand-ins for Supabase's auth and storage schemas. The studio does not call the routes yet: the client sync coordinator is the next piece of work, and there is no sign-out yet (signing out is meant to clear the device's projects, which only makes sense once they sync).
 
 ## Brand assets
 

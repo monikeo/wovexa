@@ -16,6 +16,7 @@ import {
   deleteProject,
   duplicateProject,
   listProjects,
+  projectOpenElsewhere,
   purgeDeletedProjects,
   renameProject,
   restoreProject,
@@ -127,10 +128,16 @@ export function ProjectActions({ meta, onChanged, onFile, onTag }: { meta: Proje
     document.addEventListener('pointerdown', close);
     return () => document.removeEventListener('pointerdown', close);
   }, [open]);
-  const act = (fn: () => Promise<unknown>, message: string) => async () => {
+  /** Runs a menu action: `fn` resolves false (or null) when there was nothing it could do. */
+  const act = (fn: () => Promise<unknown>, message: string, failed = 'That didn’t work: this browser’s storage refused the change. Try again.') => async () => {
     setOpen(false);
-    await fn();
-    toast(message);
+    try {
+      const done = await fn();
+      if (done === false || done === null) toast(failed, 'error');
+      else toast(message);
+    } catch {
+      toast(failed, 'error');
+    }
     onChanged();
   };
   const item = 'flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm hover:bg-hover';
@@ -175,17 +182,20 @@ export function ProjectActions({ meta, onChanged, onFile, onTag }: { meta: Proje
             className={item}
             onClick={async () => {
               setOpen(false);
+              // That tab's next save would put the old name back.
+              if (await projectOpenElsewhere(meta.id)) {
+                toast(`${meta.title} is open in another tab or window. Rename it there, or close it first.`, 'error');
+                return;
+              }
               const name = prompt('Project name', meta.title)?.trim();
               if (name && name !== meta.title) {
-                await renameProject(meta.id, name.slice(0, 120));
-                toast('Renamed.');
-                onChanged();
+                await act(() => renameProject(meta.id, name.slice(0, 120)), 'Renamed.', 'This project couldn’t be opened to rename it.')();
               }
             }}
           >
             <Pencil size={15} /> Rename
           </button>
-          <button role="menuitem" className={item} onClick={act(() => duplicateProject(meta.id), 'Duplicated.')}>
+          <button role="menuitem" className={item} onClick={act(() => duplicateProject(meta.id), 'Duplicated.', 'This project couldn’t be opened to copy it.')}>
             <Copy size={15} /> Duplicate
           </button>
           {onFile ? (
@@ -234,9 +244,7 @@ export function ProjectActions({ meta, onChanged, onFile, onTag }: { meta: Proje
         onCancel={() => setConfirm(false)}
         onConfirm={async () => {
           setConfirm(false);
-          await deleteProject(meta.id);
-          toast('Project deleted for good.');
-          onChanged();
+          await act(() => deleteProject(meta.id), 'Project deleted for good.')();
         }}
       />
     </div>

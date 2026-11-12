@@ -284,12 +284,14 @@ export function ConfirmDialog({
   title: string;
   body: ReactNode;
   confirmLabel: string;
-  onConfirm: () => void;
+  /** May be async: the button waits for it (so a second click can't run it twice) and a failure is reported. */
+  onConfirm: () => void | Promise<unknown>;
   onCancel: () => void;
 }) {
   const titleId = useId();
   const cancelRef = useRef<HTMLButtonElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
+  const [busy, setBusy] = useState(false);
   useEffect(() => {
     if (!open) return;
     const previous = document.activeElement as HTMLElement | null;
@@ -321,7 +323,20 @@ export function ConfirmDialog({
           <button ref={cancelRef} className="btn btn-outline" onClick={onCancel}>
             Cancel
           </button>
-          <button className="btn btn-danger" onClick={onConfirm}>
+          <button
+            className="btn btn-danger"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await onConfirm();
+              } catch {
+                toast('That didn’t work: this browser’s storage refused the change. Try again.', 'error');
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
             {confirmLabel}
           </button>
         </div>

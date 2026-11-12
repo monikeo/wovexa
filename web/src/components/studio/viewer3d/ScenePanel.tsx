@@ -74,17 +74,25 @@ export function ScenePanel({ onClose, compact }: { onClose: () => void; compact?
     const name = lookName.trim() || `Look ${looks.length + 1}`;
     const { cameras: _cameras, ...look } = scene;
     void _cameras;
-    const stored = await saveScene(name, look);
-    setLooks((l) => [stored, ...l]);
-    setLookName('');
-    toast(`Saved look "${stored.name}" on this device.`, 'success');
+    try {
+      const stored = await saveScene(name, look);
+      setLooks((l) => [stored, ...l]);
+      setLookName('');
+      toast(`Saved look "${stored.name}" on this device.`, 'success');
+    } catch {
+      toast('The look couldn’t be saved: this browser’s storage refused it.', 'error');
+    }
   };
 
   const applyLook = (look: StoredScene) => set({ ...look.scene }, `Scene: ${look.name}`);
 
   const removeLook = async (look: StoredScene) => {
-    await deleteScene(look.id);
-    setLooks((l) => l.filter((x) => x.id !== look.id));
+    try {
+      await deleteScene(look.id);
+      setLooks((l) => l.filter((x) => x.id !== look.id));
+    } catch {
+      toast('The look couldn’t be removed: this browser’s storage refused the change.', 'error');
+    }
   };
 
   const b = scene.backdrop;

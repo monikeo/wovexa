@@ -14,7 +14,7 @@ import { documentHash } from '@/domain/hash';
 import { runPreflight, summarize } from '@/domain/preflight';
 import { migrateDesignDocument, type DesignDocument } from '@/domain/schema';
 import { approveVersion, approvalState, listVersions, saveVersion, updateProjectMeta, type StoredVersion } from '@/lib/local-db';
-import { renderThumbnail } from '@/lib/thumbnail';
+import { thumbnailWithin } from '@/lib/thumbnail';
 import { ConfirmDialog, toast } from '@/components/ui/primitives';
 import { BlobImage } from '@/components/workspace/projects';
 import { useStudio } from '@/stores/studio-store';
@@ -90,8 +90,11 @@ function ApproveForm({ doc, onApprove, onCancel }: { doc: DesignDocument; onAppr
         try {
           localStorage.setItem('wovexa.approver', by.trim());
         } catch {}
-        await onApprove(by.trim(), note.trim());
-        setBusy(false);
+        try {
+          await onApprove(by.trim(), note.trim());
+        } finally {
+          setBusy(false);
+        }
       }}
     >
       <p className="text-xs text-fg-2">Approval freezes this version. Exports and the tech pack can then point at it, and later edits show as changes since approval.</p>
@@ -200,11 +203,24 @@ function VersionRow({ version, current, approvedId, onChanged }: { version: Stor
         onCancel={() => setConfirmRestore(false)}
         onConfirm={async () => {
           setConfirmRestore(false);
-          if (!doc) return;
-          const now = useStudio.getState().document!;
-          await saveVersion({ projectId: now.projectId, label: `Before restoring v${version.number}`, document: now, source: 'before-restore', hash: await documentHash(now), thumbnail: await renderThumbnail(now).catch(() => undefined) });
-          dispatch(restoreSnapshot(doc, `Restore v${version.number}`));
-          toast(`Restored version ${version.number}. Your previous design is saved in history.`, 'success');
+          const now = useStudio.getState().document;
+          if (!doc || !now) return;
+          if ((await documentHash(doc)) === (await documentHash(now))) {
+            toast(`The current design already matches version ${version.number}.`);
+            return;
+          }
+          try {
+            // The design as it is now is kept first, so the restore never loses anything.
+            await saveVersion({ projectId: now.projectId, label: `Before restoring v${version.number}`, document: now, source: 'before-restore', hash: await documentHash(now), thumbnail: await thumbnailWithin(now) });
+          } catch {
+            toast(`Version ${version.number} wasn’t restored: the current design couldn’t be kept as a version first. Try again.`, 'error');
+            return;
+          }
+          if (dispatch(restoreSnapshot(doc, `Restore v${version.number}`))) {
+            toast(`Restored version ${version.number}. Your previous design is saved in history.`, 'success');
+          } else {
+            toast(`Version ${version.number} wasn’t restored. Your current design is unchanged and also saved as a version.`, 'error');
+          }
           onChanged();
         }}
       />
@@ -226,7 +242,14 @@ export function HistoryPanel() {
   useEffect(() => {
     if (!projectId) return;
     let alive = true;
-    listVersions(projectId).then((v) => alive && setVersions(v));
+    listVersions(projectId).then(
+      (v) => alive && setVersions(v),
+      () => {
+        if (!alive) return;
+        setVersions([]);
+        toast('Versions couldn’t be read from this browser’s storage.', 'error');
+      },
+    );
     return () => {
       alive = false;
     };
@@ -237,7 +260,9 @@ export function HistoryPanel() {
 
   const snapshot = async (source: StoredVersion['source'], text: string, approval?: { approvedBy: string; note: string }) => {
     await useStudio.getState().saveNow();
-    const current = useStudio.getState().document!;
+    // A version (an approval above all) is of the design as saved: not of changes that failed to save.
+    const { document: current, saveState, saveError } = useStudio.getState();
+    if (!current || saveState === 'error') throw new Error(saveError ?? 'The design couldn’t be saved, so no version was made.');
     const hash = await documentHash(current);
     const version = await saveVersion({
       projectId: current.projectId,
@@ -245,13 +270,14 @@ export function HistoryPanel() {
       document: structuredClone(current),
       source,
       hash,
-      thumbnail: await renderThumbnail(current).catch(() => undefined),
+      thumbnail: await thumbnailWithin(current),
       approval: approval ? { ...approval, approvedAt: Date.now() } : undefined,
     });
     if (approval) await updateProjectMeta(current.projectId, { approvedVersionId: version.id, approvedVersionNumber: version.number, approvedHash: hash });
     await useStudio.getState().refreshMeta();
     return version;
   };
+  const failed = (e: unknown, what: string) => toast(e instanceof Error && e.message ? e.message : `${what} failed: this browser’s storage refused it. Try again.`, 'error');
 
   return (
     <div className="space-y-5 p-4">
@@ -283,11 +309,16 @@ export function HistoryPanel() {
           onSubmit={async (e) => {
             e.preventDefault();
             setBusy('save');
-            const v = await snapshot('manual', label.trim() || `Version ${(versions?.[0]?.number ?? 0) + 1}`);
-            setLabel('');
-            setBusy(null);
-            toast(`Saved version ${v.number}.`, 'success');
-            refresh();
+            try {
+              const v = await snapshot('manual', label.trim() || `Version ${(versions?.[0]?.number ?? 0) + 1}`);
+              setLabel('');
+              toast(`Saved version ${v.number}.`, 'success');
+            } catch (error) {
+              failed(error, 'Saving the version');
+            } finally {
+              setBusy(null);
+              refresh();
+            }
           }}
         >
           <input className="field" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Name, e.g. Sample 1" aria-label="Version name" maxLength={120} />
@@ -302,12 +333,17 @@ export function HistoryPanel() {
               onCancel={() => setApproving(false)}
               onApprove={async (by, note) => {
                 setBusy('approve');
-                const v = await snapshot('approval', label.trim() || 'Approved for production', { approvedBy: by, note });
-                setBusy(null);
-                setApproving(false);
-                setLabel('');
-                toast(`Version ${v.number} saved and approved for production.`, 'success');
-                refresh();
+                try {
+                  const v = await snapshot('approval', label.trim() || 'Approved for production', { approvedBy: by, note });
+                  setApproving(false);
+                  setLabel('');
+                  toast(`Version ${v.number} saved and approved for production.`, 'success');
+                } catch (error) {
+                  failed(error, 'Approving');
+                } finally {
+                  setBusy(null);
+                  refresh();
+                }
               }}
             />
           ) : (

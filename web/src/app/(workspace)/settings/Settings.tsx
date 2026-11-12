@@ -92,7 +92,7 @@ export function Settings() {
       <ConfirmDialog
         open={confirm}
         title="Delete everything on this device?"
-        body="Every project and uploaded image in this browser is removed permanently. This can’t be undone."
+        body="Every project with its versions and export history, every template, brand kit, uploaded image and font, and every saved look in this browser is removed permanently. This can’t be undone."
         confirmLabel="Delete everything"
         onCancel={() => setConfirm(false)}
         onConfirm={async () => {

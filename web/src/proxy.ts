@@ -19,10 +19,16 @@ export async function proxy(request: NextRequest) {
       },
     },
   });
-  await supabase.auth.getUser();
+  try {
+    await supabase.auth.getUser();
+  } catch {
+    // Supabase out of reach: the page still opens (projects live on the device); the session is
+    // refreshed on a later request.
+  }
   return response;
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|brand/|icons/|sw.js|manifest.webmanifest|favicon|.*\\.(?:svg|png|jpg|jpeg|webp|ico)$).*)'],
+  // Not for files anyone may fetch: the 3D model library and its views, the health check, static files.
+  matcher: ['/((?!_next/static|_next/image|api/models|api/health|brand/|icons/|sw.js|manifest.webmanifest|favicon|.*\\.(?:svg|png|jpg|jpeg|webp|ico|glb)$).*)'],
 };

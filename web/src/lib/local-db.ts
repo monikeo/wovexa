@@ -213,6 +213,10 @@ export function db() {
     terminated() {
       dbPromise = null;
     },
+  }).catch((error: unknown) => {
+    // A failed open (storage briefly unavailable) is tried again on next use, not remembered.
+    dbPromise = null;
+    throw error;
   });
   return dbPromise;
 }
@@ -303,8 +307,10 @@ async function loadDocumentOnce(projectId: string): Promise<LoadResult> {
   const parsed = migrateDesignDocument(record.document);
   if (!parsed.ok) return { ok: false, reason: 'invalid', errors: parsed.errors };
   if (parsed.migratedFrom) {
-    // Keep the original exactly as stored before writing the upgraded copy (spec §26.4).
-    await saveVersion({ projectId, label: `Backup before format upgrade (format ${parsed.migratedFrom})`, document: record.document, source: 'before-upgrade', hash: 'pre-upgrade' });
+    // Keep the original exactly as stored before writing the upgraded copy (spec §26.4). Its hash
+    // is of its content, which an upgrade leaves alone (see domain/hash), so it can be approved
+    // and compared like any version.
+    await saveVersion({ projectId, label: `Backup before format upgrade (format ${parsed.migratedFrom})`, document: record.document, source: 'before-upgrade', hash: await documentHash(parsed.document) });
     const upgraded = await saveDocument(parsed.document);
     return { ok: true, document: parsed.document, meta: upgraded, upgradedFrom: parsed.migratedFrom };
   }
@@ -318,10 +324,30 @@ export async function updateProjectMeta(id: string, patch: Partial<ProjectMeta>)
   await database.put('projects', { ...meta, ...patch });
 }
 
-export async function renameProject(id: string, title: string) {
+/** False when the project couldn't be opened to rename it. */
+export async function renameProject(id: string, title: string): Promise<boolean> {
   const result = await loadDocument(id);
-  if (!result.ok) return;
+  if (!result.ok) return false;
   await saveDocument({ ...result.document, title });
+  return true;
+}
+
+/** The Web Lock a tab holds while its studio or tech pack edits a project. */
+export const projectLockName = (id: string) => `wovexa:project:${id}`;
+
+/**
+ * Whether another tab is editing the project now. Its next save writes its own copy, so a change
+ * made to the design from here (a rename) would be undone. False where the browser can't tell.
+ */
+export async function projectOpenElsewhere(id: string): Promise<boolean> {
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+  if (!locks?.query) return false;
+  try {
+    const { held = [] } = await locks.query();
+    return held.some((l) => l.name === projectLockName(id));
+  } catch {
+    return false;
+  }
 }
 
 export async function duplicateProject(id: string): Promise<ProjectMeta | null> {
@@ -583,9 +609,17 @@ export async function approveVersion(versionId: string, approval: Approval): Pro
   const version = await database.get('versions', versionId);
   if (!version) throw new Error('That version no longer exists.');
   if (version.approval) throw new Error(`Version ${version.number} is already approved.`);
-  const approved = { ...version, approval };
+  // Backups made before a format upgrade were once kept without a content hash: work it out, so
+  // the approval can match the design.
+  let hash = version.hash;
+  if (!/^[0-9a-f]{64}$/.test(hash)) {
+    const parsed = migrateDesignDocument(version.document);
+    if (!parsed.ok) throw new Error(`Version ${version.number} couldn’t be read, so it can’t be approved.`);
+    hash = await documentHash(parsed.document);
+  }
+  const approved = { ...version, hash, approval };
   await database.put('versions', approved);
-  await updateProjectMeta(version.projectId, { approvedVersionId: version.id, approvedVersionNumber: version.number, approvedHash: version.hash });
+  await updateProjectMeta(version.projectId, { approvedVersionId: version.id, approvedVersionNumber: version.number, approvedHash: hash });
   return approved;
 }
 
@@ -728,13 +762,24 @@ export async function listAssets(kind: 'image' | 'all' = 'image'): Promise<Store
   return (kind === 'all' ? all : all.filter((a) => a.mime.startsWith('image/'))).reverse();
 }
 
-/** Projects, versions and brand kits that reference an asset, so deletes can be refused while in use. */
+/**
+ * Projects, saved versions, templates and brand kits that reference an asset, so deletes can be
+ * refused while in use: a version (approved ones especially) or template must still open whole.
+ */
 export async function assetUsage(assetId: string): Promise<string[]> {
   const database = await db();
-  const [docs, kits] = await Promise.all([database.getAll('documents'), database.getAll('brandKits')]);
+  const [docs, kits, versions, templates] = await Promise.all([database.getAll('documents'), database.getAll('brandKits'), database.getAll('versions'), database.getAll('templates')]);
   const usesAsset = (doc: unknown) => JSON.stringify(doc).includes(`"${assetId}"`);
+  const titleOf = (doc: unknown) => (doc as { title?: string } | null)?.title || 'Untitled';
+  const inProjects = docs.filter(({ document }) => usesAsset(document));
+  const projectsUsing = new Set(inProjects.map((d) => d.projectId));
+  const titles = new Map(docs.map((d) => [d.projectId, titleOf(d.document)]));
+  // Versions of a project already listed add nothing: name each other project once.
+  const versionProjects = new Set(versions.filter((v) => !projectsUsing.has(v.projectId) && usesAsset(v.document)).map((v) => v.projectId));
   return [
-    ...docs.filter(({ document }) => usesAsset(document)).map(({ document }) => (document as { title?: string }).title ?? 'Untitled'),
+    ...inProjects.map(({ document }) => titleOf(document)),
+    ...[...versionProjects].map((id) => `a saved version of ${titles.get(id) ?? 'a deleted project'}`),
+    ...templates.filter((t) => usesAsset(t.document)).map((t) => `the template ${t.name}`),
     ...kits.filter((k) => k.logoAssetIds.includes(assetId) || usesAsset(k.lockups ?? [])).map((k) => `brand kit ${k.name}`),
   ];
 }
