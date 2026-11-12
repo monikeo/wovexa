@@ -65,3 +65,13 @@ export async function renderZoneSketch(doc: DesignDocument, zoneId: ZoneId, size
 export async function renderThumbnail(doc: DesignDocument, size = 360): Promise<Blob> {
   return canvasToBlob(await renderZoneSketch(doc, 'front', size), 'image/webp', 0.86);
 }
+
+/**
+ * A thumbnail, or none when drawing it fails or takes longer than `ms` (a font or image slow to
+ * load), so saving a project or a version never waits on it.
+ */
+export function thumbnailWithin(doc: DesignDocument, ms = 4000): Promise<Blob | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<undefined>((resolve) => (timer = setTimeout(resolve, ms, undefined)));
+  return Promise.race([renderThumbnail(doc).catch(() => undefined), late]).finally(() => clearTimeout(timer));
+}

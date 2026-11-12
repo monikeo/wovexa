@@ -3,9 +3,10 @@
  * client may not make (a chunked upload sends none) or may not keep, so the body is counted as it
  * arrives and the read stops at the limit instead of holding whatever was sent in memory.
  */
+export type BodyBytes = { ok: true; bytes: Uint8Array } | { ok: false; reason: 'too_large' | 'invalid' };
 export type JsonBody = { ok: true; value: unknown } | { ok: false; reason: 'too_large' | 'invalid' };
 
-export async function readJsonBody(request: Request, maxBytes: number): Promise<JsonBody> {
+export async function readBodyBytes(request: Request, maxBytes: number): Promise<BodyBytes> {
   const declared = Number(request.headers.get('content-length') ?? 0);
   if (declared > maxBytes) return { ok: false, reason: 'too_large' };
   if (!request.body) return { ok: false, reason: 'invalid' };
@@ -28,8 +29,14 @@ export async function readJsonBody(request: Request, maxBytes: number): Promise<
     bytes.set(chunk, at);
     at += chunk.byteLength;
   }
+  return { ok: true, bytes };
+}
+
+export async function readJsonBody(request: Request, maxBytes: number): Promise<JsonBody> {
+  const body = await readBodyBytes(request, maxBytes);
+  if (!body.ok) return body;
   try {
-    return { ok: true, value: JSON.parse(new TextDecoder().decode(bytes)) };
+    return { ok: true, value: JSON.parse(new TextDecoder().decode(body.bytes)) };
   } catch {
     return { ok: false, reason: 'invalid' };
   }

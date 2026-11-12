@@ -3,7 +3,7 @@ import { LayoutTemplate, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
 import { saveUserTemplate } from '@/lib/local-db';
-import { renderThumbnail } from '@/lib/thumbnail';
+import { thumbnailWithin } from '@/lib/thumbnail';
 import { toast } from '@/components/ui/primitives';
 import { useStudio } from '@/stores/studio-store';
 
@@ -22,7 +22,7 @@ export function SaveTemplatePanel({ onDone }: { onDone: () => void }) {
         setBusy(true);
         try {
           const snapshot = structuredClone(useStudio.getState().document!);
-          await saveUserTemplate({ name: name.trim().slice(0, 80), description: description.trim().slice(0, 200), document: snapshot, thumbnail: await renderThumbnail(snapshot).catch(() => undefined) });
+          await saveUserTemplate({ name: name.trim().slice(0, 80), description: description.trim().slice(0, 200), document: snapshot, thumbnail: await thumbnailWithin(snapshot) });
           toast(`Saved “${name.trim()}” to your templates.`, 'success');
           onDone();
         } catch {

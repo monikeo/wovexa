@@ -1,13 +1,18 @@
 'use client';
 import Link from 'next/link';
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { getBrowserSupabase } from '@/lib/supabase/client';
+
+const noSubscribe = () => () => {};
+/** Sent back from the email link's callback when the link didn't work. */
+const linkFailed = () => new URLSearchParams(window.location.search).get('error') === 'link';
 
 export function SignInForm() {
   const supabase = getBrowserSupabase();
   const [email, setEmail] = useState('');
   const [state, setState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
   const [message, setMessage] = useState('');
+  const expired = useSyncExternalStore(noSubscribe, linkFailed, () => false);
 
   if (!supabase) {
     return (
@@ -28,19 +33,30 @@ export function SignInForm() {
       onSubmit={async (e) => {
         e.preventDefault();
         setState('sending');
-        const { error } = await supabase.auth.signInWithOtp({
-          email: email.trim(),
-          options: { emailRedirectTo: `${window.location.origin}/dashboard` },
-        });
-        if (error) {
+        try {
+          // The link comes back through the callback, which swaps its one-time code for a session.
+          const { error } = await supabase.auth.signInWithOtp({
+            email: email.trim(),
+            options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=/dashboard` },
+          });
+          if (error) {
+            setState('error');
+            setMessage(error.status === 429 ? 'Too many attempts. Wait a minute, then try again.' : 'The sign-in link couldn’t be sent. Check the address and try again.');
+          } else {
+            setState('sent');
+          }
+        } catch {
           setState('error');
-          setMessage(error.status === 429 ? 'Too many attempts. Wait a minute, then try again.' : 'The sign-in link couldn’t be sent. Check the address and try again.');
-        } else {
-          setState('sent');
+          setMessage('The sign-in link couldn’t be sent: there’s no connection. Check it, then try again.');
         }
       }}
     >
       <h1 className="heading text-2xl">Sign in</h1>
+      {expired && state === 'idle' ? (
+        <p role="alert" className="mt-3 text-sm text-danger">
+          That sign-in link didn’t work. It may have expired, been used already or been opened in another browser, or the connection dropped. Send yourself a new one.
+        </p>
+      ) : null}
       {state === 'sent' ? (
         <p className="mt-3 text-sm" role="status">
           Check {email} for a sign-in link. It works once and expires in an hour.

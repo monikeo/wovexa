@@ -102,8 +102,11 @@ async function renderProducts(colorwayId: string, opts: ProductRenderOptions = {
 
 function approvalOf(meta: ProjectMeta | null) {
   const state = meta ? approvalState(meta) : 'draft';
-  if (meta && state === 'approved') return { label: `Approved, version ${meta.approvedVersionNumber}`, status: 'approved' as const, versionNumber: meta.approvedVersionNumber, hash: meta.approvedHash };
-  if (meta && state === 'changed') return { label: 'Changed since approval', status: 'changed-since-approval' as const, versionNumber: meta.approvedVersionNumber, hash: meta.approvedHash };
+  // The approval is checked against the design as last saved: with changes that didn't save (storage
+  // full, say), files must not go out marked approved.
+  const saved = useStudio.getState().saveState === 'saved';
+  if (meta && state === 'approved' && saved) return { label: `Approved, version ${meta.approvedVersionNumber}`, status: 'approved' as const, versionNumber: meta.approvedVersionNumber, hash: meta.approvedHash };
+  if (meta && state !== 'draft') return { label: 'Changed since approval', status: 'changed-since-approval' as const, versionNumber: meta.approvedVersionNumber, hash: meta.approvedHash };
   return { label: 'Draft, not yet approved', status: 'draft' as const };
 }
 
@@ -851,7 +854,10 @@ export function ExportPanel() {
             <button
               className="text-xs text-fg-2 hover:text-fg"
               onClick={() => {
-                void clearExports(doc.projectId).then(() => setHistory([]));
+                void clearExports(doc.projectId).then(
+                  () => setHistory([]),
+                  () => toast('The export history couldn’t be cleared: this browser’s storage refused the change.', 'error'),
+                );
               }}
             >
               Clear

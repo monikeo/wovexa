@@ -12,14 +12,17 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   if (!z.string().uuid().safeParse(id).success) return apiError(400, 'invalid_id', 'Unknown project id.');
   const auth = await requireUser();
   if ('error' in auth) return auth.error;
+  // A deleted project's document stays in the table until it's purged, but isn't served.
   const { data, error } = await auth.supabase
     .from('project_documents')
-    .select('revision, schema_version, design_state, updated_at')
+    .select('revision, schema_version, design_state, updated_at, projects!inner(deleted_at)')
     .eq('project_id', id)
+    .is('projects.deleted_at', null)
     .maybeSingle();
   if (error) return apiError(500, 'query_failed', 'The project could not be loaded.');
   if (!data) return apiError(404, 'not_found', 'Project not found or not shared with you.');
-  return NextResponse.json(data, { headers: { 'Cache-Control': 'no-store' } });
+  const { revision, schema_version, design_state, updated_at } = data;
+  return NextResponse.json({ revision, schema_version, design_state, updated_at }, { headers: { 'Cache-Control': 'no-store' } });
 }
 
 const putBody = z.object({ expectedRevision: z.number().int().min(0), document: z.unknown() });
@@ -53,7 +56,11 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     if (error.message.includes('revision_conflict')) {
       return apiError(409, 'revision_conflict', 'Someone saved a newer version of this project.', { serverRevision: Number(error.details) || null });
     }
+    if (error.code === '42501' && error.message.includes('approved')) {
+      return apiError(403, 'approved', 'This project is approved, so its design is frozen. Duplicate it to keep editing.');
+    }
     if (error.code === '42501') return apiError(403, 'forbidden', 'You can view this project but not edit it.');
+    if (error.code === 'P0002') return apiError(404, 'not_found', 'This project was deleted or isn’t shared with you.');
     return apiError(500, 'save_failed', 'The project could not be saved.');
   }
   return NextResponse.json({ revision: data }, { headers: { 'Cache-Control': 'no-store' } });
