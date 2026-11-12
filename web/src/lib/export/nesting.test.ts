@@ -109,7 +109,8 @@ describe('fabric marker nesting', () => {
     // Tees nest tightly: front, back and two sleeves of seven sizes on 1.5 m wide fabric.
     expect(result.utilisation).toBeGreaterThan(0.6);
     expect(result.strategy).toMatch(/order/);
-  });
+    // About 2 s alone (seven sizes built, then nested); the 5 s default cut it short with every test file running at once.
+  }, 20_000);
 
   it('places every dobok piece, legs included, on a 110 cm roll up to size 170', () => {
     const opts = { ...OPTIONS, rollWidthMm: 1100 };
@@ -125,7 +126,7 @@ describe('fabric marker nesting', () => {
     const result2 = nest(tall, wide);
     expect(result2.unplaced).toEqual([]);
     expectSound(tall, result2, wide);
-  });
+  }, 20_000);
 
   it('nests a large team order quickly', () => {
     const opts = { ...OPTIONS, rollWidthMm: 1600 };

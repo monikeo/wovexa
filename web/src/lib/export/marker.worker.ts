@@ -1,9 +1,11 @@
 /**
- * Compares roll widths for a fabric marker off the main thread. Nesting a large team order on
- * every width takes a few seconds, and the export dialog stays responsive meanwhile.
+ * Fabric marker work off the main thread: nesting the pieces of an order, and comparing roll widths
+ * (the same nesting on every width). A large team order takes a few seconds either way, and the
+ * export dialog stays responsive meanwhile: its progress moves and Cancel works.
  */
 import { getGarment } from '@/domain/garments';
-import { compareRollWidths, type MarkerSettings, type RollEstimate } from './marker-layout';
+import { compareRollWidths, type MarkerSettings } from './marker-layout';
+import { nest, type NestOptions, type NestPiece } from './nesting';
 import type { Roster } from './roster';
 
 export interface CompareRequest {
@@ -14,15 +16,22 @@ export interface CompareRequest {
   widthsCm: number[];
 }
 
-export type CompareReply = { ok: true; estimates: RollEstimate[] } | { ok: false; message: string };
+export interface NestRequest {
+  pieces: NestPiece[];
+  options: NestOptions;
+}
 
-addEventListener('message', (e: MessageEvent<CompareRequest>) => {
-  const { modelId, sampleSize, roster, settings, widthsCm } = e.data;
-  let reply: CompareReply;
+export type MarkerRequest = ({ kind: 'compare' } & CompareRequest) | ({ kind: 'nest' } & NestRequest);
+
+export type MarkerReply<T> = { ok: true; value: T } | { ok: false; message: string };
+
+addEventListener('message', (e: MessageEvent<MarkerRequest>) => {
+  const req = e.data;
+  let reply: MarkerReply<unknown>;
   try {
-    reply = { ok: true, estimates: compareRollWidths(getGarment(modelId), sampleSize, roster, settings, widthsCm) };
+    reply = { ok: true, value: req.kind === 'nest' ? nest(req.pieces, req.options) : compareRollWidths(getGarment(req.modelId), req.sampleSize, req.roster, req.settings, req.widthsCm) };
   } catch (error) {
-    reply = { ok: false, message: error instanceof Error ? error.message : 'The roll comparison failed.' };
+    reply = { ok: false, message: error instanceof Error ? error.message : req.kind === 'nest' ? 'Nesting the pieces failed.' : 'The roll comparison failed.' };
   }
   postMessage(reply);
 });

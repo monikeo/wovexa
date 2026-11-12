@@ -1,37 +1,104 @@
 'use client';
 import { AlertTriangle, CheckCircle2, Info, XOctagon } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { artboardOf } from '@/domain/areas';
 import { getGarment } from '@/domain/garments';
-import { summarize, type PreflightIssue, type Severity } from '@/domain/preflight';
-import { fullPreflight } from '@/lib/preflight-browser';
-import { isAreaId, isLockupId } from '@/domain/schema';
+import { DEFAULT_PREFLIGHT, runPreflight, summarize, type PreflightIssue, type Severity } from '@/domain/preflight';
+import { fontIssues, seamIssues } from '@/lib/preflight-browser';
+import { isAreaId, isLockupId, type DesignDocument } from '@/domain/schema';
 import { useStudio } from '@/stores/studio-store';
 import { selectProjection } from './projection-actions';
 
+// ---- The open design's checks, worked out once for every badge, tab and panel that shows them ----
+
+const RANK: Record<Severity, number> = { error: 0, warning: 1, info: 2 };
+/** The browser's checks (seams, fonts) as last run, on the version of the design they ran on. */
+type BrowserChecked = { doc: DesignDocument; issues: PreflightIssue[] };
+let browserChecked: BrowserChecked | null = null;
+let wanted: DesignDocument | null = null;
+/** Goes up when fonts finish loading, or when something still loading is worth another look. */
+let generation = 0;
+let checkedGeneration = -1;
+let timer: ReturnType<typeof setTimeout> | null = null;
+let idle: number | null = null;
+let watchingFonts = false;
+const subscribers = new Set<() => void>();
+const pureChecks = new WeakMap<DesignDocument, PreflightIssue[]>();
+const merged = new WeakMap<DesignDocument, { checked: BrowserChecked | null; issues: PreflightIssue[] }>();
+
+function lookAgain() {
+  generation++;
+  if (wanted) requestBrowserChecks(wanted);
+}
+
+function runBrowserChecks() {
+  idle = null;
+  const doc = wanted;
+  if (!doc) return;
+  const seams = seamIssues(doc);
+  const fonts = fontIssues(doc);
+  browserChecked = { doc, issues: [...seams.issues, ...fonts.issues] };
+  checkedGeneration = generation;
+  for (const notify of subscribers) notify();
+  // An image or font still loading: look again shortly.
+  if (seams.pending || fonts.pending) setTimeout(lookAgain, 1500);
+}
+
 /**
- * Every print check for the open design. The browser's checks (seams, fonts) wait for images and
- * fonts: they run again once fonts finish loading, and shortly after while anything is pending.
+ * The browser's checks draw each changed layer and read its pixels back, which waits for the GPU
+ * (the 3D view's texture uploads included): run inside an edit they held it up by as much as half
+ * a second, typing included. They run once editing pauses instead, a moment later.
+ */
+function requestBrowserChecks(doc: DesignDocument) {
+  wanted = doc;
+  if (browserChecked?.doc === doc && checkedGeneration === generation) return;
+  if (!watchingFonts && typeof document !== 'undefined' && document.fonts) {
+    watchingFonts = true;
+    document.fonts.addEventListener('loadingdone', lookAgain);
+  }
+  if (timer) clearTimeout(timer);
+  if (idle !== null && typeof cancelIdleCallback === 'function') cancelIdleCallback(idle);
+  idle = null;
+  timer = setTimeout(() => {
+    timer = null;
+    if (typeof requestIdleCallback === 'function') idle = requestIdleCallback(runBrowserChecks, { timeout: 1000 });
+    else runBrowserChecks();
+  }, 250);
+}
+
+function subscribe(notify: () => void) {
+  subscribers.add(notify);
+  return () => {
+    subscribers.delete(notify);
+  };
+}
+const checkedNow = () => browserChecked;
+const checkedOnServer = () => null;
+
+/** The pure checks for this version (at once), with the browser's last findings on layers still there. */
+function issuesOf(doc: DesignDocument, checked: BrowserChecked | null): PreflightIssue[] {
+  const hit = merged.get(doc);
+  if (hit && hit.checked === checked) return hit.issues;
+  let pure = pureChecks.get(doc);
+  if (!pure) pureChecks.set(doc, (pure = runPreflight(doc, DEFAULT_PREFLIGHT)));
+  const there = (i: PreflightIssue) => (i.projectionId ? !!doc.projections.layers[i.projectionId] : i.layerId ? !!artboardOf(doc, i.zoneId)?.layers[i.layerId] : true);
+  const issues = [...pure, ...(checked?.issues.filter(there) ?? [])].sort((a, b) => RANK[a.severity] - RANK[b.severity]);
+  merged.set(doc, { checked, issues });
+  return issues;
+}
+
+/**
+ * Every print check for the open design. The pure checks follow each edit at once; the browser's
+ * (seam clearance, fonts) follow a moment after editing pauses, again once fonts finish loading,
+ * and shortly after while an image or font is still on its way.
  */
 export function usePreflight() {
   const doc = useStudio((s) => s.document);
-  const [tick, setTick] = useState(0);
+  const checked = useSyncExternalStore(subscribe, checkedNow, checkedOnServer);
   useEffect(() => {
-    if (typeof document === 'undefined' || !document.fonts) return;
-    const again = () => setTick((t) => t + 1);
-    document.fonts.addEventListener('loadingdone', again);
-    return () => document.fonts.removeEventListener('loadingdone', again);
-  }, []);
-  const result = useMemo(() => {
-    void tick; // a new tick checks again what was still loading
-    return doc ? fullPreflight(doc) : { issues: [], pending: false };
-  }, [doc, tick]);
-  useEffect(() => {
-    if (!result.pending) return;
-    const timer = setTimeout(() => setTick((t) => t + 1), 1500);
-    return () => clearTimeout(timer);
-  }, [result]);
-  return result.issues;
+    if (doc) requestBrowserChecks(doc);
+  }, [doc]);
+  return useMemo(() => (doc ? issuesOf(doc, checked) : []), [doc, checked]);
 }
 
 export const SEVERITY: Record<Severity, { label: string; Icon: typeof Info; className: string }> = {

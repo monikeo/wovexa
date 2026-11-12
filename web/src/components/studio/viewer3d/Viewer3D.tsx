@@ -5,7 +5,7 @@
  * commands: zone and layer selection, direct placement on the surface (Place mode), scene
  * settings and saved views. Stills and turntable frames are rendered here for Wovexa Render.
  */
-import { CameraControls, CameraControlsImpl, ContactShadows, Environment, Lightformer, PerformanceMonitor } from '@react-three/drei';
+import { CameraControls, CameraControlsImpl, ContactShadows, Environment, Lightformer } from '@react-three/drei';
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { Camera as CameraIcon, Clapperboard, Frame, Loader2, Move, Rotate3d, RotateCw, SlidersHorizontal, Sparkles, Ungroup } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -35,6 +35,7 @@ import { ScenePanel } from './ScenePanel';
 import { BASE_FOV, frameFit, shotKey, shotLabel, VIEW_PRESETS, viewerApi, ZONE_VIEW, type RenderBackground, type ShotSpec, type ViewPreset } from './stage';
 import { buildGarment, createFabricNormalMap, FABRIC_LOOK, fabricLook, type GarmentGeometry, type GarmentLayout, type TrimColor } from './garment-geometry';
 import { drawPart, drawPartSurface, partKey, partSizeMm, setGpuMaxTexture, type PaintContext, type Quality } from './garment-textures';
+import { newPace, paceFrame } from './adaptive-dpr';
 import { bakeAmbientOcclusion, type AoTarget } from './ao-bake';
 import { cachedShape, exportGarmentTemplate, ShapeError, shapedGarment, type ParsedShape } from './garment-glb';
 import { shellGarment } from './garment-shell';
@@ -134,10 +135,30 @@ export function detectQuality(): Quality {
   return 'high';
 }
 
+/**
+ * The last few garments built, oldest first. Opening the studio again, or going back to a size or
+ * style just shown, reuses the shape instead of building it again (a tenth to a fifth of a second,
+ * more on a phone). Disposing a geometry frees only its copy on the GPU, which a renderer makes
+ * again when it next draws it; the baked shading is written fresh each time, never on top.
+ */
+const builtGarments = new Map<string, GarmentGeometry>();
+const KEEP_BUILT = 3;
+
 /** The garment's geometry for a model, size, detail level and drape. */
 function buildGarmentFor(modelId: string, sizeCode: string, quality: Quality, drape: number) {
+  const detail = quality === 'low' ? 'low' : 'high';
+  const key = `${modelId}|${sizeCode}|${detail}|${drape}`;
+  const hit = builtGarments.get(key);
+  if (hit) {
+    builtGarments.delete(key);
+    builtGarments.set(key, hit);
+    return hit;
+  }
   const model = getGarment(modelId);
-  return buildGarment(model, getSize(model, sizeCode), quality === 'low' ? 'low' : 'high', drape);
+  const geo = buildGarment(model, getSize(model, sizeCode), detail, drape);
+  builtGarments.set(key, geo);
+  if (builtGarments.size > KEEP_BUILT) builtGarments.delete(builtGarments.keys().next().value!);
+  return geo;
 }
 
 function hasWebGL() {
@@ -538,6 +559,29 @@ function ApartDriver({ apart }: { apart: boolean }) {
   return null;
 }
 
+/** Adaptive resolution (adaptive-dpr.ts): lower the pixel ratio while moving frames come slowly. */
+function AdaptiveResolution({ onSlow, onSmooth }: { onSlow: () => void; onSmooth: () => void }) {
+  const pace = useRef(newPace());
+  useFrame(() => {
+    const verdict = paceFrame(pace.current, performance.now());
+    if (verdict === 'slow') onSlow();
+    else if (verdict === 'smooth') onSmooth();
+  });
+  return null;
+}
+
+/** Draws a fresh frame when the kept view comes back on screen (it draws nothing while hidden). */
+function WakeOnShow({ active }: { active: boolean }) {
+  const invalidate = useThree((s) => s.invalidate);
+  useEffect(() => {
+    if (!active) return;
+    // A frame later: the canvas has its size and its frame loop back by then.
+    const frame = requestAnimationFrame(() => invalidate());
+    return () => cancelAnimationFrame(frame);
+  }, [active, invalidate]);
+  return null;
+}
+
 function setRevealSpan(bottomMm: number, heightMm: number, accent: string) {
   motionUniforms.uRevealBottom.value = bottomMm;
   motionUniforms.uRevealSpan.value = heightMm;
@@ -616,6 +660,7 @@ function Garment({
   guides,
   hanger,
   apart,
+  active,
   onOwnZone,
 }: {
   geo: GarmentGeometry;
@@ -626,6 +671,8 @@ function Garment({
   hanger: boolean;
   /** Shown taken apart: the pieces aren't where picking finds them, so clicks pass through. */
   apart: boolean;
+  /** On screen. Kept but hidden (the 2D view on its own), it paints nothing and offers nothing to the rest of the studio. */
+  active: boolean;
   onOwnZone: (zone: ArtboardId) => void;
 }) {
   const doc = useStudio((s) => s.document)!;
@@ -732,13 +779,14 @@ function Garment({
   // Copies and arrow-key nudges slide over the same cloth (a fitted shell's own, when worn).
   const clothShown = useCallback(() => clothNow().all, [clothNow]);
   useEffect(() => {
+    if (!active) return;
     viewerApi.areaAnchor = areaAnchor;
     viewerApi.restCloth = clothShown;
     return () => {
       if (viewerApi.areaAnchor === areaAnchor) viewerApi.areaAnchor = undefined;
       if (viewerApi.restCloth === clothShown) viewerApi.restCloth = undefined;
     };
-  }, [areaAnchor, clothShown]);
+  }, [areaAnchor, clothShown, active]);
 
   // One canvas and texture per textured part, made once per geometry; plus, on capable devices,
   // a print-surface map per part (ink height, roughness, metalness) for real relief and gloss.
@@ -856,6 +904,7 @@ function Garment({
 
   // "Download 3D template": this shape as a GLB, with the print areas drawn on plain fabric.
   useEffect(() => {
+    if (!active) return;
     const exportTemplate = () => {
       const zones = Object.fromEntries(Object.entries(doc.zones).map(([id, z]) => [id, { ...z, layers: {}, orderedLayerIds: [] }])) as unknown as DesignDocument['zones'];
       // A template is plain new fabric: no prints, and no wash.
@@ -878,7 +927,7 @@ function Garment({
     return () => {
       if (viewerApi.exportTemplate === exportTemplate) viewerApi.exportTemplate = undefined;
     };
-  }, [doc, colorway, model, geo, size, accent]);
+  }, [doc, colorway, model, geo, size, accent, active]);
 
   useEffect(() => setGpuMaxTexture(gl.capabilities.maxTextureSize), [gl]);
   useEffect(() => {
@@ -1013,7 +1062,9 @@ function Garment({
   }, [geo, textures, surfaces, colorway]);
 
   // Redraw when the document, colourway, selection or a live drag changes; coalesced per frame.
+  // Hidden, nothing is painted: each part catches up (only those that changed) when it shows again.
   useEffect(() => {
+    if (!active) return;
     let frame = 0;
     let disposed = false;
     const run = () => {
@@ -1046,7 +1097,7 @@ function Garment({
       cancelAnimationFrame(frame);
       unsubscribe();
     };
-  }, [draw, doc, colorway]);
+  }, [draw, doc, colorway, active]);
 
   /**
    * A point on the garment in a zone's own millimetres. Artwork graded by size shows at this
@@ -1848,6 +1899,7 @@ function CameraRig({
   fitH,
   fitW,
   centerY = 0,
+  active,
 }: {
   request: ViewRequest;
   turntable: boolean;
@@ -1860,6 +1912,8 @@ function CameraRig({
   fitW: number;
   /** Height (m) the preset views aim at: lower when a podium is in the shot. */
   centerY?: number;
+  /** On screen: renders and turntables are offered only then, as before the view was kept while hidden. */
+  active: boolean;
 }) {
   const controls = useRef<CameraControlsImpl>(null);
   const gl = useThree((s) => s.gl);
@@ -1968,6 +2022,7 @@ function CameraRig({
 
   // Rendering for Wovexa Render: stills at any size the GPU allows, and turntable frames.
   useEffect(() => {
+    if (!active) return;
     const ctx = gl.getContext();
     const viewport = ctx.getParameter(ctx.MAX_VIEWPORT_DIMS) as Int32Array;
     const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8;
@@ -2232,7 +2287,7 @@ function CameraRig({
       viewerApi.maxOutputSize = undefined;
       viewerApi.exportModel = undefined;
     };
-  }, [gl, scene, camera, invalidate, poseOf, setFrameloop]);
+  }, [gl, scene, camera, invalidate, poseOf, setFrameloop, active]);
 
   // The path tracer belongs to this renderer; free it with the renderer.
   useEffect(() => () => disposePhotoreal(), [gl]);
@@ -2424,8 +2479,13 @@ function RenderFrame() {
 // Viewer
 // ---------------------------------------------------------------------------
 
-/** Client-only (loaded with ssr: false), so device checks can run during the first render. */
-export function Viewer3D({ compact = false }: { compact?: boolean }) {
+/**
+ * The 3D view. Client-only (loaded with ssr: false), so device checks can run during the first
+ * render. `active` is false while it is kept but hidden (the 2D view has the stage to itself): it
+ * then draws and paints nothing, and coming back costs nothing (no new WebGL context, garment,
+ * shading or shaders).
+ */
+export function Viewer3D({ compact = false, active = true }: { compact?: boolean; active?: boolean }) {
   const activeZone = useStudio((s) => s.activeZoneId);
   const hasSelection = useStudio((s) => s.selectedLayerIds.length > 0 || !!s.selectedProjectionId);
   const projectionSelected = useStudio((s) => !!s.selectedProjectionId);
@@ -2598,9 +2658,10 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
   const shapeKey = shellGeo ? shellKey : shapeAssetId && loadedShape?.assetId === shapeAssetId ? shapeAssetId : 'built-in';
   const shadowKey = `${modelId}:${sizeCode}:${quality}:${drapeId}:${shapeKey}`;
 
-  // Adaptive resolution (spec MOB-11): drop the pixel ratio if frames slow down, restore it when they recover.
+  // Adaptive resolution (spec MOB-11): the screen's own pixel ratio up to a cap for the device's
+  // quality (never more pixels than the screen shows), dropped to 1 while moving frames come slowly.
   const maxDpr = quality === 'high' ? 2 : quality === 'medium' ? 1.5 : 1;
-  const [dpr, setDpr] = useState(maxDpr);
+  const [dprCap, setDprCap] = useState(maxDpr);
 
   // Follow the zone or design area being edited so the artwork stays in view, unless the 3D view chose it.
   const [followedZone, setFollowedZone] = useState(activeZone);
@@ -2612,11 +2673,14 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
 
   const fly = useCallback((shot: ShotSpec) => setRequest((r) => ({ shot, nonce: r.nonce + 1 })), [setRequest]);
   useEffect(() => {
+    if (!active) return;
     viewerApi.flyTo = fly;
     return () => {
       viewerApi.flyTo = undefined;
     };
-  }, [fly]);
+  }, [fly, active]);
+  // Hidden, the garment goes back together, as it did when the view closed.
+  if (!active && apart) setApart(false);
 
   const currentPreset = request.shot.kind === 'preset' ? request.shot.view : null;
 
@@ -2788,8 +2852,8 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
         <canvas ref={shadowOverlay} aria-hidden className="pointer-events-none absolute inset-0 h-full w-full" style={{ visibility: 'hidden' }} />
         <Canvas
           key={generation}
-          frameloop="demand"
-          dpr={dpr}
+          frameloop={active ? 'demand' : 'never'}
+          dpr={[1, dprCap]}
           shadows={quality === 'low' ? false : 'percentage'}
           camera={{ fov: scene.fovDeg, position: VIEW_PRESETS.front.position, near: 0.05, far: 20 }}
           gl={{ antialias: true, alpha: true, toneMapping: THREE.NeutralToneMapping }}
@@ -2800,11 +2864,12 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
             });
           }}
         >
-          <PerformanceMonitor flipflops={3} onDecline={() => setDpr(1)} onIncline={() => setDpr(maxDpr)} onFallback={() => setDpr(1)} />
+          <AdaptiveResolution onSlow={() => setDprCap(1)} onSmooth={() => setDprCap(maxDpr)} />
+          <WakeOnShow active={active} />
           <SceneLights scene={scene} floorY={floorY} shadowKey={shadowKey} />
           <SceneStage scene={scene} floorY={floorY} backZ={backZ} />
           <group ref={motionGroup}>
-            <Garment geo={geo} ownRest={!!shellGeo} quality={quality} mode={mode} guides={guides} hanger={motion.kind === 'hanger'} apart={apartNow} onOwnZone={setOwnZone} />
+            <Garment geo={geo} ownRest={!!shellGeo} quality={quality} mode={mode} guides={guides} hanger={motion.kind === 'hanger'} apart={apartNow} active={active} onOwnZone={setOwnZone} />
           </group>
           <ApartDriver apart={apartNow} />
           <MotionDriver
@@ -2816,9 +2881,9 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
             hpsMm={geo.layout.torsoHeightMm}
             limbPivots={geo.limbPivots}
           />
-          <CameraRig request={request} turntable={turntable} mode={mode} hasSelection={hasSelection} fov={scene.fovDeg} backdrop={scene.backdrop} fitH={fitH} fitW={fitW} centerY={centerY} />
-          {/* Path tracing sees the cloth where it is sewn, so it waits while the garment is taken apart. */}
-          <PhotorealView enabled={photoreal && !turntable && !apartNow} overlay={shadowOverlay} onStatus={setLiveStatus} />
+          <CameraRig request={request} turntable={turntable} mode={mode} hasSelection={hasSelection} fov={scene.fovDeg} backdrop={scene.backdrop} fitH={fitH} fitW={fitW} centerY={centerY} active={active} />
+          {/* Path tracing sees the cloth where it is sewn, so it waits while the garment is taken apart (and while hidden). */}
+          <PhotorealView enabled={photoreal && !turntable && !apartNow && active} overlay={shadowOverlay} onStatus={setLiveStatus} />
         </Canvas>
         <RenderFrame />
       </div>

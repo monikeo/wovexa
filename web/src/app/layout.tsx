@@ -33,8 +33,10 @@ export const viewport: Viewport = {
   ],
 };
 
-// Applies the saved theme before first paint so there is no flash of the wrong theme.
-const themeScript = `try{var t=localStorage.getItem('wovexa.theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}`;
+// Applies the saved theme before first paint so there is no flash of the wrong theme, and marks a
+// browser that has been through onboarding so the prerendered onboarding card stays hidden
+// (components/workspace/Onboarding.tsx) instead of the dashboard jumping as it comes and goes.
+const themeScript = `try{var d=document.documentElement,t=localStorage.getItem('wovexa.theme');if(t==='light'||t==='dark')d.dataset.theme=t;if(localStorage.getItem('wovexa.onboarded')==='1')d.dataset.onboarded=''}catch(e){}`;
 
 export default function RootLayout({ children }: LayoutProps<'/'>) {
   return (
