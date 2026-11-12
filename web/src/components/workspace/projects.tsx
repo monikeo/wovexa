@@ -3,7 +3,7 @@ import { Archive, ArchiveRestore, Copy, Folder, FolderInput, MoreHorizontal, Pen
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { GARMENT_LIST, getGarment } from '@/domain/garments';
+import { GARMENT_LIST, garmentNoun, getGarment } from '@/domain/garments';
 import { groupLibrary, MAX_SHELL_TRIANGLES } from '@/domain/model-library';
 import { GarmentGlyph } from '@/components/studio/GarmentGlyph';
 import { ModelThumb } from '@/components/studio/ModelThumb';
@@ -423,7 +423,7 @@ function StyleStarts({ busy, start }: { busy: string | null; start: (key: string
           key={m.id}
           disabled={busy !== null}
           className="group flex flex-col items-start gap-2 rounded-xl border border-line bg-panel p-3 text-left transition-colors hover:border-line-strong disabled:opacity-60"
-          onClick={() => void start(m.id, () => createProject(`Untitled ${m.shortName.toLowerCase()}`, 0, m.id))}
+          onClick={() => void start(m.id, () => createProject(`Untitled ${garmentNoun(m)}`, 0, m.id))}
         >
           <span className="grid aspect-[4/3] w-full place-items-center rounded-lg bg-[var(--surface-hover)] text-fg-2 group-hover:text-fg">
             <GarmentGlyph model={m} className="h-16 w-16" />

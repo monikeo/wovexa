@@ -418,3 +418,42 @@ test('exports a CMYK PDF/X-1a print file', async ({ page }) => {
   expect(pdf).toContain('/ColorSpace /DeviceCMYK');
   expect(pdf).not.toContain('/DeviceRGB');
 });
+
+test('finds a line icon in the icon library and adds it as an editable line shape', async ({ page }) => {
+  await page.getByRole('button', { name: 'Add an icon' }).click();
+  const panel = page.getByRole('dialog', { name: 'Icons' });
+  await panel.getByRole('searchbox', { name: 'Search icons' }).fill('troph');
+  await panel.getByRole('button', { name: 'Add trophy icon' }).click();
+  await expect(panel).toHaveCount(0);
+  await expect.poll(async () => (await frontLayers(page)).map((l) => l.name)).toContain('Trophy icon');
+  const icon = (await frontLayers(page)).find((l) => l.name === 'Trophy icon')!;
+  expect(icon.content.kind).toBe('shape');
+  if (icon.content.kind !== 'shape') return;
+  expect(icon.content.shape).toBe('path');
+  expect(icon.content.hollow).toBe(true);
+  expect(icon.content.roundCaps).toBe(true);
+  expect(icon.content.strokeWidthMm).toBeGreaterThan(1);
+  // The trophy keeps its own proportions.
+  expect(icon.transform.widthMm / icon.transform.heightMm).toBeCloseTo(1, 0);
+});
+
+test('takes the 3D garment apart into its pieces and puts it back together', async ({ page }) => {
+  await page.getByRole('group', { name: 'View', exact: true }).getByRole('button', { name: '3D', exact: true }).click();
+  const bar = page.getByRole('toolbar', { name: '3D view' });
+  const apart = bar.getByRole('button', { name: 'Take apart' });
+  await apart.click();
+  await expect(apart).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByText('Taken apart into its pieces.')).toBeVisible();
+  // Place mode works on the garment as sewn, so choosing it puts the pieces back.
+  await bar.getByRole('button', { name: 'Place', exact: true }).click();
+  await expect(apart).toHaveAttribute('aria-pressed', 'false');
+  // From the stage, O goes back to Orbit, X takes it apart and X puts it back.
+  await page.locator('[data-viewer3d]').focus();
+  await page.keyboard.press('o');
+  await expect(bar.getByRole('button', { name: 'Orbit', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('x');
+  await expect(apart).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('x');
+  await expect(apart).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByText('Taken apart into its pieces.')).toHaveCount(0);
+});

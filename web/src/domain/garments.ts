@@ -603,6 +603,15 @@ export function hasZone(model: GarmentModel, zoneId: ZoneId) {
   return !!model.zones[zoneId];
 }
 
+/**
+ * The garment's name as it reads mid-sentence or in a title ("a basketball jersey", "Untitled
+ * classic crew tee"), keeping a leading capital that is part of a word, as in "V-neck".
+ */
+export function garmentNoun(model: Pick<GarmentModel, 'name'>) {
+  const n = model.name;
+  return n.length > 1 && /[a-z]/.test(n[1]) ? n[0].toLowerCase() + n.slice(1) : n;
+}
+
 /** A colourway's colour for a part, with sensible defaults for parts older colourways lack. */
 export function partColor(colorway: Colorway, part: GarmentPart): string {
   if (part === 'pants') return colorway.parts.pants ?? colorway.parts.body;

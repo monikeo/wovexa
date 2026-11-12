@@ -8,6 +8,10 @@
  * waistband; 1 at hems and cuffs), so ripples grow toward the free edges like real cloth.
  * Sleeves and legs also carry `aLimb` (which limb, and how far along it), so they swing from
  * the shoulder or hip, bending smoothly from the seam.
+ *
+ * Every piece also carries `aExplode`: where it moves (millimetres) when the garment is shown
+ * taken apart. `uExplode` runs from 0 (sewn together) to 1 (every piece apart), so one number
+ * eases the whole garment apart and back, shadows included.
  */
 import * as THREE from 'three';
 import type { MotionKind } from '@/domain/scene';
@@ -25,6 +29,8 @@ export const motionUniforms = {
   /** Swing pivots in garment millimetres, and swing angles in radians: left and right sleeve, left and right leg. */
   uLimbPivot: { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] },
   uLimbSwing: { value: [0, 0, 0, 0] },
+  /** How far the garment is taken apart: 0 sewn together, 1 every piece apart. */
+  uExplode: { value: 0 },
 };
 
 /** What the live driver is playing, read by the video recorder so frames match the preview. */
@@ -41,8 +47,10 @@ uniform float uWind;
 uniform float uDrape;
 uniform vec3 uLimbPivot[4];
 uniform float uLimbSwing[4];
+uniform float uExplode;
 attribute float aFree;
 attribute vec2 aLimb;
+attribute vec3 aExplode;
 varying float vWovexaY;
 varying vec3 vWovexaPos;
 float wovexaRipple(vec3 p) {
@@ -116,6 +124,7 @@ export function patchMotion(shader: THREE.WebGLProgramParametersWithUniforms) {
         vec3 wovexaPivot = uLimbPivot[wovexaLimbIndex];
         transformed = wovexaPivot + wovexaRotX(transformed - wovexaPivot, wovexaSwing);
       }
+      transformed += aExplode * uExplode;
       vWovexaY = position.y;
       vWovexaPos = position;`,
     );
@@ -156,7 +165,7 @@ export function patchMotion(shader: THREE.WebGLProgramParametersWithUniforms) {
   );
 }
 
-export const MOTION_CACHE_KEY = 'wovexa-motion-5';
+export const MOTION_CACHE_KEY = 'wovexa-motion-6';
 
 /**
  * How freely a fabric moves in wind and walking, for its weight: a 170 gsm tee is 1, lighter
@@ -185,6 +194,7 @@ export function patchMotionDepth(shader: THREE.WebGLProgramParametersWithUniform
         vec3 wovexaPivot = uLimbPivot[wovexaLimbIndex];
         transformed = wovexaPivot + wovexaRotX(transformed - wovexaPivot, wovexaSwing);
       }
+      transformed += aExplode * uExplode;
       vWovexaY = position.y;
       vWovexaPos = position;`,
     );
@@ -193,7 +203,7 @@ export function patchMotionDepth(shader: THREE.WebGLProgramParametersWithUniform
 /** One shadow-casting depth material for every garment mesh: the motion uniforms are shared. */
 export const motionDepthMaterial = new THREE.MeshDepthMaterial();
 motionDepthMaterial.onBeforeCompile = patchMotionDepth;
-motionDepthMaterial.customProgramCacheKey = () => 'wovexa-motion-depth-2';
+motionDepthMaterial.customProgramCacheKey = () => 'wovexa-motion-depth-3';
 
 /** One stride (a step with each foot) every this many seconds at speed 1: an easy walk. */
 const STRIDE_S = 1.15;

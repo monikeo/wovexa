@@ -35,6 +35,8 @@ import type { CombineOp } from '@/lib/combine';
 import { canvasToBlob } from '@/lib/download';
 import { ARTWORK_FONTS } from '@/lib/fonts';
 import { BRUSH_LABELS, BRUSHES, brushStroke, pencilStroke, type Brush, type StrokePoint } from '@/lib/freehand';
+import { iconLabel } from '@/lib/icons/catalog';
+import { ICON_STROKE_UNITS, iconShape, type IconData } from '@/lib/icons/icon-shape';
 import { getAsset, KitLockupError, saveKitLockup, type KitLockup } from '@/lib/local-db';
 import { piecesToLayers, SvgImportError, svgPieces, type SvgSkipped } from '@/lib/svg-import';
 import { placeOnPath, textPathFrom } from '@/lib/path-text';
@@ -119,6 +121,25 @@ export function addGraphic(graphic: Graphic) {
   const layer = createGraphicLayer(c.spec, graphic, c.ink);
   c.s.dispatch(cmd.addLayer(c.zoneId, layer));
   c.s.select([layer.id]);
+}
+
+/**
+ * A line icon from the icon library, in an ink that reads on the garment: an outline-only path
+ * with round ends, its line as heavy for its size as the icon is drawn, editable point by point.
+ */
+export function addIcon(icon: IconData): boolean {
+  const c = context();
+  if (!c) return false;
+  const shape = iconShape(icon);
+  if (!shape) return false;
+  const layer = createGraphicLayer(c.spec, { id: `icon-${icon.name}`, name: `${iconLabel(icon.name)} icon`, path: shape.path, aspect: shape.box.w / shape.box.h }, c.ink);
+  if (layer.content.kind !== 'shape') return false;
+  delete layer.content.graphicId;
+  const mmPerUnit = layer.transform.widthMm / shape.box.w;
+  Object.assign(layer.content, { hollow: true, strokeWidthMm: Math.min(50, Math.max(0.3, Math.round(ICON_STROKE_UNITS * mmPerUnit * 10) / 10)), roundCaps: true });
+  if (!c.s.dispatch(cmd.addLayer(c.zoneId, layer))) return false;
+  c.s.select([layer.id]);
+  return true;
 }
 
 /**

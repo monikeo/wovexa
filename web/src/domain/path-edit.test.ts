@@ -29,6 +29,26 @@ describe('editable paths', () => {
     for (const [x, y] of flattenSubpath(subs[1], 0.01)) expect(Math.hypot(x - 60, y - 50)).toBeCloseTo(10, 1);
   });
 
+  it('reads arc flags written with nothing between them, as optimised SVGs write them', () => {
+    // The same circle as above with each arc's two flags and its end point run together: in
+    // "0 1020 0" the rotation is 0, the flags are 1 and 0, and the arc ends 20, 0 further on.
+    const compact = parsePath('M50 50a10 10 0 1020 0a10 10 0 10-20 0z');
+    const spaced = parsePath('M50 50a10 10 0 1 0 20 0a10 10 0 1 0 -20 0z');
+    expect(pathData(compact)).toBe(pathData(spaced));
+    const b = boundsOf(compact);
+    expect(b.x).toBeCloseTo(50, 1);
+    expect(b.w).toBeCloseTo(20, 1);
+    // Lucide's lightning bolt, as shipped: "a1.5 1.5 0 00-2.474-1.561" is flags 0 and 0, then the end point.
+    const zap = parsePath('M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z');
+    const z = boundsOf(zap);
+    expect(z.x).toBeGreaterThan(2);
+    expect(z.x + z.w).toBeLessThan(22);
+    expect(z.y).toBeGreaterThan(1);
+    expect(z.y + z.h).toBeLessThan(23);
+    // A rotation still reads as a full number, and numbers elsewhere are untouched.
+    expect(pathData(parsePath('M0 0L10 01'))).toBe('M0 0 L10 1');
+  });
+
   it('adds a point on a curve without changing its shape', () => {
     const subs = parsePath('M0 0 C0 50 100 50 100 0');
     const before = cubicAt(segmentsOf(subs[0])[0], 0.3);
