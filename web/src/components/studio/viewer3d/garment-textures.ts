@@ -7,7 +7,7 @@
  */
 import { partColor, type GarmentModel, type PartId } from '@/domain/garments';
 import { gradeAnchor, zoneGrade } from '@/domain/grading';
-import { isAreaId, type ArtboardId, type Colorway, type DesignDocument, type LayerTransform, type Surface, type ZoneId } from '@/domain/schema';
+import { isAreaId, type ArtboardId, type Colorway, type DesignDocument, type GarmentFinish, type LayerTransform, type Surface, type ZoneId } from '@/domain/schema';
 import { drawZone, drawZoneSurface, paintFabric } from '@/lib/render/zone-renderer';
 import { partSizeMm, type EdgePoint, type GarmentGeometry } from './garment-geometry';
 import { areasKey, drawAreaOutlines, drawAreas, drawAreaSurfaces, drawProjectionOutline, drawProjections, projectionKey, sceneRest, type ProjectionEdit, type ProjectionScene } from './projected-paint';
@@ -278,8 +278,8 @@ export function drawPart(canvas: HTMLCanvasElement, part: PartId, c: PaintContex
     stitchLine(ctx, H - 32 * ppm, 0, W, stitch, ppm);
   }
 
-  for (const zoneId of zonesOnPart(model, part)) {
-    const o = zoneOrigin(model, geo.layout, zoneId);
+  const zones = zonesOnPart(model, part).map((zoneId) => ({ zoneId, o: zoneOrigin(model, geo.layout, zoneId) }));
+  for (const { zoneId, o } of zones) {
     ctx.save();
     // Artwork graded by size shows at this size's grade, grown from the top centre of its print area.
     applyGrade(ctx, c, zoneId, o, ppm);
@@ -292,16 +292,80 @@ export function drawPart(canvas: HTMLCanvasElement, part: PartId, c: PaintContex
         simulateFinish: sewn && (c.simulateFinish ?? true),
       }) && complete;
     ctx.restore();
-    drawGuides(ctx, c, zoneId, o, ppm);
   }
   // Design areas go on last, like transfers pressed onto the finished garment.
   complete = drawAreas(ctx, part, projected, ppm, { live: c.live, simulateFinish: sewn && (c.simulateFinish ?? true) }) && complete;
+  // A washed or vintage garment: the finished piece, prints and all, as it comes out of the wash.
+  // Never in production files, which print on new fabric.
+  if (sewn && doc.garment.finish) washFinish(ctx, doc.garment.finish, W, H, wMm, hMm, part);
+  for (const { zoneId, o } of zones) drawGuides(ctx, c, zoneId, o, ppm);
   if (c.guides) {
     const g = c.guides;
     drawAreaOutlines(ctx, part, projected, ppm, { accent: g.accent, all: g.zones, active: g.active ?? null, selected: g.selection && isAreaId(g.selection.zoneId) ? g.selection.ids : undefined, live: c.live });
   }
   if (c.guides?.projection) drawProjectionOutline(ctx, part, projected, c.guides.projection, ppm, c.guides.accent);
   return complete;
+}
+
+/** Seeded value noise on a coarse grid: the same cloudy pattern every time for the same part. */
+function washClouds(cols: number, rows: number, seed: number): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = cols;
+  canvas.height = rows;
+  const g = canvas.getContext('2d')!;
+  const img = g.createImageData(cols, rows);
+  let s = seed >>> 0 || 1;
+  for (let i = 0; i < cols * rows; i++) {
+    // xorshift: fast, and the same numbers for the same seed.
+    s ^= s << 13;
+    s ^= s >>> 17;
+    s ^= s << 5;
+    const v = (s >>> 0) % 256;
+    img.data.set([v, v, v, 255], i * 4);
+  }
+  g.putImageData(img, 0, 0);
+  return canvas;
+}
+
+/**
+ * A garment as it comes out of the wash: the dye a little faded toward a soft white and greyer,
+ * unevenly (slow, cloudy patches about 9 cm across), prints faded with it. Vintage is washed many
+ * times: more faded, more uneven, and lighter again toward the edges and seams, where cloth wears
+ * first. Seeded by the part, so it never shifts between frames or renders.
+ */
+function washFinish(ctx: CanvasRenderingContext2D, finish: GarmentFinish, W: number, H: number, wMm: number, hMm: number, part: PartId) {
+  const vintage = finish === 'vintage';
+  ctx.save();
+  ctx.globalCompositeOperation = 'saturation';
+  ctx.globalAlpha = vintage ? 0.3 : 0.2;
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'source-atop';
+  ctx.globalAlpha = vintage ? 0.15 : 0.1;
+  ctx.fillStyle = '#F4F1EA';
+  ctx.fillRect(0, 0, W, H);
+  // Cloudy patches where the wash took out more of the dye.
+  let seed = 2166136261;
+  for (const ch of `${part}:${finish}`) seed = Math.imul(seed ^ ch.charCodeAt(0), 16777619);
+  const clouds = washClouds(Math.max(2, Math.ceil(wMm / 90)), Math.max(2, Math.ceil(hMm / 90)), seed);
+  ctx.globalCompositeOperation = 'screen';
+  ctx.globalAlpha = vintage ? 0.22 : 0.16;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(clouds, 0, 0, W, H);
+  if (vintage) {
+    // Worn lighter toward the edges: the hem, the cuffs, the seams.
+    const band = Math.min(W, H) * 0.08;
+    for (const [x0, y0, x1, y1] of [[0, 0, 0, band], [0, H, 0, H - band], [0, 0, band, 0], [W, 0, W - band, 0]] as const) {
+      const g = ctx.createLinearGradient(x0, y0, x1, y1);
+      g.addColorStop(0, 'rgba(255,255,255,0.22)');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+    }
+  }
+  ctx.restore();
 }
 
 /** Projected layers paint onto the garment at rest, into the displayed garment's texture layout. */
@@ -371,5 +435,7 @@ export function partKey(part: PartId, c: PaintContext, generation: number) {
   const areas = areasKey(scene, part, c.live, areaGuides);
   // Graded artwork repaints when the grading changes, not only the artwork.
   const grades = zones.map((z) => zoneGrade(c.doc, z, sizeOf(c))).join(',');
-  return [part, zones.map((z) => idOf(c.doc.zones[z])).join('.'), grades, live, projected, areas, idOf(c.colorway), c.quality, guideKey, idOf(c.geo), generation].join('|');
+  // The fabric (its roughness goes into the surface map) and its wash repaint the part too.
+  const fabric = `${c.doc.garment.fabricPresetId}:${c.doc.garment.finish ?? ''}`;
+  return [part, zones.map((z) => idOf(c.doc.zones[z])).join('.'), grades, live, projected, areas, idOf(c.colorway), c.quality, guideKey, idOf(c.geo), fabric, generation].join('|');
 }

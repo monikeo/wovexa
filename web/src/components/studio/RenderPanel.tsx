@@ -17,6 +17,7 @@ import { canEncodeAvif, encodePdf, encodeTiff } from '@/lib/export/image-formats
 import { planVideo, recordTurntable, type VideoPlan } from '@/lib/video';
 import { toast } from '@/components/ui/primitives';
 import { useLive, useStudio } from '@/stores/studio-store';
+import { SocialKit } from './SocialKit';
 import { PHOTOREAL_PRESETS, VIEW_PRESETS, viewerApi, type CapturedShot, type PhotorealPreset, type RenderBackground, type ShotSpec, type ViewPreset } from './viewer3d/stage';
 
 type Engine = 'realtime' | 'photoreal';
@@ -611,6 +612,7 @@ export function RenderPanel() {
           </button>
         )}
       </section>
+      <SocialKit />
       <p className="text-[11px] text-fg-3">Renders are simulated previews: fabric, ink and finishes are approximate. Confirm colour and placement with a physical sample.</p>
     </div>
   );

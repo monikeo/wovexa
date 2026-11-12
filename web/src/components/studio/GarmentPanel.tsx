@@ -10,7 +10,7 @@ import * as cmd from '@/domain/commands';
 import { createColorway } from '@/domain/factory';
 import { BELT_COLOURS, colorwayPresetsFor, GARMENT_LIST, getGarment, hasZone, partColor, PRINT_METHOD_LABELS, sizeChart, sizeLabel, type GarmentModel } from '@/domain/garments';
 import { gradingBase, gradingTable } from '@/domain/grading';
-import { FABRIC_EFFECTS, PATTERNS, ZONE_IDS, type Colorway, type DesignDocument, type FabricEffect, type PrintMethod, type Surface } from '@/domain/schema';
+import { FABRIC_EFFECTS, PATTERNS, ZONE_IDS, type Colorway, type DesignDocument, type FabricEffect, type GarmentFinish, type PrintMethod, type Surface } from '@/domain/schema';
 import { downloadBlob } from '@/lib/download';
 import { groupLibrary, MAX_SHELL_TRIANGLES, type LibraryModel } from '@/domain/model-library';
 import { useModelLibrary } from '@/lib/model-library';
@@ -596,6 +596,13 @@ function SizeGuide({ model, selected, onPick }: { model: GarmentModel; selected:
   );
 }
 
+/** How the finished garment is washed: new from the mill, garment-washed, or vintage (washed many times). */
+const GARMENT_WASHES: { id: GarmentFinish | 'none'; label: string; title: string }[] = [
+  { id: 'none', label: 'New', title: 'New from the mill: even colour, crisp prints' },
+  { id: 'washed', label: 'Washed', title: 'Garment-washed: softer, the dye a little faded and uneven, prints faded with it' },
+  { id: 'vintage', label: 'Vintage', title: 'Washed many times: faded more, more unevenly, and lighter at the edges and seams' },
+];
+
 export function GarmentPanel() {
   const doc = useStudio((s) => s.document);
   const dispatch = useStudio((s) => s.dispatch);
@@ -650,6 +657,16 @@ export function GarmentPanel() {
               ))}
             </select>
           </label>
+        </div>
+        <div className="grid grid-cols-[64px_1fr] items-center gap-2">
+          <span className="label">Wash</span>
+          <div className="seg w-fit" role="group" aria-label="Garment wash">
+            {GARMENT_WASHES.map((w) => (
+              <button key={w.id} aria-pressed={(doc.garment.finish ?? 'none') === w.id} title={w.title} onClick={() => dispatch(cmd.setGarmentFinish(w.id === 'none' ? undefined : w.id))}>
+                {w.label}
+              </button>
+            ))}
+          </div>
         </div>
         <SizeGuide model={model} selected={doc.garment.sizeCode} onPick={(code) => dispatch(cmd.setGarmentSize(code))} />
         <SizeGrading model={model} doc={doc} />

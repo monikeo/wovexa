@@ -15,6 +15,8 @@ import type { MotionKind } from '@/domain/scene';
 export const motionUniforms = {
   uTime: { value: 0 },
   uWind: { value: 0 },
+  /** How freely the fabric moves for its weight: 1 for a mid-weight tee, more for light cloth, less for heavy (see fabricDrape). */
+  uDrape: { value: 1 },
   /** Knit progress, 0 (nothing) to 1 (finished); above 1.5 the reveal is off. */
   uReveal: { value: 2 },
   uRevealBottom: { value: 0 },
@@ -36,6 +38,7 @@ export function setLimbPivots(pivots: Partial<Record<1 | 2 | 3 | 4, [number, num
 const VERTEX_HEADER = /* glsl */ `
 uniform float uTime;
 uniform float uWind;
+uniform float uDrape;
 uniform vec3 uLimbPivot[4];
 uniform float uLimbSwing[4];
 attribute float aFree;
@@ -89,8 +92,8 @@ export function patchMotion(shader: THREE.WebGLProgramParametersWithUniforms) {
     .replace(
       '#include <beginnormal_vertex>',
       /* glsl */ `#include <beginnormal_vertex>
-      // Ripple amplitude in millimetres, scaled by how free this part of the garment is.
-      float wovexaAmp = uWind * aFree * 11.0;
+      // Ripple amplitude in millimetres, scaled by how free this part of the garment is and how light the fabric.
+      float wovexaAmp = uWind * aFree * 11.0 * uDrape;
       if (wovexaAmp > 0.0) {
         float e = 6.0;
         float r0 = wovexaRipple(position);
@@ -153,7 +156,15 @@ export function patchMotion(shader: THREE.WebGLProgramParametersWithUniforms) {
   );
 }
 
-export const MOTION_CACHE_KEY = 'wovexa-motion-4';
+export const MOTION_CACHE_KEY = 'wovexa-motion-5';
+
+/**
+ * How freely a fabric moves in wind and walking, for its weight: a 170 gsm tee is 1, lighter
+ * performance knits ripple more, heavyweight cotton and fleece hang heavier and ripple less.
+ */
+export function fabricDrape(gsm: number) {
+  return Math.min(1.3, Math.max(0.6, 170 / Math.max(1, gsm)));
+}
 
 /**
  * The same motion for casting shadows (three draws shadow maps with a depth material of its
@@ -166,7 +177,7 @@ export function patchMotionDepth(shader: THREE.WebGLProgramParametersWithUniform
     shader.vertexShader.replace(
       '#include <begin_vertex>',
       /* glsl */ `#include <begin_vertex>
-      float wovexaAmp = uWind * aFree * 11.0;
+      float wovexaAmp = uWind * aFree * 11.0 * uDrape;
       if (wovexaAmp > 0.0) transformed += normal * wovexaRipple(position) * wovexaAmp;
       int wovexaLimbIndex = wovexaLimb();
       float wovexaSwing = wovexaLimbIndex >= 0 ? uLimbSwing[wovexaLimbIndex] * aLimb.y : 0.0;
@@ -182,7 +193,7 @@ export function patchMotionDepth(shader: THREE.WebGLProgramParametersWithUniform
 /** One shadow-casting depth material for every garment mesh: the motion uniforms are shared. */
 export const motionDepthMaterial = new THREE.MeshDepthMaterial();
 motionDepthMaterial.onBeforeCompile = patchMotionDepth;
-motionDepthMaterial.customProgramCacheKey = () => 'wovexa-motion-depth-1';
+motionDepthMaterial.customProgramCacheKey = () => 'wovexa-motion-depth-2';
 
 /** One stride (a step with each foot) every this many seconds at speed 1: an easy walk. */
 const STRIDE_S = 1.15;

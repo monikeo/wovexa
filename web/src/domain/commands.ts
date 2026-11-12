@@ -16,6 +16,7 @@ import {
   type Colorway,
   type DesignArea,
   type DesignDocument,
+  type GarmentFinish,
   type GarmentPart,
   type LayerContent,
   type LayerStack,
@@ -615,6 +616,17 @@ export function setColorwaySurface(colorwayId: string, part: 'body' | 'sleeves' 
 
 export function setFabricPreset(presetId: string): Command {
   return { label: 'Change fabric', recipe: (d) => void (d.garment.fabricPresetId = presetId) };
+}
+
+/** How the finished garment is washed: none (new from the mill), washed or vintage. */
+export function setGarmentFinish(finish: GarmentFinish | undefined): Command {
+  return {
+    label: finish ? `Garment wash: ${finish}` : 'No garment wash',
+    recipe: (d) => {
+      if (finish) d.garment.finish = finish;
+      else delete d.garment.finish;
+    },
+  };
 }
 
 export function renameDocument(title: string): Command {

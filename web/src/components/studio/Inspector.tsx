@@ -44,6 +44,7 @@ import {
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { selectionUnits, type AlignMode, type CopyPlan } from '@/domain/arrange';
 import * as cmd from '@/domain/commands';
+import { defaultExtrude } from '@/domain/extrude';
 import { changeCase, isCase, type LetterCase } from '@/domain/letter-case';
 import { LIMITS } from '@/domain/limits';
 import { isPlacement, placementsOf } from '@/domain/lockups';
@@ -67,8 +68,10 @@ import {
   type ShapeContent,
   type TextContent,
   type TextPath,
+  type TextWarp,
 } from '@/domain/schema';
 import { AssetError, getLoadedImage, importImageFile, loadAssetImage } from '@/lib/assets';
+import { pairingsFor } from '@/lib/font-pairing';
 import { ARTWORK_FONTS, fontWeights, loadFontStylesheets } from '@/lib/fonts';
 import { alphaBounds, extractPalette, removeBackground, type PaletteColour } from '@/lib/image-ops';
 import { canvasToBlob } from '@/lib/download';
@@ -76,10 +79,11 @@ import { croppedTransform, FULL_CROP, recroppedTransform, type CropRect } from '
 import { getAsset } from '@/lib/local-db';
 import { usePreference } from '@/lib/preferences';
 import { keepLetterSize, keepPathInPlace, reversePath } from '@/lib/path-text';
-import { DEFAULT_REPEAT, effectiveDistress, isCurved, isNeutralAdjust, isOnPath, isWarped, NEUTRAL_ADJUST, pathTrack, textAspect } from '@/lib/render/zone-renderer';
+import { DEFAULT_REPEAT, effectiveDistress, isCurved, isNeutralAdjust, isOnPath, isWarped, isWaved, NEUTRAL_ADJUST, pathTrack, textAspect } from '@/lib/render/zone-renderer';
 import { ColorField, NumberField, toast } from '@/components/ui/primitives';
 import { useActiveArtboard, useActiveZoneSpec, useStudio } from '@/stores/studio-store';
 import {
+  addPairedLine,
   alignSelection,
   clipSelection,
   combineSelection,
@@ -94,6 +98,7 @@ import {
   finishLockupEdit,
   groupSelection,
   makeLockupFromSelection,
+  outlineStroke,
   placementsFor,
   placeSelection,
   putTextOnShape,
@@ -101,6 +106,7 @@ import {
   repeatSelection,
   saveLockupToKit,
   startTextOnPath,
+  svgToShapes,
   ungroupSelection,
   type CombineOp,
 } from './actions';
@@ -231,12 +237,13 @@ const TEXT_STYLES: { id: string; label: string; font: string; apply: (c: TextCon
       return { fontFamily: 'Graduate', fontAssetId: undefined, fontWeight: 400, italic: false, letterSpacingEm: 0.04, strokeColor: dark ? '#FFFFFF' : '#111111', strokeWidthMm: 1.4, shadow: { color: dark ? '#C8102E' : '#0B1F4B', offsetXmm: 1.6, offsetYmm: 1.6, blurMm: 0 } };
     },
   },
-  { id: 'arch', label: 'College arch', font: 'Graduate', apply: (_, multi) => ({ fontFamily: 'Graduate', fontAssetId: undefined, fontWeight: 400, italic: false, letterSpacingEm: 0.06, curveDeg: multi ? 0 : 38, wave: undefined }) },
+  { id: 'arch', label: 'College arch', font: 'Graduate', apply: (_, multi) => ({ fontFamily: 'Graduate', fontAssetId: undefined, fontWeight: 400, italic: false, letterSpacingEm: 0.06, curveDeg: multi ? 0 : 38, wave: undefined, warp: undefined }) },
   { id: 'athletic', label: 'Athletic', font: 'Bebas Neue', apply: () => ({ fontFamily: 'Bebas Neue', fontAssetId: undefined, fontWeight: 400, italic: false, letterSpacingEm: 0.08, strokeWidthMm: 0, shadow: undefined }) },
   { id: 'retro', label: 'Retro', font: 'Shrikhand', apply: () => ({ fontFamily: 'Shrikhand', fontAssetId: undefined, fontWeight: 400, italic: false, letterSpacingEm: 0, strokeWidthMm: 0, shadow: { color: '#E85D04', offsetXmm: 1.8, offsetYmm: 1.8, blurMm: 0 } }) },
   { id: 'script', label: 'Script', font: 'Pacifico', apply: () => ({ fontFamily: 'Pacifico', fontAssetId: undefined, fontWeight: 400, italic: false, letterSpacingEm: 0, strokeWidthMm: 0, shadow: undefined }) },
   { id: 'stencil', label: 'Stencil', font: 'Black Ops One', apply: () => ({ fontFamily: 'Black Ops One', fontAssetId: undefined, fontWeight: 400, italic: false, letterSpacingEm: 0.03, strokeWidthMm: 0, shadow: undefined }) },
-  { id: 'wave', label: 'Wave', font: 'Rubik Mono One', apply: (_, multi) => ({ fontFamily: 'Rubik Mono One', fontAssetId: undefined, fontWeight: 400, italic: false, letterSpacingEm: 0, curveDeg: 0, wave: multi ? undefined : 45 }) },
+  { id: 'wave', label: 'Wave', font: 'Rubik Mono One', apply: (_, multi) => ({ fontFamily: 'Rubik Mono One', fontAssetId: undefined, fontWeight: 400, italic: false, letterSpacingEm: 0, curveDeg: 0, wave: multi ? undefined : 45, warp: undefined }) },
+  { id: 'bulge', label: 'Bulge', font: 'Anton', apply: (_, multi) => ({ fontFamily: 'Anton', fontAssetId: undefined, fontWeight: 400, italic: false, letterSpacingEm: 0.02, curveDeg: 0, wave: undefined, warp: multi ? undefined : { kind: 'bulge', amount: 45 } }) },
   { id: 'dojang', label: '태권도', font: 'Black Han Sans', apply: () => ({ fontFamily: 'Black Han Sans', fontAssetId: undefined, fontWeight: 400, italic: false, letterSpacingEm: 0.02, strokeWidthMm: 0, shadow: undefined }) },
   { id: 'khmer', label: 'ខ្មែរ', font: 'Moul', apply: () => ({ fontFamily: 'Moul', fontAssetId: undefined, fontWeight: 400, italic: false, letterSpacingEm: 0, strokeWidthMm: 0, shadow: undefined }) },
 ];
@@ -266,6 +273,43 @@ function TextStyles({ content, onApply }: { content: TextContent; onApply: (patc
     </div>
   );
 }
+
+/** Fonts that pair with this text's font: one tap adds a matching second line under it. */
+function FontPairings({ family, locked, onPick }: { family: string; locked: boolean; onPick: (family: string) => void }) {
+  const pairs = useMemo(() => pairingsFor(family), [family]);
+  useEffect(() => {
+    void loadFontStylesheets(pairs.map((p) => p.family));
+  }, [pairs]);
+  if (!pairs.length) return null;
+  return (
+    <div>
+      <span className="label">Pairs well with</span>
+      <div className="mt-1 flex flex-wrap gap-1" role="group" aria-label="Fonts that pair with this one">
+        {pairs.map((p) => (
+          <button
+            key={p.family}
+            disabled={locked}
+            className="rounded-lg border border-line px-2.5 py-1 text-[13px] leading-5 hover:border-line-strong hover:bg-hover disabled:opacity-50"
+            style={{ fontFamily: `"${p.family}", var(--font-sans)` }}
+            title={`Add a line under this one in ${p.family}: ${p.why}`}
+            aria-label={`Add a line in ${p.family}: ${p.why}`}
+            onClick={() => onPick(p.family)}
+          >
+            {p.family}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Envelope warps for straight text: none, or a shape the letters stretch to. */
+const WARPS: { id: TextWarp | 'none'; label: string; title: string }[] = [
+  { id: 'none', label: 'None', title: 'No warp' },
+  { id: 'bulge', label: 'Bulge', title: 'Letters taller toward the middle (a negative amount pinches them)' },
+  { id: 'arch', label: 'Arch', title: 'The top edge arched over a straight baseline (negative dips it)' },
+  { id: 'perspective', label: 'Perspective', title: 'Letters growing from one end to the other (negative grows toward the start)' },
+];
 
 const CASES: { id: LetterCase; label: string; sample: string }[] = [
   { id: 'upper', label: 'Capitals', sample: 'AB' },
@@ -389,9 +433,9 @@ function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextCon
       patch = { ...patch, onPath: keepLetterSize(content, next) };
       next = { ...content, ...patch };
     }
-    const affectsShape = ['value', 'fontFamily', 'fontWeight', 'italic', 'letterSpacingEm', 'lineHeight', 'curveDeg', 'wave', 'fontAssetId', 'onPath'].some((key) => key in patch);
+    const affectsShape = ['value', 'fontFamily', 'fontWeight', 'italic', 'letterSpacingEm', 'lineHeight', 'curveDeg', 'wave', 'warp', 'fontAssetId', 'onPath'].some((key) => key in patch);
     const aspect = textAspect(next);
-    const pathChange = 'curveDeg' in patch || 'wave' in patch || isWarped(next) !== isWarped(content);
+    const pathChange = 'curveDeg' in patch || 'wave' in patch || 'warp' in patch || isWarped(next) !== isWarped(content);
     const transform = !affectsShape
       ? undefined
       : isOnPath(content) && isOnPath(next)
@@ -439,6 +483,7 @@ function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextCon
         brandFonts={brandFonts}
         onChange={(f) => update({ fontFamily: f.family, fontAssetId: f.fontAssetId, fontWeight: nearestOf(f.weights, content.fontWeight) }, 'Change font')}
       />
+      <FontPairings family={content.fontAssetId ? '' : content.fontFamily} locked={layer.locked} onPick={(family) => void addPairedLine(layer.id, family)} />
       <label className="grid grid-cols-[52px_1fr] items-center gap-2">
         <span className="label">Weight</span>
         <div className="flex gap-2">
@@ -491,7 +536,7 @@ function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextCon
                 step={5}
                 disabled={multiline}
                 value={multiline ? 0 : content.curveDeg}
-                onChange={(e) => update({ curveDeg: Number(e.target.value) }, 'Curve text', 'curve')}
+                onChange={(e) => update({ curveDeg: Number(e.target.value), ...(content.warp ? { warp: undefined } : {}) }, 'Curve text', 'curve')}
                 className="min-w-0 flex-1 accent-[var(--accent)]"
                 aria-valuetext={`${content.curveDeg} degrees`}
               />
@@ -506,12 +551,45 @@ function TextSection({ layer, content }: { layer: ArtworkLayer; content: TextCon
             step={5}
             format={(v) => `${v}%`}
             disabled={multiline || isCurved(content)}
-            onChange={(v) => update({ wave: v || undefined }, 'Wave text', 'wave')}
+            onChange={(v) => update({ wave: v || undefined, ...(content.warp ? { warp: undefined } : {}) }, 'Wave text', 'wave')}
           />
+          <div className="grid grid-cols-[52px_1fr] items-center gap-2">
+            <span className="label">Warp</span>
+            <div className="seg w-fit" role="group" aria-label="Warp">
+              {WARPS.map((w) => (
+                <button
+                  key={w.id}
+                  disabled={multiline}
+                  aria-pressed={w.id === 'none' ? !content.warp : content.warp?.kind === w.id}
+                  title={w.title}
+                  onClick={() =>
+                    w.id === 'none'
+                      ? content.warp && update({ warp: undefined }, 'Remove warp')
+                      : update({ warp: { kind: w.id, amount: content.warp?.amount ?? 40 }, curveDeg: 0, wave: undefined }, `Warp: ${w.label.toLowerCase()}`)
+                  }
+                >
+                  {w.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {content.warp && !multiline ? (
+            <RangeField
+              label="Amount"
+              value={content.warp.amount}
+              min={-100}
+              max={100}
+              step={5}
+              format={(v) => `${v}%`}
+              onChange={(amount) => update({ warp: { ...content.warp!, amount } }, 'Warp amount', 'warp')}
+            />
+          ) : null}
           {multiline ? (
-            <p className="text-xs text-fg-3">Curve, wave and paths work on single-line text.</p>
+            <p className="text-xs text-fg-3">Curve, wave, warp and paths work on single-line text.</p>
           ) : isCurved(content) ? (
-            <p className="text-xs text-fg-3">Set the curve to 0° to use a wave.</p>
+            <p className="text-xs text-fg-3">Set the curve to 0° to use a wave, or pick a warp.</p>
+          ) : content.warp && isWaved(content) ? (
+            <p className="text-xs text-fg-3">The wave is on: set it to 0% to see the warp.</p>
           ) : onGarment ? null : (
             <button className="btn btn-ghost min-h-8 w-full justify-start px-2 text-xs" onClick={() => startTextOnPath(layer.id)} disabled={layer.locked} title="Draw a line with the pen and this text runs along it">
               <Spline size={14} /> Put text along a line you draw
@@ -589,7 +667,19 @@ function ShapeSection({ layer, content }: { layer: ArtworkLayer; content: ShapeC
         </button>
       )}
       <OutlineOnly hollow={!!content.hollow} width={content.strokeWidthMm} onChange={(patch, label) => update(patch, label)} />
-      {content.hollow ? null : (
+      {content.hollow ? (
+        <>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]" checked={!!content.roundCaps} onChange={(e) => update({ roundCaps: e.target.checked || undefined }, e.target.checked ? 'Round line ends' : 'Square line ends')} />
+            Round line ends
+          </label>
+          {onGarment ? null : (
+            <button className="btn btn-outline w-full text-xs" onClick={() => void outlineStroke()} disabled={layer.locked} title="The line becomes a filled shape that looks the same, as cutters and some print shops want">
+              <SquaresUnite size={14} /> Outline stroke
+            </button>
+          )}
+        </>
+      ) : (
         <>
           <ColorField label="Outline" value={content.strokeColor ?? '#000000'} onChange={(strokeColor) => update({ strokeColor, strokeWidthMm: content.strokeWidthMm || 1 }, 'Outline colour')} swatches={kit?.colors} />
           <NumberField label="Outline" suffix="mm" decimals={1} step={0.5} min={0} max={50} value={content.strokeWidthMm ?? 0} onCommit={(v) => update({ strokeWidthMm: v, strokeColor: content.strokeColor ?? '#000000' }, 'Outline width')} />
@@ -863,6 +953,11 @@ function ImageSection({ layer }: { layer: ArtworkLayer }) {
         ) : null}
         <BackgroundRemoval layer={layer} />
         <TrimEdges layer={layer} />
+        {c.mime === 'image/svg+xml' ? (
+          <button className="btn btn-outline w-full text-xs" onClick={() => void svgToShapes()} disabled={layer.locked} title="The SVG’s own shapes as layers you can recolour, reshape point by point and combine">
+            <Spline size={14} /> Make editable shapes
+          </button>
+        ) : null}
         <TraceToShapes key={layer.id} layer={layer} />
         <ImagePalette content={c} />
       </Section>
@@ -1119,13 +1214,13 @@ const HALFTONE_SHAPES: { id: LayerHalftone['shape']; label: string }[] = [
 
 /**
  * Effects any layer can have, all of them printed: a drop shadow or glow, a sticker outline round
- * its shape, and a halftone screen. Text keeps its own shadow under Fill and effects.
+ * its shape, a halftone screen and a 3D extrusion. Text keeps its own shadow under Fill and effects.
  */
 function EffectsSection({ layer }: { layer: ArtworkLayer }) {
   const edit = useLayerEdit();
   const dispatch = useStudio((s) => s.dispatch);
   const kit = useBrandKit();
-  const { shadow, outline, halftone: ht } = layer.style;
+  const { shadow, outline, halftone: ht, extrude: ex } = layer.style;
   const c = layer.content;
   const ink = c.kind === 'text' || c.kind === 'shape' ? c.fill : '#FFFFFF';
   const set = (style: Partial<LayerStyle>, label: string, gesture?: string) => {
@@ -1227,6 +1322,27 @@ function EffectsSection({ layer }: { layer: ArtworkLayer }) {
           </label>
           {ht.color ? <ColorField label="Ink" value={ht.color} onChange={(color) => set({ halftone: { ...ht, color } }, 'Halftone ink')} swatches={kit?.colors} /> : null}
           <p className="text-[11px] text-fg-3">About {Math.round(25.4 / ht.cellMm)} lines per inch. Screens hold dots from about 0.5 mm; big cells give a bold pop-art look.</p>
+        </>
+      ) : null}
+      <label className="flex items-center gap-2 pt-1 text-sm">
+        <input
+          type="checkbox"
+          className="h-4 w-4 accent-[var(--accent)]"
+          checked={!!ex}
+          onChange={(e) => set({ extrude: e.target.checked ? defaultExtrude(layer) : undefined }, e.target.checked ? '3D extrude' : 'Remove 3D extrude')}
+        />
+        3D extrude
+      </label>
+      {ex ? (
+        <>
+          <ColorField label="Sides" value={ex.color} onChange={(color) => set({ extrude: { ...ex, color } }, 'Extrude colour')} swatches={kit?.colors} />
+          <RangeField label="Depth" value={ex.depthMm} min={0.5} max={20} step={0.5} format={(v) => `${v} mm`} onChange={(depthMm) => set({ extrude: { ...ex, depthMm } }, 'Extrude depth', 'fx-ex-depth')} />
+          <RangeField label="Angle" value={ex.angleDeg} min={-180} max={180} step={5} format={(v) => `${v}°`} onChange={(angleDeg) => set({ extrude: { ...ex, angleDeg } }, 'Extrude angle', 'fx-ex-angle')} />
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" className="h-4 w-4 accent-[var(--accent)]" checked={!!ex.shade} onChange={(e) => set({ extrude: e.target.checked ? { ...ex, shade: true } : withoutKey(ex, 'shade') }, e.target.checked ? 'Shade the extrusion' : 'Flat extrusion')} />
+            Darker toward the back
+          </label>
+          <p className="text-[11px] text-fg-3">A solid block behind the artwork, as in retro 3D lettering. It prints: each colour of it is an ink.</p>
         </>
       ) : null}
     </Section>

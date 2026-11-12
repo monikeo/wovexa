@@ -16,6 +16,7 @@ import {
   AlignVerticalDistributeCenter,
   Box,
   BringToFront,
+  Brush,
   Camera,
   Check,
   Circle,
@@ -104,6 +105,7 @@ import { selectionUnits, type AlignMode } from '@/domain/arrange';
 import { artboardOf, artboardSpec, designAreas } from '@/domain/areas';
 import { searchCommands, type Searchable } from '@/domain/command-search';
 import * as cmd from '@/domain/commands';
+import { defaultExtrude } from '@/domain/extrude';
 import { GARMENT_LIST, getGarment, partColor, sizeLabel } from '@/domain/garments';
 import { GRAPHICS } from '@/domain/graphics';
 import { lockupsOf } from '@/domain/lockups';
@@ -151,7 +153,10 @@ import {
   rotateSelection,
   setSelectionFlag,
   shadowSelection,
+  startFreehand,
   startPen,
+  outlineStroke,
+  svgToShapes,
   startTextOnPath,
   styleSelection,
   switchArtboard,
@@ -352,6 +357,9 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
             { id: 'img-crop', label: 'Crop image', keywords: 'trim cut photo picture aspect square portrait', icon: Crop, run: () => openCrop('crop') },
             { id: 'img-frame', label: 'Move photo in frame', keywords: 'reframe pan zoom mask shape circle badge position inside', icon: Move, run: () => openCrop('frame') },
             ...(!layers[0].locked ? [{ id: 'img-trace', label: 'Trace image to vector shapes', keywords: 'vectorize vectorise trace convert svg logo shapes paths redraw colours outline', icon: Shapes, run: openTrace }] : []),
+            ...(!layers[0].locked && layers[0].content.kind === 'image' && layers[0].content.mime === 'image/svg+xml'
+              ? [{ id: 'img-svg-shapes', label: 'Make the SVG editable shapes', keywords: 'svg vector import paths edit points recolour ungroup expand illustrator', icon: Spline, run: () => void svgToShapes() }]
+              : []),
           ]
         : []),
       { id: 'sel-flip-x', label: 'Flip horizontally', keywords: 'mirror reverse left right', icon: FlipHorizontal2, run: () => flipSelection('x') },
@@ -387,6 +395,7 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
         searchOnly: true,
         run: () => styleSelection({ halftone: { cellMm: 1.5, angleDeg: 45, shape: 'dot', by: layers[0].content.kind === 'image' ? 'tone' : 'fade' } }, 'Halftone'),
       },
+      { id: 'fx-extrude', label: '3D extrude', keywords: 'effect extrusion depth block retro 3d text letters solid', icon: Box, searchOnly: true, run: () => styleSelection({ extrude: defaultExtrude(layers[0]) }, '3D extrude') },
       ...(layers.some((l) => l.content.kind === 'text' || l.content.kind === 'shape')
         ? [
             layers.every((l) => (l.content.kind !== 'text' && l.content.kind !== 'shape') || l.content.hollow)
@@ -394,8 +403,11 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
               : { id: 'fx-hollow', label: 'Outline only', keywords: 'hollow lines stroke no fill', icon: CircleDashed, searchOnly: true, run: () => outlineOnlySelection(true) },
           ]
         : []),
-      ...(layers.some((l) => l.style.shadow || l.style.outline || l.style.halftone || (l.content.kind === 'text' && l.content.shadow))
-        ? [{ id: 'fx-clear', label: 'Remove effects', keywords: 'clear plain shadow glow outline halftone', icon: Eraser, searchOnly: true, run: clearEffects }]
+      ...(layers.some((l) => l.content.kind === 'shape' && l.content.hollow)
+        ? [{ id: 'outline-stroke', label: 'Outline stroke', keywords: 'expand stroke line into shape fill convert pencil cutter', icon: SquaresUnite, searchOnly: true, run: () => void outlineStroke() }]
+        : []),
+      ...(layers.some((l) => l.style.shadow || l.style.outline || l.style.halftone || l.style.extrude || (l.content.kind === 'text' && l.content.shadow))
+        ? [{ id: 'fx-clear', label: 'Remove effects', keywords: 'clear plain shadow glow outline halftone extrude 3d', icon: Eraser, searchOnly: true, run: clearEffects }]
         : []),
       // Step and repeat.
       ...(layers.length === 1
@@ -466,6 +478,8 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
     { id: 'add-image', label: 'Add an image', keywords: 'photo picture upload logo file png jpg svg webp', icon: ImageIcon, run: c.pickImage },
     ...SHAPES.map((x) => ({ id: `shape:${x.shape}`, label: `Add ${x.label.toLowerCase()}`, keywords: `shape ${x.keywords}`, icon: x.icon, run: () => addShape(x.shape) })),
     { id: 'add-pen', label: 'Draw your own shape', keywords: 'pen path vector bezier custom freeform outline', icon: PenTool, keys: 'P', run: startPen },
+    { id: 'add-pencil', label: 'Pencil: draw freehand', keywords: 'freehand sketch line hand drawn scribble draw', icon: Pencil, keys: 'N', run: () => startFreehand('pencil') },
+    { id: 'add-brush', label: 'Brush: paint strokes', keywords: 'freehand paint ink marker calligraphy stroke stylus pressure', icon: Brush, keys: 'B', run: () => startFreehand('brush') },
     { id: 'add-text-path', label: 'Add text on a path', keywords: 'type along line curve arc follow drawn path pen words', icon: Spline, run: () => startTextOnPath() },
     { id: 'add-area', label: 'Add a design area', keywords: 'new zone box anywhere hood panel seam artboard print area', icon: SquareDashed, run: addDesignArea },
     ...(c.copied ? [{ id: 'paste', label: `Paste ${plural(c.copied, 'layer')}`, keywords: 'clipboard', icon: ClipboardPaste, keys: 'Mod+V', run: () => void pasteLayers() }] : []),

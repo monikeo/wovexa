@@ -71,9 +71,12 @@ async function tracedRegion(layer: ArtworkLayer): Promise<MultiPolygon> {
   return evenOdd(rings);
 }
 
-/** The area a layer prints on the artboard: exact for shapes, traced for text and images. */
+/**
+ * The area a layer prints on the artboard: exact for filled shapes; traced for text, images and
+ * outline-only shapes (a ring or a pencil line prints its line, not the area inside it).
+ */
 export async function layerRegion(layer: ArtworkLayer): Promise<MultiPolygon> {
-  return layer.content.kind === 'shape' ? shapeRegion(layer) : tracedRegion(layer);
+  return layer.content.kind === 'shape' && !layer.content.hollow ? shapeRegion(layer) : tracedRegion(layer);
 }
 
 /** Areas combined: `regions` bottom first, as the layers stack. */

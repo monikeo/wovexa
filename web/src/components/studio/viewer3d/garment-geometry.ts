@@ -10,7 +10,8 @@
  * Frame: +y up, +z toward the viewer (garment front), wearer's left at +x. Torso hem at y = 0.
  */
 import * as THREE from 'three';
-import type { FabricSurface, GarmentModel, GarmentSize, PartId } from '@/domain/garments';
+import type { FabricPreset, FabricSurface, GarmentModel, GarmentSize, PartId } from '@/domain/garments';
+import type { GarmentFinish } from '@/domain/schema';
 
 /** Arc-length table for an ellipse x = a·cosθ, z = −b·sinθ, so equal steps are equal distances. */
 function arcTable(a: number, b: number, samples = 1024) {
@@ -1059,3 +1060,33 @@ export const FABRIC_LOOK: Record<FabricSurface | 'plastic', { normal: number; ro
   diamond: { normal: 0.4, roughness: 0.88, sheen: 0.3, tileMm: 6 },
   plastic: { normal: 0, roughness: 0.35, sheen: 0, tileMm: 10 },
 };
+
+/**
+ * How a garment's fabric reads under light for what it is: its knit's look, smoother and less
+ * fuzzy when spun from polyester (a poly-cotton blend between), a deeper knit for heavyweight
+ * cotton, and softer and more matte once washed (vintage more so).
+ */
+export function fabricLook(preset: Pick<FabricPreset, 'surface' | 'gsm' | 'fibre'>, finish?: GarmentFinish): (typeof FABRIC_LOOK)[FabricSurface] {
+  let { normal, roughness, sheen, tileMm } = FABRIC_LOOK[preset.surface];
+  if (preset.fibre === 'polyester') {
+    roughness *= 0.72;
+    sheen *= 0.45;
+    normal *= 0.85;
+  } else if (preset.fibre === 'blend') {
+    roughness *= 0.88;
+    sheen *= 0.8;
+  } else if (preset.gsm >= 240 && preset.surface !== 'fleece') {
+    normal *= 1.2;
+    tileMm *= 1.15;
+  }
+  if (finish === 'washed') {
+    roughness = Math.min(1, roughness + 0.03);
+    sheen *= 1.15;
+    normal *= 0.9;
+  } else if (finish === 'vintage') {
+    roughness = Math.min(1, roughness + 0.05);
+    sheen *= 1.25;
+    normal *= 0.85;
+  }
+  return { normal, roughness, sheen, tileMm };
+}

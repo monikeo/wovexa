@@ -31,12 +31,28 @@ async function sha256(blob: Blob) {
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** A link to something in the same SVG by its id: a reused symbol, a gradient taking another's stops. */
+const INTERNAL_REF = /^#[A-Za-z_][\w.:-]*$/;
+
 function sanitizeSvg(source: string): string {
-  const clean = DOMPurify.sanitize(source, {
-    USE_PROFILES: { svg: true, svgFilters: true },
-    FORBID_TAGS: ['foreignObject', 'script', 'iframe', 'image'],
-    FORBID_ATTR: ['xlink:href', 'href'],
-  });
+  // Links go, except to something in the same file, which can't reach out of it: without them a
+  // reused symbol vanishes, and a gradient built on another (as Inkscape writes them) loses its colours.
+  const keepInternal = (_node: Element, data: { attrName: string; attrValue: string; forceKeepAttr?: boolean }) => {
+    if ((data.attrName === 'href' || data.attrName === 'xlink:href') && INTERNAL_REF.test(data.attrValue.trim())) data.forceKeepAttr = true;
+  };
+  DOMPurify.addHook('uponSanitizeAttribute', keepInternal);
+  let clean: string;
+  try {
+    clean = DOMPurify.sanitize(source, {
+      USE_PROFILES: { svg: true, svgFilters: true },
+      // <use> is safe once it can only point inside the file (the hook above): any other link is gone.
+      ADD_TAGS: ['use'],
+      FORBID_TAGS: ['foreignObject', 'script', 'iframe', 'image'],
+      FORBID_ATTR: ['xlink:href', 'href'],
+    });
+  } finally {
+    DOMPurify.removeHook('uponSanitizeAttribute', keepInternal);
+  }
   if (!clean.includes('<svg')) throw new AssetError('This SVG has no drawable content after removing unsafe parts.');
   return clean;
 }

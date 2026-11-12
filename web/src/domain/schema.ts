@@ -18,7 +18,8 @@
  *      (over the shoulder, round the side seams), printed by sublimation or cut-and-sew.
  *      Upgrading adds an empty list. Optional, additive fields within version 4: design areas
  *      (print areas the person places anywhere on the 3D garment), 3D shapes from the app's
- *      model library, text on a path and reusable lockups (with their placements as layers).
+ *      model library, text on a path and reusable lockups (with their placements as layers),
+ *      envelope warps for text, extruded (3D) artwork, and a fabric finish (washed, vintage).
  */
 import { z } from 'zod';
 
@@ -70,6 +71,12 @@ export const layerStyleSchema = z.object({
   /** A band of ink around the layer's silhouette: the sticker or die-cut border, or a second outline round text. */
   outline: z.object({ color: hex, widthMm: finite.min(0.2).max(30) }).optional(),
   /**
+   * Extruded into a solid block behind the artwork, as 3D lettering: its silhouette carried
+   * `depthMm` deep toward `angleDeg` (0 to the right, 90 straight down), in `color`, darkening
+   * toward the back with `shade`. It prints as part of the artwork.
+   */
+  extrude: z.object({ color: hex, depthMm: finite.min(0.2).max(40), angleDeg: finite.min(-180).max(180), shade: z.boolean().optional() }).optional(),
+  /**
    * Printed as a halftone screen: dots, squares or lines on a grid at an angle, each sized by the
    * artwork's tone (photos) or by its opacity (fades). One ink colour, or each dot in its own colour.
    */
@@ -86,6 +93,7 @@ export const layerStyleSchema = z.object({
 export type LayerStyle = z.infer<typeof layerStyleSchema>;
 export type LayerShadow = NonNullable<LayerStyle['shadow']>;
 export type LayerHalftone = NonNullable<LayerStyle['halftone']>;
+export type LayerExtrude = NonNullable<LayerStyle['extrude']>;
 
 export const PATTERNS = ['stripes', 'dots', 'checks', 'grid', 'zigzag', 'waves', 'diamonds', 'camo'] as const;
 
@@ -187,6 +195,11 @@ export const imageContentSchema = z.object({
 });
 export type ImageCrop = NonNullable<z.infer<typeof imageContentSchema>['crop']>;
 
+export const TEXT_WARPS = ['bulge', 'arch', 'perspective'] as const;
+export const GARMENT_FINISHES = ['washed', 'vintage'] as const;
+export type GarmentFinish = (typeof GARMENT_FINISHES)[number];
+export type TextWarp = (typeof TEXT_WARPS)[number];
+
 export const textContentSchema = z.object({
   kind: z.literal('text'),
   value: z.string().max(500),
@@ -203,6 +216,13 @@ export const textContentSchema = z.object({
   strokeWidthMm: finite.min(0).max(20).optional(),
   /** Wave warp height as a percentage of the letter height (straight single-line text). */
   wave: finite.min(-100).max(100).optional(),
+  /**
+   * An envelope warp for straight single-line text (a curve, wave or path takes precedence): letters
+   * taller toward the middle (bulge; a negative amount pinches them), the top edge arched over a
+   * straight baseline (arch; negative dips it), or growing from one end to the other (perspective;
+   * negative grows toward the start). Amount −100 to 100.
+   */
+  warp: z.object({ kind: z.enum(TEXT_WARPS), amount: finite.min(-100).max(100) }).optional(),
   shadow: z.object({ color: hex, offsetXmm: finite.min(-50).max(50), offsetYmm: finite.min(-50).max(50), blurMm: finite.min(0).max(30) }).optional(),
   fillStyle: fillStyleSchema.optional(),
   /** A font uploaded to this device's font library (spec AST-07), when not a built-in family. */
@@ -254,6 +274,8 @@ export const shapeContentSchema = z.object({
   graphicId: z.string().max(40).optional(),
   /** Outline only: rings, frames and line art (the outline colour and width, else the fill colour at 1 mm), no fill. */
   hollow: z.boolean().optional(),
+  /** Round ends (and joins) on an outline-only line, as a pencil stroke draws; square cut without. */
+  roundCaps: z.boolean().optional(),
 });
 
 /** What a layer inside a lockup can be: anything but another lockup. */
@@ -542,6 +564,12 @@ export const designDocumentSchema = z.object({
      * that size's garment differs (see domain/grading). Absent: one artwork size for every size.
      */
     grading: z.object({ baseSize: z.string().min(1).max(8) }).optional(),
+    /**
+     * How the finished garment has been treated: garment-washed (softened, the dye a little faded and
+     * uneven) or vintage (washed many times: faded more toward seams and edges, the print worn).
+     * Absent: new from the mill.
+     */
+    finish: z.enum(GARMENT_FINISHES).optional(),
   }),
   activeColorwayId: id,
   colorways: z.array(colorwaySchema).min(1).max(24),

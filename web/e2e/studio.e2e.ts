@@ -218,6 +218,61 @@ test('reopens a project with the work another tab saved since, never its own old
   await expect.poll(async () => (await frontLayers(page)).map((l) => (l.content.kind === 'text' ? l.content.value : l.content.kind))).toEqual(['FIRST', 'SECOND', 'THIRD']);
 });
 
+test('draws freehand with the pencil and the brush, each stroke a layer of its own', async ({ page }) => {
+  const stroke = async (tool: 'Pencil' | 'Brush') => {
+    const pad = page.locator(`svg[role="application"][aria-label^="${tool}"]`);
+    await expect(pad).toBeVisible();
+    const box = (await pad.boundingBox())!;
+    const x = box.x + box.width * 0.3;
+    const y = box.y + box.height * (tool === 'Pencil' ? 0.55 : 0.75);
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    for (let i = 1; i <= 30; i++) await page.mouse.move(x + i * 6, y + Math.sin(i / 4) * 20);
+    await page.mouse.up();
+  };
+  await page.getByRole('button', { name: 'Pencil: draw freehand lines' }).click();
+  await stroke('Pencil');
+  await expect.poll(async () => (await frontLayers(page)).map((l) => (l.content.kind === 'shape' ? [l.name, !!l.content.hollow, !!l.content.roundCaps] : l.content.kind))).toEqual([['Pencil line', true, true]]);
+  // The tool stays on; switch to the brush there. A marker stroke is a filled shape.
+  await page.getByRole('group', { name: 'Drawing tool' }).getByRole('button', { name: 'Brush' }).click();
+  await page.locator('select[aria-label="Brush"]').selectOption('marker');
+  await stroke('Brush');
+  await expect.poll(async () => (await frontLayers(page)).map((l) => (l.content.kind === 'shape' ? [l.name, !!l.content.hollow] : l.content.kind))).toEqual([['Pencil line', true], ['Marker brush stroke', false]]);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('svg[role="application"][aria-label^="Brush"]')).toBeHidden();
+});
+
+test('makes an SVG’s own shapes into editable layers, in their colours and places', async ({ page }) => {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100" width="200" height="100"><style>.a{fill:#e30613}</style><rect class="a" x="10" y="10" width="60" height="40"/><symbol id="dot"><circle cx="5" cy="5" r="5" fill="#2b59ff"/></symbol><use href="#dot" x="150" y="10"/><text x="20" y="95">HI</text></svg>`;
+  await page.locator('input[type=file][accept*="svg"]').first().setInputFiles({ name: 'badge.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(svg) });
+  await expect.poll(async () => (await frontLayers(page)).length).toBe(1);
+  await page.getByRole('button', { name: 'Make editable shapes' }).click();
+  await expect.poll(async () => (await frontLayers(page)).map((l) => (l.content.kind === 'shape' ? l.content.fill : `${l.content.kind}:${l.visible}`))).toEqual(['image:false', '#E30613', '#2B59FF']);
+  await expect(page.getByText(/Made 2 editable shape layers from the SVG\. 1 text in it isn’t a shape/)).toBeAttached();
+  // Laid where the image showed them, grouped together.
+  const [, rect, dot] = await frontLayers(page);
+  expect(rect.groupId).toBeDefined();
+  expect(rect.groupId).toBe(dot.groupId);
+  expect(rect.transform.centerXmm).toBeLessThan(dot.transform.centerXmm);
+});
+
+test('warps text into a bulge and extrudes it in 3D from the inspector', async ({ page }) => {
+  await addText(page, 'BULGE');
+  const text = () => frontLayers(page).then((ls) => ls[0]);
+  await page.getByRole('group', { name: 'Warp' }).getByRole('button', { name: 'Bulge' }).click();
+  await expect.poll(async () => (await text()).content).toMatchObject({ warp: { kind: 'bulge', amount: 40 } });
+  await page.getByLabel('3D extrude').check();
+  await expect.poll(async () => (await text()).style.extrude).toMatchObject({ depthMm: 3, angleDeg: 45, shade: true });
+  // None takes the warp off again.
+  await page.getByRole('group', { name: 'Warp' }).getByRole('button', { name: 'None' }).click();
+  await expect
+    .poll(async () => {
+      const c = (await text()).content;
+      return c.kind === 'text' ? (c.warp ?? null) : 'not text';
+    })
+    .toBeNull();
+});
+
 test('traces a logo into colour shapes, keeping the image hidden underneath', async ({ page }) => {
   await dropLogo(page);
   await palette(page, 'trace image to vector shapes');

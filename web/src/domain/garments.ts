@@ -81,6 +81,8 @@ export interface FabricPreset {
   label: string;
   gsm: number;
   surface: FabricSurface;
+  /** What it is spun from, when not cotton: polyester is smoother with a faint shine, a blend between. */
+  fibre?: 'polyester' | 'blend';
 }
 
 export interface ColorwayPreset {
@@ -216,7 +218,7 @@ function sleeveZones(w: number, h: number, center: number): Pick<Record<ZoneId, 
 const TEE_FABRICS: FabricPreset[] = [
   { id: 'jersey-180', label: 'Cotton jersey, 180 gsm', gsm: 180, surface: 'jersey' },
   { id: 'heavy-240', label: 'Heavyweight cotton, 240 gsm', gsm: 240, surface: 'jersey' },
-  { id: 'poly-140', label: 'Performance polyester, 140 gsm', gsm: 140, surface: 'jersey' },
+  { id: 'poly-140', label: 'Performance polyester, 140 gsm', gsm: 140, surface: 'jersey', fibre: 'polyester' },
 ];
 
 const FOUR_ZONES: ZoneId[] = ['front', 'back', 'left_sleeve', 'right_sleeve'];
@@ -306,7 +308,7 @@ export const POLO: GarmentModel = {
   sizes: gradedSizes({ chestFlatMm: 524, bodyLengthMm: 710, sleeveMm: 225 }, ADULT_SHIRTS),
   fabricPresets: [
     { id: 'pique-210', label: 'Cotton piqué, 210 gsm', gsm: 210, surface: 'pique' },
-    { id: 'poly-pique-170', label: 'Performance piqué, 170 gsm', gsm: 170, surface: 'pique' },
+    { id: 'poly-pique-170', label: 'Performance piqué, 170 gsm', gsm: 170, surface: 'pique', fibre: 'polyester' },
   ],
 };
 
@@ -338,7 +340,7 @@ export const TANK: GarmentModel = {
   sizes: gradedSizes({ chestFlatMm: 510, bodyLengthMm: 720 }, [...KIDS_SINGLETS, ...ADULT_SINGLETS], ADULT_SINGLETS[2]),
   fabricPresets: [
     { id: 'jersey-160', label: 'Cotton jersey, 160 gsm', gsm: 160, surface: 'jersey' },
-    { id: 'mesh-130', label: 'Athletic mesh, 130 gsm', gsm: 130, surface: 'mesh' },
+    { id: 'mesh-130', label: 'Athletic mesh, 130 gsm', gsm: 130, surface: 'mesh', fibre: 'polyester' },
   ],
 };
 
@@ -445,8 +447,8 @@ export const BASKETBALL: GarmentModel = {
   ],
   sizes: gradedSizes({ chestFlatMm: 560, bodyLengthMm: 760 }, [...KIDS_SINGLETS, ...ADULT_SINGLETS], ADULT_SINGLETS[2]),
   fabricPresets: [
-    { id: 'mesh-140', label: 'Performance mesh, 140 gsm', gsm: 140, surface: 'mesh' },
-    { id: 'poly-150', label: 'Smooth polyester, 150 gsm', gsm: 150, surface: 'jersey' },
+    { id: 'mesh-140', label: 'Performance mesh, 140 gsm', gsm: 140, surface: 'mesh', fibre: 'polyester' },
+    { id: 'poly-150', label: 'Smooth polyester, 150 gsm', gsm: 150, surface: 'jersey', fibre: 'polyester' },
   ],
 };
 
@@ -480,8 +482,8 @@ export const JERSEY: GarmentModel = {
   ],
   sizes: gradedSizes({ chestFlatMm: 552, bodyLengthMm: 730, sleeveMm: 235 }, [...KIDS_SHIRTS, ...ADULT_SHIRTS]),
   fabricPresets: [
-    { id: 'mesh-140', label: 'Performance mesh, 140 gsm', gsm: 140, surface: 'mesh' },
-    { id: 'poly-150', label: 'Smooth polyester, 150 gsm', gsm: 150, surface: 'jersey' },
+    { id: 'mesh-140', label: 'Performance mesh, 140 gsm', gsm: 140, surface: 'mesh', fibre: 'polyester' },
+    { id: 'poly-150', label: 'Smooth polyester, 150 gsm', gsm: 150, surface: 'jersey', fibre: 'polyester' },
   ],
 };
 
@@ -552,7 +554,7 @@ export const DOBOK: GarmentModel = {
   })),
   defaultSize: '170',
   fabricPresets: [
-    { id: 'diamond-300', label: 'Poly-cotton, diamond weave, 300 gsm', gsm: 300, surface: 'diamond' },
+    { id: 'diamond-300', label: 'Poly-cotton, diamond weave, 300 gsm', gsm: 300, surface: 'diamond', fibre: 'blend' },
     { id: 'rib-260', label: 'Ribbed weave, 260 gsm', gsm: 260, surface: 'rib' },
     { id: 'light-220', label: 'Lightweight cotton, 220 gsm', gsm: 220, surface: 'jersey' },
   ],

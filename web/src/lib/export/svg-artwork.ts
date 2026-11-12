@@ -125,9 +125,11 @@ function textSvg(c: TextContent, w: number, h: number, defs: Defs): string {
   const parts: string[] = [];
   if (m.glyphs) {
     m.glyphs.forEach((g, i) => {
-      // Gradients and patterns stay anchored to the layer, not to each turned letter.
-      const fill = inks ? esc(inks[0][i] ?? c.fill) : c.fillStyle ? defs.paint(c.fill, c.fillStyle, w, h, new DOMMatrix().rotate((-g.rot * 180) / Math.PI).translate(-g.x, -g.y).multiply(toText)) : esc(c.fill);
-      parts.push(`<text transform="translate(${n(g.x)} ${n(g.y)}) rotate(${n((g.rot * 180) / Math.PI)})" text-anchor="middle" dominant-baseline="central" ${ink(fill)}>${esc(g.g)}</text>`);
+      const gsy = g.sy ?? 1;
+      // Gradients and patterns stay anchored to the layer, not to each turned (or stretched) letter.
+      const fill = inks ? esc(inks[0][i] ?? c.fill) : c.fillStyle ? defs.paint(c.fill, c.fillStyle, w, h, new DOMMatrix().scale(1, 1 / gsy).rotate((-g.rot * 180) / Math.PI).translate(-g.x, -g.y).multiply(toText)) : esc(c.fill);
+      const stretch = gsy !== 1 ? ` scale(1 ${n(gsy)})` : '';
+      parts.push(`<text transform="translate(${n(g.x)} ${n(g.y)}) rotate(${n((g.rot * 180) / Math.PI)})${stretch}" text-anchor="middle" dominant-baseline="central" ${ink(fill)}>${esc(g.g)}</text>`);
     });
   } else {
     const fill = inks ? esc(c.fill) : defs.paint(c.fill, c.fillStyle, w, h, toText);
@@ -148,7 +150,7 @@ export function shapeSvg(c: ShapeContent, w: number, h: number, defs: Defs): str
   const d = shapePathData(c, w, h);
   if (!d) return '';
   // Outline only: the shape as a line painted with its fill.
-  if (c.hollow) return `<path d="${d}" fill="none" stroke="${defs.paint(c.fill, c.fillStyle, w, h)}" stroke-width="${n(lineWidthMm(c))}" stroke-linejoin="round"/>`;
+  if (c.hollow) return `<path d="${d}" fill="none" stroke="${defs.paint(c.fill, c.fillStyle, w, h)}" stroke-width="${n(lineWidthMm(c))}" stroke-linejoin="round"${c.roundCaps ? ' stroke-linecap="round"' : ''}/>`;
   const stroke = c.strokeColor && c.strokeWidthMm ? ` stroke="${esc(c.strokeColor)}" stroke-width="${n(c.strokeWidthMm)}" stroke-linejoin="round"` : '';
   return `<path d="${d}" fill="${defs.paint(c.fill, c.fillStyle, w, h)}"${c.shape === 'path' ? ' fill-rule="evenodd"' : ''}${stroke}/>`;
 }
@@ -184,11 +186,11 @@ export function isVectorLayer(layer: ArtworkLayer): boolean {
 
 /**
  * Whether a layer's effects can all be written as vector: a sticker outline (a traced path) and a
- * halftone (one shape a dot). Wear, cracks and shadows still need pixels.
+ * halftone (one shape a dot). Wear, cracks, shadows and 3D extrusion still need pixels.
  */
 export function hasVectorEffects(layer: ArtworkLayer): boolean {
   const s = layer.style;
-  return (!!s.outline || !!s.halftone) && !effectiveDistress(layer) && s.finish !== 'cracked' && !layerShadow(layer);
+  return (!!s.outline || !!s.halftone) && !effectiveDistress(layer) && s.finish !== 'cracked' && !layerShadow(layer) && !s.extrude;
 }
 
 /** Finest detail a traced outline keeps, and how far a traced point may stray from the true edge, in mm. */
