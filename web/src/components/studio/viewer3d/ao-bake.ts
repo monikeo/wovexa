@@ -18,6 +18,62 @@ export interface AoTarget {
   inside?: boolean;
   /** Map the raw visibility (0 hidden, 1 open sky) to a shade, so nothing goes fully black. */
   floor: number;
+  /**
+   * Passes of averaging each vertex with its neighbours afterwards. The bake samples a few dozen
+   * directions per vertex, so neighbours can differ by a step; on a large, dim surface (the
+   * inside of the body seen through the neck) those steps read as facets.
+   */
+  smooth?: number;
+}
+
+/**
+ * Average each vertex's value with its mesh neighbours, `passes` times, in place. Vertices that
+ * share no triangle are left alone, so separate panels stay separate.
+ */
+export function smoothVertexValues(values: Float32Array, index: ArrayLike<number> | null, passes: number) {
+  if (!index || passes <= 0) return values;
+  const n = values.length;
+  // Neighbour lists as offsets into one array (compressed sparse rows).
+  const degree = new Uint32Array(n + 1);
+  for (let t = 0; t + 2 < index.length; t += 3) {
+    degree[index[t]] += 2;
+    degree[index[t + 1]] += 2;
+    degree[index[t + 2]] += 2;
+  }
+  const start = new Uint32Array(n + 1);
+  for (let i = 0; i < n; i++) start[i + 1] = start[i] + degree[i];
+  const fill = start.slice(0, n);
+  const near = new Uint32Array(start[n]);
+  for (let t = 0; t + 2 < index.length; t += 3) {
+    const a = index[t];
+    const b = index[t + 1];
+    const c = index[t + 2];
+    near[fill[a]++] = b;
+    near[fill[a]++] = c;
+    near[fill[b]++] = a;
+    near[fill[b]++] = c;
+    near[fill[c]++] = a;
+    near[fill[c]++] = b;
+  }
+  let from: Float32Array = values;
+  let to: Float32Array = new Float32Array(n);
+  for (let p = 0; p < passes; p++) {
+    for (let i = 0; i < n; i++) {
+      const s = start[i];
+      const e = start[i + 1];
+      if (e === s) {
+        to[i] = from[i];
+        continue;
+      }
+      let sum = 0;
+      for (let k = s; k < e; k++) sum += from[near[k]];
+      // Half its own value, half its neighbours': soft, without washing the shading out.
+      to[i] = 0.5 * from[i] + (0.5 * sum) / (e - s);
+    }
+    [from, to] = [to, from];
+  }
+  if (from !== values) values.set(from);
+  return values;
 }
 
 function sphereDirections(n: number) {
@@ -195,10 +251,12 @@ export function bakeAmbientOcclusion(renderer: THREE.WebGLRenderer, occluders: T
     offset = 0;
     for (const t of targets) {
       const n = t.geometry.getAttribute('position').count;
+      const seen = new Float32Array(n);
+      for (let i = 0; i < n; i++) seen[i] = pixels[(offset + i) * 4] / 255;
+      smoothVertexValues(seen, t.geometry.getIndex()?.array ?? null, t.smooth ?? 0);
       const colors = new Float32Array(n * 3);
       for (let i = 0; i < n; i++) {
-        const seen = pixels[(offset + i) * 4] / 255;
-        const shade = t.floor + (1 - t.floor) * seen;
+        const shade = t.floor + (1 - t.floor) * seen[i];
         colors[i * 3] = colors[i * 3 + 1] = colors[i * 3 + 2] = shade;
       }
       t.out.setAttribute('color', new THREE.BufferAttribute(colors, 3));

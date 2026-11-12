@@ -57,6 +57,7 @@ import { useStudio, type StudioPanel, type ViewMode } from '@/stores/studio-stor
 import {
   addImages,
   addGraphic,
+  addIcon,
   addShape,
   addText,
   copySelection,
@@ -85,6 +86,7 @@ import { BrandPanel } from './BrandPanel';
 import { CommandPalette, openCommandPalette, useModKey } from './CommandPalette';
 import { GarmentPanel } from './GarmentPanel';
 import { GraphicsGrid, GraphicsMenu } from './GraphicsLibrary';
+import { IconsGrid, IconsMenu } from './IconLibrary';
 import { Inspector } from './Inspector';
 import { LayerPanel } from './LayerPanel';
 import { PreflightPanel, usePreflight } from './PreflightPanel';
@@ -624,6 +626,7 @@ function ToolRail({ onLayers, onInspector, tablet }: { onLayers?: () => void; on
       </button>
       <ShapeMenu />
       <GraphicsMenu />
+      <IconsMenu />
       {tablet ? (
         <>
           <span className="my-1 h-px w-7 bg-line" aria-hidden />
@@ -1004,6 +1007,10 @@ function MobileAddSheet({ onDone }: { onDone: () => void }) {
       <section>
         <h3 className="panel-title mb-2">Graphics</h3>
         <GraphicsGrid columns={5} onPick={(g) => { addGraphic(g); onDone(); }} />
+      </section>
+      <section id="mobile-icons">
+        <h3 className="panel-title mb-2">Icons</h3>
+        <IconsGrid columns={6} onPick={(icon) => { if (addIcon(icon)) onDone(); }} />
       </section>
     </div>
   );

@@ -280,6 +280,19 @@ export function getTemplate(id: string) {
   return BUILT_IN_TEMPLATES.find((t) => t.id === id);
 }
 
+/**
+ * Whether a template's artwork has a place on a garment: every zone it uses is one the garment
+ * has (a sleeve mark has nowhere to go on a tank top).
+ */
+export function templateFits(def: TemplateDef, model: GarmentModel) {
+  try {
+    return (Object.keys(def.build(model)) as ZoneId[]).every((z) => !!model.zones[z]);
+  } catch {
+    // Building reads the print area of each zone it uses; a zone the garment lacks has none.
+    return false;
+  }
+}
+
 /** A new project document from a built-in template. */
 export function instantiateTemplate(def: TemplateDef, projectId: string, title = def.name): DesignDocument {
   const doc = createDocument({ projectId, title, colorwayIndex: def.colorwayIndex, modelId: def.modelId ?? TEE_CLASSIC.id });

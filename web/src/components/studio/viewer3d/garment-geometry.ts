@@ -182,7 +182,8 @@ export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Det
   const sleeveless = !model.sleeve;
   const vNeck = model.neckline === 'v' || model.neckline === 'dobok';
   const neckDepth = (model.neckline === 'dobok' ? 84 : 68) * s;
-  const roundR = 78 * s;
+  // How far below the top edge the cloth takes to turn over the shoulder: a soft ridge, not a dome.
+  const roundR = 50 * s;
   const shoulderTop = (ax: number) => H - model.shoulderSlope * (ax - neckR);
   const armpitY = sleeveless ? shoulderTop(shoulder) - (model.armholeDropMm ?? 240) * s : H * 0.64;
   const boxy = model.chestHalfWidthMm >= 290 ? 1.6 : 1;
@@ -204,7 +205,10 @@ export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Det
     const top = shoulderTop(shoulder);
     return top - (top - armpitY) * Math.sqrt(f * (2 - f));
   };
-  const halfDepth = (y: number) => lerp(depth * 0.95, depth, smoothstep(0, H * 0.5, y));
+  // Deepest across the chest, thinning above the underarm to the shoulders, where the cloth lies
+  // over the top of the shoulder rather than round a barrel. Never thinner than the neck opening.
+  const shoulderDepth = Math.max(depth * 0.6, neckDepth * 1.02);
+  const halfDepth = (y: number) => lerp(lerp(depth * 0.95, depth, smoothstep(0, H * 0.5, y)), shoulderDepth, smoothstep(armpitY - 40 * s, H, y) ** 1.6);
   const bTop = (x: number, y: number) => {
     const ax = Math.abs(x);
     if (ax < neckR) {
@@ -382,6 +386,8 @@ export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Det
   let sleeveW = 1;
   let sleeveLen = 1;
   const inset = 30 * s;
+  /** Each sleeve's line out from the shoulder, which it moves along when taken apart. */
+  const sleeveLine: Partial<Record<PartId, [number, number, number]>> = {};
   if (model.sleeve) {
     const sl = model.sleeve;
     const alpha = (sl.angleDeg * Math.PI) / 180;
@@ -394,6 +400,17 @@ export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Det
     const SU = detail === 'high' ? 96 : 56;
     const SV = sl.lengthMm > 400 ? (detail === 'high' ? 72 : 44) : detail === 'high' ? 40 : 26;
     const cuffT = sl.cuff === 'rib' ? 1 - (60 * s) / length : 1;
+    // Share of the tube tucked into the armhole, behind the shoulder seam.
+    const insetT = inset / length;
+    /** How far the body's cloth reaches front and back at (x, y), its surface without folds; past its side, no limit. */
+    const torsoZ = (x: number, y: number) => {
+      const c = Math.abs(x) / Math.max(1, halfWidth(y));
+      if (c >= 1) return Infinity;
+      const d = Math.max(0, yTop(x, true) - y);
+      const k = Math.sqrt(1 - (1 - Math.min(1, d / roundR)) ** 2);
+      const bt = bTop(x, y);
+      return (bt + (halfDepth(y) - bt) * k) * Math.sqrt(Math.max(0, 1 - c * c));
+    };
     const radiusAt = (t: number) => {
       let r = lerp(r0, r1, smoothstep(0, 1, t));
       // Long sleeves blouse a little above a rib cuff, then gather into it.
@@ -426,9 +443,20 @@ export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Det
           const stack = sl.cuff === 'rib' ? Math.sin(((t * length) / (36 * s)) * Math.PI * 2) * 0.03 * smoothstep(cuffT - 0.32, cuffT - 0.08, t) * (1 - smoothstep(cuffT - 0.05, cuffT, t)) : 0;
           const fold = drape * (twist + stack);
           const wrinkle = (1 + Math.sin(phi * 5 + t * 9) * 0.012 * (1 - t * 0.5) + (t > 0.92 ? (t - 0.92) * 0.25 : 0) + fold) * ribbed;
+          // Flatter front to back where the sleeve meets the shoulder, as an armhole is, rounder toward the cuff.
+          const flat = lerp(0.84, 1, smoothstep(insetT, 0.6, t));
           tmp.copy(center)
             .addScaledVector(n, radius * Math.cos(phi) * wrinkle)
-            .addScaledVector(kz, radius * ratio * -Math.sin(phi) * wrinkle);
+            .addScaledVector(kz, radius * ratio * flat * -Math.sin(phi) * wrinkle);
+          // The part tucked into the armhole stays inside the body, so its open end never shows
+          // above the shoulder; it lets go just past the shoulder seam, where the sleeve comes out.
+          const tuck = 1 - smoothstep(insetT * 0.5, insetT * 1.15, t);
+          if (tuck > 0) {
+            const y = Math.min(tmp.y, yTop(tmp.x, true) - 5 * s);
+            const zMax = Math.max(0, torsoZ(tmp.x, y) - 5 * s);
+            const z = Math.abs(tmp.z) > zMax ? Math.sign(tmp.z) * zMax : tmp.z;
+            tmp.set(tmp.x, lerp(tmp.y, y, tuck), lerp(tmp.z, z, tuck));
+          }
           const o = j * cols + i;
           xs[o] = tmp.x;
           ys[o] = tmp.y;
@@ -468,6 +496,7 @@ export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Det
         }
       }
       parts.push({ id: k === 0 ? 'sleeveLeft' : 'sleeveRight', geometry: gridGeometry(pos, uv, SU, SV, true, r.shade) });
+      sleeveLine[k === 0 ? 'sleeveLeft' : 'sleeveRight'] = [(k === 0 ? 1 : -1) * Math.cos(alpha), -Math.sin(alpha), 0];
       islands.push({ id: k === 0 ? 'left-sleeve' : 'right-sleeve', label: k === 0 ? 'Left sleeve' : 'Right sleeve', part: k === 0 ? 'sleeveLeft' : 'sleeveRight', uv: gridOutline(uv, r.cols, SV + 1) });
     });
   }
@@ -488,15 +517,20 @@ export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Det
     }
     return loop;
   };
-  if (model.neckline === 'crew' || model.neckline === 'v' || model.neckline === 'dobok' || model.neckline === 'scoop') {
-    const tubeR = (model.neckline === 'crew' ? 8.5 : model.neckline === 'v' ? 6 : 4) * s;
+  if (model.neckline === 'crew' || model.neckline === 'v' || model.neckline === 'scoop') {
+    // A folded rib band: about 2 cm on a crew neck, a little narrower on a V or scoop.
+    const band = model.neckline === 'crew' ? { heightMm: 20, thickMm: 4, frontDeg: 62, backDeg: 80, sideDeg: 48 } : { heightMm: 15, thickMm: 3.5, frontDeg: 58, backDeg: 78, sideDeg: 46 };
+    trims.push({ key: 'collar', geometry: ribBand(neckLoop(), s, band), color: 'collar', surface: 'rib' });
+  } else if (model.neckline === 'dobok') {
+    // The dobok's neck binding is a slim piped edge along the lapels.
     const curve = new THREE.CatmullRomCurve3(neckLoop(), true, 'centripetal');
-    trims.push({ key: 'collar', geometry: new THREE.TubeGeometry(curve, 180, tubeR, 12, true), color: 'collar', surface: 'rib' });
+    trims.push({ key: 'collar', geometry: new THREE.TubeGeometry(curve, 180, 4 * s, 12, true), color: 'collar', surface: 'rib' });
   }
   if (model.neckline === 'polo') trims.push(...poloTrims(neckLoop(), H, model, s, halfDepth));
   let topMm = H + 10 * s;
   if (model.extras.hood) {
-    const hood = hoodTrims(H, neckR, model, s);
+    // The hood is sewn into the neckline all round, so its lower edge follows the neckline down at the front.
+    const hood = hoodTrims(H, neckR, model, s, (x, z) => yTop(Math.max(-neckR, Math.min(neckR, x)), z > 0));
     trims.push(...hood.meshes);
     topMm = hood.topMm;
   }
@@ -645,6 +679,41 @@ export function buildGarment(model: GarmentModel, size: GarmentSize, detail: Det
   }
   for (const t of trims) setFree(t.geometry, torsoFree);
 
+  // Taken apart (motion.ts): the front body comes forward and the back body goes back, each sleeve
+  // slides out along its own line, the legs drop away, the neck rib or hood lifts off, and trims go
+  // with what they're sewn to, a little further. Millimetres at full separation.
+  const away = 150 * s;
+  const setApart = (g: THREE.BufferGeometry, at: (i: number) => readonly [number, number, number]) => {
+    const n = g.getAttribute('position').count;
+    const out = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) out.set(at(i), i * 3);
+    g.setAttribute('aExplode', new THREE.BufferAttribute(out, 3));
+  };
+  // The torso holds the front panel's vertices first, then the back's (see mergeGeometries).
+  const frontVertices = cols * (NV + 1);
+  const forward = [0, 0, away] as const;
+  const backward = [0, 0, -away] as const;
+  for (const p of parts) {
+    const line = sleeveLine[p.id];
+    if (p.id === 'torso') setApart(p.geometry, (i) => (i < frontVertices ? forward : backward));
+    else if (line) setApart(p.geometry, () => [line[0] * away, line[1] * away, 0]);
+    else if (p.id === 'legLeft' || p.id === 'legRight') setApart(p.geometry, () => [(p.id === 'legLeft' ? 1 : -1) * away * 0.4, -away * 0.8, 0]);
+  }
+  const trimApart = (key: string): readonly [number, number, number] => {
+    if (key === 'collar' || key === 'polo-collar') return [0, away * 0.75, 0];
+    if (key.startsWith('hood')) return [0, away, -away * 0.6];
+    if (key === 'pocket') return [0, 0, away * 1.45];
+    if (key === 'placket') return [0, 0, away * 1.35];
+    if (key.startsWith('button')) return [0, 0, away * 1.65];
+    if (key.startsWith('cord')) return [0, away * 0.3, away * 1.6];
+    if (key.startsWith('belt')) return [0, -away * 0.2, away * 1.8];
+    return [0, 0, 0];
+  };
+  for (const t of trims) {
+    const at = trimApart(t.key);
+    setApart(t.geometry, () => at);
+  }
+
   // Front-view span, sleeves and trims included, so wide cuts frame without clipping.
   const span = new THREE.Box3();
   for (const g of [...parts.map((p) => p.geometry), ...trims.map((t) => t.geometry)]) {
@@ -752,6 +821,122 @@ function mergeGeometries(geoms: THREE.BufferGeometry[]) {
   return out;
 }
 
+/** Normals averaged across vertices that share a position, so a closed loop shows no seam line. */
+function weldNormals(g: THREE.BufferGeometry) {
+  g.computeVertexNormals();
+  const pos = g.getAttribute('position');
+  const nor = g.getAttribute('normal');
+  const key = (i: number) => `${Math.round(pos.getX(i) * 100)},${Math.round(pos.getY(i) * 100)},${Math.round(pos.getZ(i) * 100)}`;
+  const sum = new Map<string, [number, number, number]>();
+  for (let i = 0; i < pos.count; i++) {
+    const k = key(i);
+    const n = sum.get(k) ?? [0, 0, 0];
+    n[0] += nor.getX(i);
+    n[1] += nor.getY(i);
+    n[2] += nor.getZ(i);
+    sum.set(k, n);
+  }
+  for (let i = 0; i < pos.count; i++) {
+    const n = sum.get(key(i))!;
+    const len = Math.hypot(n[0], n[1], n[2]) || 1;
+    nor.setXYZ(i, n[0] / len, n[1] / len, n[2] / len);
+  }
+  nor.needsUpdate = true;
+}
+
+/**
+ * A folded knit rib band sewn round a neckline. It rises from the seam and leans in toward the
+ * neck: upright at the back, where it stands against the neck, lying back more at the front, and
+ * wrapping in most at the sides, where the neckline is highest, so its edge stays a smooth oval. Its
+ * cross section is a flat loop (both faces of the doubled rib, and the fold along its top edge),
+ * so it reads as cloth from outside and through the neck opening alike. Texture u runs along the
+ * neckline and v round the cross section, as on a tube.
+ */
+function ribBand(loop: THREE.Vector3[], s: number, o: { heightMm: number; thickMm: number; frontDeg: number; backDeg: number; sideDeg: number }) {
+  const curve = new THREE.CatmullRomCurve3(loop, true, 'centripetal');
+  const N = 240;
+  // N + 1 points; on a closed curve the last is the first again.
+  const pts = curve.getSpacedPoints(N);
+  let zMin = Infinity;
+  let zMax = -Infinity;
+  for (const p of pts) {
+    zMin = Math.min(zMin, p.z);
+    zMax = Math.max(zMax, p.z);
+  }
+  const cz = (zMin + zMax) / 2;
+  const h = o.heightMm * s;
+  const r = (o.thickMm * s) / 2;
+  // The cross section as (distance along the band from the seam, offset out of its middle plane):
+  // up the outer face, over the fold, down the inner face, then across the foot hidden in the seam.
+  const prof: [number, number][] = [
+    [-2 * s, r],
+    [h * 0.45, r],
+    [h - r, r],
+  ];
+  const ROUND = 8;
+  for (let k = 1; k < ROUND; k++) {
+    const a = Math.PI / 2 - (Math.PI * k) / ROUND;
+    prof.push([h - r + r * Math.cos(a), r * Math.sin(a)]);
+  }
+  prof.push([h - r, -r], [h * 0.45, -r], [-2 * s, -r], [-2 * s, r]);
+  const pv = [0];
+  for (let k = 1; k < prof.length; k++) pv.push(pv[k - 1] + Math.hypot(prof[k][0] - prof[k - 1][0], prof[k][1] - prof[k - 1][1]));
+  const total = pv[pv.length - 1];
+  const cols = prof.length;
+  const pos = new Float32Array((N + 1) * cols * 3);
+  const uv = new Float32Array((N + 1) * cols * 2);
+  const up = new THREE.Vector3(0, 1, 0);
+  const tan = new THREE.Vector3();
+  const inward = new THREE.Vector3();
+  const along = new THREE.Vector3();
+  const out = new THREE.Vector3();
+  const outFirst = new THREE.Vector3();
+  const q = new THREE.Vector3();
+  for (let i = 0; i <= N; i++) {
+    const p = pts[i];
+    tan.subVectors(pts[(i + 1) % N], pts[(i - 1 + N) % N]).setY(0).normalize();
+    // The neckline's level normal, turned to face the middle of the neck.
+    inward.set(-tan.z, 0, tan.x);
+    if (-inward.x * p.x + inward.z * (cz - p.z) < 0) inward.negate();
+    const f = (p.z - zMin) / Math.max(1e-6, zMax - zMin);
+    const side = 1 - Math.abs(2 * f - 1);
+    const a = (lerp(lerp(o.backDeg, o.frontDeg, smoothstep(0.15, 0.85, f)), o.sideDeg, side * side) * Math.PI) / 180;
+    along.copy(inward).multiplyScalar(Math.cos(a)).addScaledVector(up, Math.sin(a));
+    out.copy(inward).multiplyScalar(-Math.sin(a)).addScaledVector(up, Math.cos(a));
+    if (i === 0) outFirst.copy(out);
+    for (let k = 0; k < cols; k++) {
+      q.copy(p).addScaledVector(along, prof[k][0]).addScaledVector(out, prof[k][1]);
+      const v = i * cols + k;
+      pos[v * 3] = q.x;
+      pos[v * 3 + 1] = q.y;
+      pos[v * 3 + 2] = q.z;
+      uv[v * 2] = i / N;
+      uv[v * 2 + 1] = pv[k] / total;
+    }
+  }
+  // Wind every face outward: check the outer face's first quad against the band's outward side.
+  const at = (v: number) => new THREE.Vector3(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]);
+  const a0 = at(0);
+  const facing = new THREE.Vector3().crossVectors(at(cols).sub(a0), at(1).sub(a0)).dot(outFirst);
+  const index: number[] = [];
+  for (let i = 0; i < N; i++) {
+    for (let k = 0; k < cols - 1; k++) {
+      const a = i * cols + k;
+      const b = a + 1;
+      const c = a + cols;
+      const d = c + 1;
+      if (facing > 0) index.push(a, c, b, b, c, d);
+      else index.push(a, b, c, b, d, c);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.setIndex(index);
+  weldNormals(g);
+  return g;
+}
+
 /** Polo: a knitted collar falling over the shoulders, a three-button placket. */
 function poloTrims(loop: THREE.Vector3[], H: number, model: GarmentModel, s: number, halfDepth: (y: number) => number): TrimMesh[] {
   // The collar runs round the back from one side of the placket to the other.
@@ -801,8 +986,11 @@ function poloTrims(loop: THREE.Vector3[], H: number, model: GarmentModel, s: num
   return meshes;
 }
 
-/** Hoodie hood, worn up as on a ghost mannequin, with a rib edge round the face opening. */
-function hoodTrims(H: number, neckR: number, model: GarmentModel, s: number): { meshes: TrimMesh[]; topMm: number } {
+/**
+ * Hoodie hood, worn up as on a ghost mannequin, with a rib edge round the face opening.
+ * `neckAt(x, z)` is the neckline's height there, where the hood's lower edge is sewn.
+ */
+function hoodTrims(H: number, neckR: number, model: GarmentModel, s: number, neckAt: (x: number, z: number) => number): { meshes: TrimMesh[]; topMm: number } {
   const c = new THREE.Vector3(0, H + 118 * s, -18 * s);
   const rx = 122 * s;
   const ry = 176 * s;
@@ -826,9 +1014,11 @@ function hoodTrims(H: number, neckR: number, model: GarmentModel, s: number): { 
       const z = rz * Math.cos(psi) * Math.cos(phi) * back;
       // Pull the lower rim onto the neckline so the hood grows out of the collar.
       const low = smoothstep(psi0 + 0.35, psi0, psi);
-      pos[o * 3] = lerp(c.x + x, x * (neckR / rx) * 1.12, low);
-      pos[o * 3 + 1] = lerp(c.y + y, H - 6 * s, low);
-      pos[o * 3 + 2] = lerp(c.z + z, z * (neckR / rz) * 0.95, low);
+      const rimX = x * (neckR / rx) * 1.12;
+      const rimZ = z * (neckR / rz) * 0.95;
+      pos[o * 3] = lerp(c.x + x, rimX, low);
+      pos[o * 3 + 1] = lerp(c.y + y, neckAt(rimX, rimZ) - 6 * s, low);
+      pos[o * 3 + 2] = lerp(c.z + z, rimZ, low);
       uv[o * 2] = i / NU;
       uv[o * 2 + 1] = j / NV;
     }

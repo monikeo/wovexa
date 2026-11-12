@@ -76,6 +76,8 @@ function exportable(group: THREE.Object3D, forUsdz: boolean) {
     const source = mesh.material as THREE.MeshStandardMaterial;
     const geometry = mesh.geometry.clone();
     if (geometry.getAttribute('aFree')) geometry.deleteAttribute('aFree');
+    // How far each piece moves when shown taken apart: the live view's, not part of the garment.
+    if (geometry.getAttribute('aExplode')) geometry.deleteAttribute('aExplode');
     if (source.side === THREE.BackSide) {
       // The lining, named after the part beside it.
       const inside = turnedInside(geometry);

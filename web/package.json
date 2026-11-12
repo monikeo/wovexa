@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "icons": "node scripts/build-icons.mjs"
+    "icons": "node scripts/build-icons.mjs",
+    "icon-set": "node scripts/icon-set.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",

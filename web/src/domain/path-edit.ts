@@ -89,9 +89,50 @@ export function arcToCubics(x1: number, y1: number, rxIn: number, ryIn: number, 
   return out;
 }
 
+const NUMBER = /[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/y;
+
+/**
+ * Path data as commands and numbers. An arc's fourth and fifth values are flags, a single 0 or 1
+ * each, which optimisers often write with nothing between them and the next number ("a1 1 0
+ * 01-1 1" is flags 0 and 1, then -1): read as one number "01", the arc would come out wrong.
+ */
+function tokenize(d: string): string[] {
+  const out: string[] = [];
+  let cmd = '';
+  let param = 0;
+  let i = 0;
+  while (i < d.length) {
+    const ch = d[i];
+    if (ch === ' ' || ch === ',' || ch === '\n' || ch === '\r' || ch === '\t' || ch === '\f') {
+      i++;
+    } else if (/[MmLlHhVvCcSsQqTtAaZz]/.test(ch)) {
+      out.push(ch);
+      cmd = ch.toLowerCase();
+      param = 0;
+      i++;
+    } else if (cmd === 'a' && (param % 7 === 3 || param % 7 === 4) && (ch === '0' || ch === '1')) {
+      out.push(ch);
+      param++;
+      i++;
+    } else {
+      NUMBER.lastIndex = i;
+      const m = NUMBER.exec(d);
+      if (m) {
+        out.push(m[0]);
+        param++;
+        i += m[0].length;
+      } else {
+        // Anything else is skipped, as the regular expression this replaced skipped it.
+        i++;
+      }
+    }
+  }
+  return out;
+}
+
 /** Path data as subpaths of nodes. Malformed trailing parameters are ignored, as browsers do. */
 export function parsePath(d: string): Subpath[] {
-  const tokens = d.match(/[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g) ?? [];
+  const tokens = tokenize(d);
   const subpaths: Subpath[] = [];
   let current: Subpath | null = null;
   let x = 0;

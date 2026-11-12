@@ -139,6 +139,75 @@ describe('procedural garments', () => {
   });
 });
 
+describe('the garment as it really sits', () => {
+  it('sews a folded rib band round a crew neck, about 2 cm, not a round tube', () => {
+    const size = getSize(TEE_CLASSIC, 'M');
+    const geo = buildGarment(TEE_CLASSIC, size, 'low');
+    const collar = geo.trims.find((t) => t.key === 'collar')!.geometry;
+    collar.computeBoundingBox();
+    // The neckline's highest point is the side of the neck (the torso's top); the band stands a
+    // little above it, leaning in, where the old tube stood a full 17 mm diameter proud everywhere.
+    const rise = collar.boundingBox!.max.y - geo.layout.torsoHeightMm;
+    expect(rise).toBeGreaterThan(8);
+    expect(rise).toBeLessThan(20);
+    // At the back of the neck it stands nearly upright and is only a few millimetres through, where
+    // the tube was 17 mm round: front to back it spans under 10 mm, and it stands taller than that.
+    const pos = collar.getAttribute('position');
+    let zMin = Infinity;
+    let zMax = -Infinity;
+    let yMin = Infinity;
+    let yMax = -Infinity;
+    for (let i = 0; i < pos.count; i++) {
+      if (Math.abs(pos.getX(i)) > 3 || pos.getZ(i) > 0) continue;
+      zMin = Math.min(zMin, pos.getZ(i));
+      zMax = Math.max(zMax, pos.getZ(i));
+      yMin = Math.min(yMin, pos.getY(i));
+      yMax = Math.max(yMax, pos.getY(i));
+    }
+    expect(zMax - zMin).toBeLessThan(10);
+    expect(yMax - yMin).toBeGreaterThan(18);
+  });
+
+  it('tucks each sleeve’s end into the body, below the shoulder seam, so it never shows on top', () => {
+    for (const model of [TEE_CLASSIC, GARMENT_LIST.find((m) => m.id === 'tee-long')!, GARMENT_LIST.find((m) => m.id === 'tee-oversized')!]) {
+      const size = getSize(model, model.defaultSize);
+      const geo = buildGarment(model, size, 'low', 0);
+      const neckR = model.neckRadiusMm * size.scale;
+      for (const id of ['sleeveLeft', 'sleeveRight'] as const) {
+        const g = geo.parts.find((p) => p.id === id)!.geometry;
+        const pos = g.getAttribute('position');
+        const uv = g.getAttribute('uv');
+        let checked = 0;
+        for (let i = 0; i < pos.count; i++) {
+          // v = 1 is the tucked-in end of the sleeve.
+          if (uv.getY(i) < 0.999) continue;
+          const seam = size.bodyLengthMm - model.shoulderSlope * (Math.abs(pos.getX(i)) - neckR);
+          expect(pos.getY(i), `${model.shortName} ${id}`).toBeLessThan(seam);
+          checked++;
+        }
+        expect(checked).toBeGreaterThan(10);
+      }
+    }
+  });
+
+  it('thins the body toward the shoulders instead of keeping the chest’s depth', () => {
+    const size = getSize(TEE_CLASSIC, 'M');
+    const geo = buildGarment(TEE_CLASSIC, size, 'low', 0);
+    const pos = geo.parts.find((p) => p.id === 'torso')!.geometry.getAttribute('position');
+    const H = size.bodyLengthMm;
+    const depth = (y0: number, y1: number) => {
+      let d = 0;
+      for (let i = 0; i < pos.count; i++) {
+        const x = Math.abs(pos.getX(i));
+        const y = pos.getY(i);
+        if (x > 100 && x < 200 && y >= y0 * H && y <= y1 * H) d = Math.max(d, Math.abs(pos.getZ(i)));
+      }
+      return d;
+    };
+    expect(depth(0.9, 0.95)).toBeLessThan(depth(0.5, 0.55) * 0.72);
+  });
+});
+
 describe('scene and fabric additions', () => {
   it('accepts motion, image backdrops and dye effects', () => {
     const doc = createDocument({ projectId: 'p1', title: 'Motion' });

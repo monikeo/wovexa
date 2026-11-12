@@ -3,13 +3,13 @@ import { alignUnits, distributeUnits, expandToGroups, selectionUnits } from './a
 import * as cmd from './commands';
 import { diffDocuments } from './diff';
 import { createDocument, createShapeLayer, createTextLayer } from './factory';
-import { TEE_CLASSIC } from './garments';
+import { GARMENT_LIST, garmentNoun, getGarment, TEE_CLASSIC } from './garments';
 import { rotatedBounds } from './geometry';
 import { canonicalJson, documentHash } from './hash';
 import { applyCommand, emptyHistory, undo } from './history';
 import { runPreflight } from './preflight';
 import { migrateDesignDocument, migrateV1toV2, parseDesignDocument, SCHEMA_VERSION, ZONE_IDS, type DesignDocument } from './schema';
-import { BUILT_IN_TEMPLATES, instantiateTemplate } from './templates';
+import { BUILT_IN_TEMPLATES, instantiateTemplate, templateFits } from './templates';
 
 const front = TEE_CLASSIC.zones.front!;
 const area = { x: 0, y: 0, width: front.printableWidthMm, height: front.printableHeightMm };
@@ -262,5 +262,29 @@ describe('built-in templates', () => {
     const jersey = BUILT_IN_TEMPLATES.find((t) => t.id === 'team-jersey')!;
     const doc = instantiateTemplate(jersey, 'p1');
     expect(doc.colorways.find((c) => c.id === doc.activeColorwayId)?.name).toBe('Deep navy');
+  });
+
+  it('fits a template only on garments that have every print area it uses', () => {
+    // Every template fits the garment it was made for.
+    for (const def of BUILT_IN_TEMPLATES) expect(templateFits(def, getGarment(def.modelId ?? TEE_CLASSIC.id)), def.name).toBe(true);
+    const team = BUILT_IN_TEMPLATES.find((t) => t.id === 'team-jersey')!;
+    // Its captain's mark sits on the left sleeve: a sleeveless basketball jersey or tank top has none.
+    expect(templateFits(team, getGarment('jersey-v'))).toBe(true);
+    expect(templateFits(team, getGarment('jersey-basketball'))).toBe(false);
+    expect(templateFits(team, getGarment('tank-top'))).toBe(false);
+    // A chest mark goes on anything with a front.
+    const chest = BUILT_IN_TEMPLATES.find((t) => t.id === 'left-chest-mark')!;
+    for (const m of GARMENT_LIST) expect(templateFits(chest, m), m.shortName).toBe(true);
+    // On another garment, the artwork is laid out on that garment's own print areas.
+    const onHoodie = instantiateTemplate({ ...chest, modelId: 'hoodie-pullover' }, 'p2');
+    expect(onHoodie.garment.modelId).toBe('hoodie-pullover');
+    expect(parseDesignDocument(onHoodie).ok).toBe(true);
+  });
+
+  it('names a garment the way it reads in a sentence or a title', () => {
+    expect(garmentNoun(getGarment('jersey-basketball'))).toBe('basketball jersey');
+    expect(garmentNoun(getGarment('tee-classic'))).toBe('classic crew tee');
+    // A capital that is part of the word stays.
+    expect(garmentNoun(getGarment('jersey-v'))).toBe('V-neck sports jersey');
   });
 });

@@ -7,7 +7,7 @@
  */
 import { CameraControls, CameraControlsImpl, ContactShadows, Environment, Lightformer, PerformanceMonitor } from '@react-three/drei';
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
-import { Camera as CameraIcon, Clapperboard, Frame, Loader2, Move, Rotate3d, RotateCw, SlidersHorizontal, Sparkles } from 'lucide-react';
+import { Camera as CameraIcon, Clapperboard, Frame, Loader2, Move, Rotate3d, RotateCw, SlidersHorizontal, Sparkles, Ungroup } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as THREE from 'three';
 import { unionBounds } from '@/domain/arrange';
@@ -39,6 +39,7 @@ import { bakeAmbientOcclusion, type AoTarget } from './ao-bake';
 import { cachedShape, exportGarmentTemplate, ShapeError, shapedGarment, type ParsedShape } from './garment-glb';
 import { shellGarment } from './garment-shell';
 import { applyMotion, fabricDrape, MOTION_CACHE_KEY, motionDepthMaterial, motionState, motionUniforms, patchMotion, setLimbPivots } from './motion';
+import { APART_MS, canTakeApart, easeApart } from './explode';
 import { disposeDecal, disposePhotoreal, fillCard, inkDecals, insetGeometry, liveTrace, pathTrace, photorealSupport, softStudioLights } from './photoreal';
 import { areaOutlineImage, effectiveArea, effectiveLayer, projectArea, projectLayer, renderAreaArtwork } from './projected-paint';
 import { dragProjector, footprintNormal, insideDecal, planeOffset, pointOnTriangle, steadyProjector, surfaceAtUv, tangentUp, toDecal, type DecalFrame, type ProjectedPart, type ProjectionMesh, type Projector, type SurfacePoint } from './projection';
@@ -77,6 +78,12 @@ const registerShadow = (group: THREE.Group | null) => {
 
 /** The lining sits this far inside the shell when path traced: the fabric's thickness. */
 const LINING_INSET_MM = 0.8;
+/**
+ * The darkest the inside of a garment gets, as a share of its colour. Knit lets light through
+ * and in by the neck and hem, so a white tee is light grey inside, never near black; a dark
+ * colour stays dark because the shade multiplies it.
+ */
+const INSIDE_FLOOR = 0.5;
 
 /** The floor shadow alone, as the rasteriser draws it, copied into `out` (sized to the drawing buffer). */
 function shadowLayer(gl: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, out: HTMLCanvasElement) {
@@ -493,6 +500,44 @@ function MotionDriver({
   return null;
 }
 
+/**
+ * Eases the garment apart or back together (`uExplode`, motion.ts). With reduced motion it simply
+ * changes. Closing the 3D view leaves the garment sewn together for next time.
+ */
+function ApartDriver({ apart }: { apart: boolean }) {
+  const invalidate = useThree((s) => s.invalidate);
+  useEffect(() => {
+    const from = motionUniforms.uExplode.value;
+    const to = apart ? 1 : 0;
+    if (from === to) return;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      motionUniforms.uExplode.value = to;
+      invalidate();
+      return;
+    }
+    const t0 = performance.now();
+    let raf = 0;
+    const step = () => {
+      const t = (performance.now() - t0) / APART_MS;
+      // A render in progress owns the frame; the move carries on after it.
+      if (!stage.capturing) {
+        motionUniforms.uExplode.value = from + (to - from) * easeApart(t);
+        invalidate();
+      }
+      if (t < 1 || stage.capturing) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [apart, invalidate]);
+  useEffect(
+    () => () => {
+      motionUniforms.uExplode.value = 0;
+    },
+    [],
+  );
+  return null;
+}
+
 function setRevealSpan(bottomMm: number, heightMm: number, accent: string) {
   motionUniforms.uRevealBottom.value = bottomMm;
   motionUniforms.uRevealSpan.value = heightMm;
@@ -563,7 +608,26 @@ function Hanger({ hpsMm, shoulderMm, neckMm, slope }: { hpsMm: number; shoulderM
   );
 }
 
-function Garment({ geo, ownRest, quality, mode, guides, hanger, onOwnZone }: { geo: GarmentGeometry; ownRest: boolean; quality: Quality; mode: Mode; guides: boolean; hanger: boolean; onOwnZone: (zone: ArtboardId) => void }) {
+function Garment({
+  geo,
+  ownRest,
+  quality,
+  mode,
+  guides,
+  hanger,
+  apart,
+  onOwnZone,
+}: {
+  geo: GarmentGeometry;
+  ownRest: boolean;
+  quality: Quality;
+  mode: Mode;
+  guides: boolean;
+  hanger: boolean;
+  /** Shown taken apart: the pieces aren't where picking finds them, so clicks pass through. */
+  apart: boolean;
+  onOwnZone: (zone: ArtboardId) => void;
+}) {
   const doc = useStudio((s) => s.document)!;
   const colorway = useDisplayColorway()!;
   const activeZone = useStudio((s) => s.activeZoneId);
@@ -744,18 +808,18 @@ function Garment({ geo, ownRest, quality, mode, guides, hanger, onOwnZone }: { g
     [normals],
   );
 
-  // The lining (inside face) shares the shell's shape but has its own shading: dark deep inside,
-  // lighter toward the neck, hem and cuffs. It starts dark and is replaced by the bake below.
+  // The lining (inside face) shares the shell's shape but has its own shading: shaded deep inside,
+  // lighter toward the neck, hem and cuffs. It starts at a middle shade and the bake below replaces it.
   const linings = useMemo(() => {
     const out = new Map<PartId, THREE.BufferGeometry>();
     for (const p of geo.parts) {
       const g = new THREE.BufferGeometry();
-      for (const name of ['position', 'normal', 'uv', 'aFree', 'aLimb']) {
+      for (const name of ['position', 'normal', 'uv', 'aFree', 'aLimb', 'aExplode']) {
         const a = p.geometry.getAttribute(name);
         if (a) g.setAttribute(name, a);
       }
       g.setIndex(p.geometry.getIndex());
-      g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(p.geometry.getAttribute('position').count * 3).fill(0.45), 3));
+      g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(p.geometry.getAttribute('position').count * 3).fill(INSIDE_FLOOR + 0.12), 3));
       out.set(p.id, g);
     }
     return out;
@@ -770,12 +834,12 @@ function Garment({ geo, ownRest, quality, mode, guides, hanger, onOwnZone }: { g
       if (cancelled) return;
       const targets: AoTarget[] = [];
       for (const p of geo.parts) {
-        targets.push({ geometry: p.geometry, out: p.geometry, floor: 0.38 });
+        targets.push({ geometry: p.geometry, out: p.geometry, floor: 0.38, smooth: 2 });
         const lining = linings.get(p.id);
-        if (lining) targets.push({ geometry: p.geometry, out: lining, inside: true, floor: 0.12 });
+        if (lining) targets.push({ geometry: p.geometry, out: lining, inside: true, floor: INSIDE_FLOOR, smooth: 6 });
       }
       // A shell's plain cloth (a hood, cloth past the pattern) is shaded the same way as its printed parts.
-      for (const t of geo.trims) if (t.geometry.getAttribute('color')) targets.push({ geometry: t.geometry, out: t.geometry, floor: 0.38 });
+      for (const t of geo.trims) if (t.geometry.getAttribute('color')) targets.push({ geometry: t.geometry, out: t.geometry, floor: 0.38, smooth: 2 });
       const occluders = [...geo.parts.map((p) => p.geometry), ...geo.trims.map((t) => t.geometry)];
       try {
         if (bakeAmbientOcclusion(gl, occluders, targets, quality === 'low' ? 'low' : 'high')) invalidate();
@@ -1507,12 +1571,12 @@ function Garment({ geo, ownRest, quality, mode, guides, hanger, onOwnZone }: { g
     const layer = layerId ? inArea.area.layers[layerId] : null;
     setCursor(gl.domElement, layer ? (layer.locked ? '' : 'grab') : inArea.area.locked ? '' : 'move');
   };
-  const trimHandlers = { onClick: onTrimClick, onPointerDown: onTrimDown, onPointerMove: onTrimHover, onPointerOut: onOut };
+  const trimHandlers = apart ? {} : { onClick: onTrimClick, onPointerDown: onTrimDown, onPointerMove: onTrimHover, onPointerOut: onOut };
   const areaGuide: AreaGuide | null =
     guides || showSelection ? { accent, all: guides, active: showSelection ? activeZone : null, selected: showSelection && selected.length && isAreaId(activeZone) ? selected : undefined } : null;
 
   const lite = quality === 'low';
-  const handlers = { onClick, onPointerDown, onPointerMove: onHover, onPointerOut: onOut };
+  const handlers = apart ? {} : { onClick, onPointerDown, onPointerMove: onHover, onPointerOut: onOut };
   /** The print surface drives roughness, metalness and relief; values in the map are absolute. */
   const surfaceProps = (part: PartId) => {
     const surface = surfaces.get(part)?.texture;
@@ -1767,6 +1831,8 @@ function shotForArtboard(doc: DesignDocument | null | undefined, layout: Garment
 
 /** The classic tee's front-view extent in mm, which the preset camera distances were tuned for. */
 const TEE_FIT = { heightMm: 730, widthMm: 813 };
+/** How much further back the views frame a garment taken apart, so every piece stays in shot. */
+const APART_FRAME = 1.3;
 /** How far to pull the camera back, relative to the tee, for a garment of relative height h and width w. */
 function fitDistance(h: number, w: number, aspect: number) {
   return Math.max(h, (0.95 * w) / Math.max(0.1, aspect));
@@ -2045,6 +2111,9 @@ function CameraRig({
         c.enabled = false;
         el.style.objectFit = 'contain';
         let restore: (() => void) | null = null;
+        // Path tracing sees the cloth where it is sewn, so a garment shown taken apart renders put together.
+        const apartBefore = motionUniforms.uExplode.value;
+        motionUniforms.uExplode.value = 0;
         try {
           // Floor shadows come from the rasteriser, before the scene changes for path tracing.
           const shadows: (HTMLCanvasElement | null)[] = [];
@@ -2071,6 +2140,7 @@ function CameraRig({
             }
           }
         } finally {
+          motionUniforms.uExplode.value = apartBefore;
           restore?.();
           el.style.objectFit = '';
           c.enabled = true;
@@ -2369,6 +2439,8 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
   const [mode, setMode] = useState<Mode>('orbit');
   const [request, setRequest] = useState<ViewRequest>(() => ({ shot: { kind: 'preset', view: isAreaId(activeZone) || isLockupId(activeZone) ? 'front' : ZONE_VIEW[activeZone] }, nonce: 0 }));
   const [turntable, setTurntable] = useState(false);
+  /** Shown taken apart into its pieces (Orbit mode only: Place mode needs the garment sewn together). */
+  const [apart, setApart] = useState(false);
   const [guides, setGuides] = useState(() => readFlag('wovexa.guides3d', true));
   const [sceneOpen, setSceneOpen] = useState(false);
   const [lost, setLost] = useState(false);
@@ -2468,11 +2540,16 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
   const motion = motionOf(scene);
   const motionGroup = useRef<THREE.Group>(null);
   const backdropImage = useBackdropImage(scene.backdrop.kind === 'image' ? scene.backdrop.assetId : undefined);
-  // A podium joins the shot: frame the garment and its plinth together.
+  // Taken apart: each piece of the garment moves out from where it is sewn, and back.
+  const separable = useMemo(() => canTakeApart(geo), [geo]);
+  const apartNow = apart && mode === 'orbit' && separable;
+  // A podium joins the shot: frame the garment and its plinth together. Taken apart, the pieces
+  // spread past the garment's own outline, so the views frame further back to keep them all in.
   const podiumDrop = stageOf(scene) === 'podium' ? PODIUM_GAP + PODIUM_HEIGHT : 0;
-  const fitH = (geo.layout.heightMm + podiumDrop * 1000) / TEE_FIT.heightMm;
+  const spread = apartNow ? APART_FRAME : 1;
+  const fitH = ((geo.layout.heightMm + podiumDrop * 1000) / TEE_FIT.heightMm) * spread;
   const centerY = -podiumDrop / 2;
-  const fitW = geo.layout.widthMm / TEE_FIT.widthMm;
+  const fitW = (geo.layout.widthMm / TEE_FIT.widthMm) * spread;
   const floorY = -(geo.layout.heightMm / 2) * 0.001 - 0.015;
   // A close-up of a print for video fly-ins: the middle of its artwork, found on the cloth and seen square on.
   useEffect(() => {
@@ -2556,6 +2633,21 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
     });
   };
 
+  const toggleApart = () => {
+    const next = !apartNow;
+    setApart(next);
+    if (!next) return;
+    setMode('orbit');
+    // Square on from the front or back, the front and back bodies hide each other; from three
+    // quarters every piece shows. The views frame the spread pieces while they're apart.
+    fly({ kind: 'preset', view: 'three_quarter' });
+  };
+  /** Place mode works on the garment as sewn, so it puts the pieces back together first. */
+  const enterPlace = () => {
+    setApart(false);
+    setMode('place');
+  };
+
   /** Immediate screen image (spec EXP-01): the current view at up to twice the stage size. */
   const snapshot = async () => {
     const el = stageRef.current;
@@ -2607,7 +2699,9 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
     } else if (e.key.toLowerCase() === 'o') {
       setMode('orbit');
     } else if (e.key.toLowerCase() === 'p') {
-      setMode('place');
+      enterPlace();
+    } else if (e.key.toLowerCase() === 'x' && separable) {
+      toggleApart();
     } else {
       handled = false;
     }
@@ -2645,7 +2739,10 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
 
   // Artwork just wrapped across seams (or picked from the layer list) is moved in Place mode.
   useEffect(() => {
-    const place = () => setMode('place');
+    const place = () => {
+      setApart(false);
+      setMode('place');
+    };
     window.addEventListener('wovexa:place-on-garment', place);
     return () => window.removeEventListener('wovexa:place-on-garment', place);
   }, []);
@@ -2707,8 +2804,9 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
           <SceneLights scene={scene} floorY={floorY} shadowKey={shadowKey} />
           <SceneStage scene={scene} floorY={floorY} backZ={backZ} />
           <group ref={motionGroup}>
-            <Garment geo={geo} ownRest={!!shellGeo} quality={quality} mode={mode} guides={guides} hanger={motion.kind === 'hanger'} onOwnZone={setOwnZone} />
+            <Garment geo={geo} ownRest={!!shellGeo} quality={quality} mode={mode} guides={guides} hanger={motion.kind === 'hanger'} apart={apartNow} onOwnZone={setOwnZone} />
           </group>
+          <ApartDriver apart={apartNow} />
           <MotionDriver
             kind={mode === 'place' ? 'still' : motion.kind}
             speed={motion.speed}
@@ -2719,7 +2817,8 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
             limbPivots={geo.limbPivots}
           />
           <CameraRig request={request} turntable={turntable} mode={mode} hasSelection={hasSelection} fov={scene.fovDeg} backdrop={scene.backdrop} fitH={fitH} fitW={fitW} centerY={centerY} />
-          <PhotorealView enabled={photoreal && !turntable} overlay={shadowOverlay} onStatus={setLiveStatus} />
+          {/* Path tracing sees the cloth where it is sewn, so it waits while the garment is taken apart. */}
+          <PhotorealView enabled={photoreal && !turntable && !apartNow} overlay={shadowOverlay} onStatus={setLiveStatus} />
         </Canvas>
         <RenderFrame />
       </div>
@@ -2727,7 +2826,7 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
         Orbit mode: drag to rotate, right-drag or drag with two fingers to pan, scroll or pinch to zoom, click artwork to select it. Place mode: drag artwork to move it on the garment,
         scroll or pinch to resize, Shift plus scroll or twist to rotate, right-drag to rotate the view, middle-drag to pan. Keys: arrows rotate the view or nudge artwork in Place mode, Shift
         and an arrow pans, plus and minus zoom or resize, comma and period rotate artwork, 1 to 7 jump to views (6 from the top, 7 from underneath), Home resets the view, O and P switch
-        modes. The view turns all the way round, over the top and underneath.
+        modes, X takes the garment apart into its pieces and puts it back together. The view turns all the way round, over the top and underneath.
       </p>
 
       <div className={`pointer-events-none absolute inset-x-0 ${compact ? 'top-2' : 'bottom-3'} flex justify-center px-2`}>
@@ -2738,7 +2837,7 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
                 <Rotate3d size={14} aria-hidden /> Orbit
               </span>
             </button>
-            <button aria-pressed={mode === 'place'} onClick={() => setMode('place')} title="Place: drag artwork on the garment (P)">
+            <button aria-pressed={mode === 'place'} onClick={enterPlace} title="Place: drag artwork on the garment (P)">
               <span className="flex items-center gap-1">
                 <Move size={14} aria-hidden /> Place
               </span>
@@ -2793,6 +2892,17 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
           <button className="icon-btn h-8 w-8 flex-none" aria-pressed={turntable} onClick={() => setTurntable((t) => !t)} aria-label="Turntable" title="Turntable">
             <RotateCw size={16} />
           </button>
+          {separable ? (
+            <button
+              className="icon-btn h-8 w-8 flex-none"
+              aria-pressed={apartNow}
+              onClick={toggleApart}
+              aria-label="Take apart"
+              title={apartNow ? 'Put the pieces back together (X)' : 'Take apart: see each piece of the garment on its own (X)'}
+            >
+              <Ungroup size={16} />
+            </button>
+          ) : null}
           <button
             className="icon-btn h-8 w-8 flex-none"
             aria-pressed={photoreal}
@@ -2825,6 +2935,10 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
             : hasSelection
               ? 'Drag to move. Scroll or pinch to resize, Shift or twist to rotate.'
               : 'Press artwork on the garment to select and move it.'}
+        </p>
+      ) : apartNow ? (
+        <p className={`pointer-events-none absolute left-3 ${compact ? 'bottom-3 max-w-[85%]' : 'top-3 max-w-[60%]'} rounded-md bg-floating/85 px-2 py-1 text-[11px] text-fg-2 backdrop-blur`} role="status">
+          Taken apart into its pieces. Turn the view to see each one; press X to put them back together.
         </p>
       ) : photoreal && liveStatus ? null : (
         <p className="pointer-events-none absolute left-3 top-3 hidden rounded-md bg-floating/80 px-2 py-1 text-[11px] text-fg-2 backdrop-blur sm:block">Simulated preview: fabric and ink are approximate</p>

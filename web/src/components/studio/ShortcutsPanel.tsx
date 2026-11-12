@@ -93,7 +93,7 @@ export function ShortcutsPanel() {
           ]}
         />
         <p className="text-[11px] text-fg-3">
-          In the 3D view: arrows turn the view (in Place mode they move artwork), Shift and an arrow pans, + and − zoom or resize, comma and period turn artwork 5° in Place mode, 1 to 7 jump to views, Home resets, O and P switch Orbit and Place.
+          In the 3D view: arrows turn the view (in Place mode they move artwork), Shift and an arrow pans, + and − zoom or resize, comma and period turn artwork 5° in Place mode, 1 to 7 jump to views, Home resets, O and P switch Orbit and Place, X takes the garment apart into its pieces and puts it back together.
         </p>
       </Section>
       <Section title="Mouse">

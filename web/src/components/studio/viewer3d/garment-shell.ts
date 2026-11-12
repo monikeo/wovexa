@@ -17,6 +17,7 @@ import { MeshBVH, type HitPointInfo } from 'three-mesh-bvh';
 import { getSize, type GarmentModel, type GarmentSize, type PartId } from '@/domain/garments';
 import { creditOf, MAX_SHELL_TRIANGLES, type ModelCredit } from '@/domain/model-library';
 import type { DesignDocument } from '@/domain/schema';
+import { ensureApart } from './explode';
 import { buildGarment, type GarmentGeometry, type GarmentLayout, type TrimColor, type TrimMesh } from './garment-geometry';
 import { keepGlb, loadGltf, looksLikeTemplate, parseGarmentShape, readGlbFile, ShapeError } from './garment-glb';
 
@@ -858,11 +859,24 @@ export async function transferShell(fitted: FittedShell, base: GarmentGeometry, 
     const cv = Math.min(g.cv - 1, Math.max(0, Math.floor(vV[i] * g.cv)));
     return cv * g.cu + cu;
   };
+  // Each point also counts for the patches beside its own: a coarse shell's vertices can sit
+  // further apart than a patch (along a neckline, say), and a patch none of them landed in would
+  // otherwise let a layer further out, like a hood above the neck, pass for the garment's own cloth.
   for (let i = 0; i < n; i++) {
     if (forced[fitted.vertexHint[i]]) continue;
     const g = grids[vPart[i]];
-    const c = cellOf(i);
-    if (vDist[i] < g.min[c]) g.min[c] = vDist[i];
+    const cu = Math.min(g.cu - 1, Math.max(0, Math.floor(vU[i] * g.cu)));
+    const cv = Math.min(g.cv - 1, Math.max(0, Math.floor(vV[i] * g.cv)));
+    for (let dv = -1; dv <= 1; dv++) {
+      const row = cv + dv;
+      if (row < 0 || row >= g.cv) continue;
+      for (let du = -1; du <= 1; du++) {
+        const col = cu + du;
+        if (col < 0 || col >= g.cu) continue;
+        const c = row * g.cu + col;
+        if (vDist[i] < g.min[c]) g.min[c] = vDist[i];
+      }
+    }
   }
   const vRole = new Array<TrimColor | null>(n).fill(null);
   for (let i = 0; i < n; i++) {
@@ -1004,13 +1018,16 @@ export async function transferShell(fitted: FittedShell, base: GarmentGeometry, 
 
   // Frame the stage on the shell itself.
   const span = boundsOf(fitted.position);
-  return {
+  const out: GarmentGeometry = {
     ...base,
     parts,
     trims,
     limbPivots,
     layout: { ...base.layout, heightMm: span.max[1] - span.min[1], widthMm: span.max[0] - span.min[0], bottomMm: span.min[1] },
   };
+  // Its pieces come apart as whole pieces: the shell's cloth is one surface, not cut panels.
+  ensureApart(out);
+  return out;
 }
 
 // ---------------------------------------------------------------------------

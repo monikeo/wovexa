@@ -76,6 +76,7 @@ import {
   Settings,
   Share2,
   Shirt,
+  Smile,
   Sparkles,
   Spline,
   Shapes,
@@ -480,6 +481,16 @@ function buildCommands(c: Context): { commands: PaletteCommand[]; titles: Partia
     { id: 'add-pen', label: 'Draw your own shape', keywords: 'pen path vector bezier custom freeform outline', icon: PenTool, keys: 'P', run: startPen },
     { id: 'add-pencil', label: 'Pencil: draw freehand', keywords: 'freehand sketch line hand drawn scribble draw', icon: Pencil, keys: 'N', run: () => startFreehand('pencil') },
     { id: 'add-brush', label: 'Brush: paint strokes', keywords: 'freehand paint ink marker calligraphy stroke stylus pressure', icon: Brush, keys: 'B', run: () => startFreehand('brush') },
+    {
+      id: 'add-icon',
+      label: 'Icons: add a line icon',
+      keywords: 'icon symbol emoji lucide star heart music sport arrow pictogram',
+      icon: Smile,
+      // The tool rail's icon panel takes it on wider screens; a phone has no rail, so its Add sheet (with the icons) opens.
+      run: () => {
+        if (window.dispatchEvent(new CustomEvent('wovexa:icons', { cancelable: true }))) s().setMobileSheet('add');
+      },
+    },
     { id: 'add-text-path', label: 'Add text on a path', keywords: 'type along line curve arc follow drawn path pen words', icon: Spline, run: () => startTextOnPath() },
     { id: 'add-area', label: 'Add a design area', keywords: 'new zone box anywhere hood panel seam artboard print area', icon: SquareDashed, run: addDesignArea },
     ...(c.copied ? [{ id: 'paste', label: `Paste ${plural(c.copied, 'layer')}`, keywords: 'clipboard', icon: ClipboardPaste, keys: 'Mod+V', run: () => void pasteLayers() }] : []),

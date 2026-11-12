@@ -17,6 +17,7 @@ import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferG
 import { newId } from '@/domain/factory';
 import type { GarmentModel, GarmentSize, PartId } from '@/domain/garments';
 import { findAssetByHash, putAsset, type StoredAsset } from '@/lib/local-db';
+import { ensureApart } from './explode';
 import type { GarmentGeometry, TrimColor, TrimMesh } from './garment-geometry';
 
 export const TEMPLATE_FORMAT = 'wovexa-garment';
@@ -333,7 +334,7 @@ export function shapedGarment(base: GarmentGeometry, shape: ParsedShape, fit: { 
     g.computeBoundingBox();
     if (g.boundingBox) span.union(g.boundingBox);
   }
-  return {
+  const out: GarmentGeometry = {
     ...base,
     parts,
     trims,
@@ -345,4 +346,7 @@ export function shapedGarment(base: GarmentGeometry, shape: ParsedShape, fit: { 
       bottomMm: span.isEmpty() ? base.layout.bottomMm : span.min.y,
     },
   };
+  // Parts the file replaced come apart as whole pieces; built-in ones keep their own way out.
+  ensureApart(out);
+  return out;
 }
