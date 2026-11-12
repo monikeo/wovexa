@@ -13,8 +13,9 @@ import { drawPart, PX_PER_MM } from '@/components/studio/viewer3d/garment-textur
 import { getGarment, partColor, type GarmentModel, type GarmentSize, type PartId } from '@/domain/garments';
 import type { Colorway, DesignDocument, ZoneId } from '@/domain/schema';
 import { canvasToBlob } from '@/lib/download';
+import { nestOffThread } from './marker-compare';
 import { BLEED_MM, markerNestOptions, markerPieces, orderSets, type MarkerPiece, type MarkerSettings, type MarkerShape } from './marker-layout';
-import { bounds, nest, placeOutline, simplifyOutline, type Placement, type Point } from './nesting';
+import { bounds, placeOutline, simplifyOutline, type Placement, type Point } from './nesting';
 import { buildPdf, cutContourPaths } from './pdf';
 import { RgbRowDeflater, rgbPng } from './raster-stream';
 import { toCsv, type Roster } from './roster';
@@ -22,8 +23,15 @@ import { toCsv, type Roster } from './roster';
 /** Markers print at the cut-and-sew resolution, the usual one for all-over sublimation. */
 const PPM = PX_PER_MM.print;
 export const MARKER_DPI = Math.round(PPM * 25.4);
-/** Rows per strip while a roll length is assembled. */
-const STRIP = 1024;
+/**
+ * Rows per strip while a roll length is assembled. Each strip is drawn, read back and compressed
+ * (zlib does its work inside the write), then the page gets a turn (`yieldTask`): about a tenth of
+ * a second of work at a time for a 160 cm roll, so the progress and Cancel keep answering. Before,
+ * every strip of a roll length ran in one go (each wait resolved without a break) and held the page
+ * for one to two seconds at a time. Packing the rows in a worker was tried: it kept the page free,
+ * but zlib ran slower there in testing (1.3 to 2.5 times), so the export took longer.
+ */
+const STRIP = 256;
 
 export interface MarkerSummary {
   rollWidthMm: number;
@@ -73,6 +81,19 @@ interface Art {
 }
 
 const yieldToUi = () => new Promise<void>((r) => setTimeout(r, 0));
+/**
+ * A turn for the page (input, painting, the progress) between strips. A message, not a timer: a
+ * hidden tab stretches timers to a second each, which over hundreds of strips would stall the export.
+ */
+const yieldTask = () =>
+  new Promise<void>((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      resolve();
+    };
+    channel.port2.postMessage(null);
+  });
 function abortIfNeeded(signal?: AbortSignal) {
   if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError');
 }
@@ -123,13 +144,23 @@ function labelAnchor(outline: Point[]): Point {
 
 export async function buildMarker(doc: DesignDocument, colorway: Colorway, roster: Roster | null, settings: MarkerSettings, ctx: MarkerContext) {
   const model = getGarment(doc.garment.modelId);
-  const progress = (label: string, fraction: number) => ctx.onProgress?.(label, Math.min(1, fraction));
+  // Passed on when what it says changes (a new step or a new whole percent): hundreds of strips each
+  // redrew the dialog and repainted the page for a change too small to see.
+  let said = '';
+  const progress = (label: string, fraction: number) => {
+    const f = Math.min(1, fraction);
+    const now = `${label}|${Math.round(f * 100)}`;
+    if (now === said) return;
+    said = now;
+    ctx.onProgress?.(label, f);
+  };
   const { sets, unknownSizes } = orderSets(model, doc.garment.sizeCode, roster);
   progress('Fabric marker: nesting the pieces', 0);
   await yieldToUi();
   const { pieces, geos } = markerPieces(model, sets, 'high');
   const opts = markerNestOptions(settings);
-  const result = nest(pieces, opts);
+  // Seconds for a large team order: in a worker, so the progress moves and Cancel works meanwhile.
+  const result = await nestOffThread(pieces, opts, ctx.signal);
   abortIfNeeded(ctx.signal);
   const warnings: string[] = [];
   if (unknownSizes.length) warnings.push(`The marker uses the sample size where the roster asks for a size this garment does not have: ${unknownSizes.join(', ')}.`);
@@ -318,6 +349,7 @@ export async function buildMarker(doc: DesignDocument, colorway: Colorway, roste
         await deflater.push(sc.getImageData(0, 0, W, h).data, h);
         stripsDone++;
         progress(`Fabric marker: roll length ${section.index + 1} of ${n}`, 0.45 + (0.53 * stripsDone) / Math.max(1, totalStrips));
+        await yieldTask();
       }
       const data = await deflater.finish();
       const blob =

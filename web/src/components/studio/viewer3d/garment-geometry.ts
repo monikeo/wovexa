@@ -754,26 +754,35 @@ function displaceAlongNormals(g: THREE.BufferGeometry, offset: (x: number, y: nu
   const pos = g.getAttribute('position') as THREE.BufferAttribute;
   const nor = g.getAttribute('normal') as THREE.BufferAttribute | undefined;
   if (!nor) return;
-  const key = (i: number) => `${Math.round(pos.getX(i) * 20)},${Math.round(pos.getY(i) * 20)},${Math.round(pos.getZ(i) * 20)}`;
-  const welded = new Map<string, [number, number, number]>();
-  for (let i = 0; i < pos.count; i++) {
-    const k = key(i);
-    const n = welded.get(k) ?? [0, 0, 0];
-    n[0] += nor.getX(i);
-    n[1] += nor.getY(i);
-    n[2] += nor.getZ(i);
-    welded.set(k, n);
+  // Vertices at the same position (to 0.05 mm) share a normal. Each position is found once, by a
+  // number (17 bits an axis: ±3.2 m, far past any garment): string keys, made twice over, were
+  // most of the time building a garment took.
+  const count = pos.count;
+  const groupOf = new Int32Array(count);
+  const groups = new Map<number, number>();
+  const sums = new Float64Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    const k = ((Math.round(pos.getX(i) * 20) + 65536) * 131072 + (Math.round(pos.getY(i) * 20) + 65536)) * 131072 + (Math.round(pos.getZ(i) * 20) + 65536);
+    let gi = groups.get(k);
+    if (gi === undefined) groups.set(k, (gi = groups.size));
+    groupOf[i] = gi;
+    sums[gi * 3] += nor.getX(i);
+    sums[gi * 3 + 1] += nor.getY(i);
+    sums[gi * 3 + 2] += nor.getZ(i);
   }
   const color = g.getAttribute('color') as THREE.BufferAttribute | undefined;
-  for (let i = 0; i < pos.count; i++) {
+  for (let i = 0; i < count; i++) {
     const x = pos.getX(i);
     const y = pos.getY(i);
     const z = pos.getZ(i);
     const d = offset(x, y, z);
     if (!d) continue;
-    const n = welded.get(key(i))!;
-    const len = Math.hypot(n[0], n[1], n[2]) || 1;
-    pos.setXYZ(i, x + (n[0] / len) * d, y + (n[1] / len) * d, z + (n[2] / len) * d);
+    const gi = groupOf[i] * 3;
+    const nx = sums[gi];
+    const ny = sums[gi + 1];
+    const nz = sums[gi + 2];
+    const len = Math.hypot(nx, ny, nz) || 1;
+    pos.setXYZ(i, x + (nx / len) * d, y + (ny / len) * d, z + (nz / len) * d);
     if (color && shadeMm > 0 && d < 0) {
       const k = 1 - 0.16 * Math.min(1, -d / shadeMm);
       color.setXYZ(i, color.getX(i) * k, color.getY(i) * k, color.getZ(i) * k);

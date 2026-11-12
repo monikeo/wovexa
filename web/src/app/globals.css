@@ -144,6 +144,10 @@
   html {
     -webkit-text-size-adjust: 100%;
   }
+  /* The prerendered onboarding card, for a browser already through it (the root layout's script marks it). */
+  [data-onboarded] [data-onboarding] {
+    display: none;
+  }
   body {
     background: var(--surface-canvas);
     color: var(--text-primary);

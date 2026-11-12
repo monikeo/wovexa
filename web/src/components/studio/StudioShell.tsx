@@ -792,6 +792,12 @@ function Stage({ mode }: { mode: 'desktop' | 'tablet' | 'mobile' }) {
   const viewMode = useStudio((s) => s.viewMode);
   const wide = useWideStage();
   const effective: ViewMode = mode === 'mobile' ? (viewMode === '2d' ? '2d' : '3d') : viewMode === 'split' && !wide ? '2d' : viewMode;
+  const show3d = effective !== '2d';
+  // Once built, the 3D view stays (hidden) while the 2D view has the stage to itself: closing it tore
+  // down its WebGL context (most of a second on some graphics drivers), and opening it again rebuilt
+  // the garment, its shading and its shaders.
+  const [keep3d, setKeep3d] = useState(show3d);
+  if (show3d && !keep3d) setKeep3d(true);
   const [split, setSplit] = useState(readSplit);
   const stageRef = useRef<HTMLElement>(null);
   const onDrop = (e: React.DragEvent) => {
@@ -815,9 +821,9 @@ function Stage({ mode }: { mode: 'desktop' | 'tablet' | 'mobile' }) {
           }}
         />
       ) : null}
-      {effective !== '2d' ? (
-        <div className="relative min-w-0 flex-1">
-          <Viewer3D compact={mode === 'mobile'} />
+      {keep3d ? (
+        <div className={show3d ? 'relative min-w-0 flex-1' : 'hidden'}>
+          <Viewer3D compact={mode === 'mobile'} active={show3d} />
         </div>
       ) : null}
     </main>

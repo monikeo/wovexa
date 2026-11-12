@@ -17,6 +17,12 @@ import { GarmentGlyph } from '@/components/studio/GarmentGlyph';
 const KEY = 'wovexa.onboarded';
 const listeners = new Set<() => void>();
 
+/**
+ * Whether this browser has been through onboarding. The prerendered page always carries the card
+ * (the server can't know); for someone who has, a script in the root layout marks <html>
+ * data-onboarded before the first paint and CSS hides the card, which is then dropped. Before,
+ * the page came without it and first-time visitors saw everything below jump down as it appeared.
+ */
 function useOnboarded() {
   return useSyncExternalStore(
     (cb) => {
@@ -30,7 +36,7 @@ function useOnboarded() {
         return true;
       }
     },
-    () => true,
+    () => false,
   );
 }
 
@@ -38,6 +44,7 @@ function finish() {
   try {
     localStorage.setItem(KEY, '1');
   } catch {}
+  document.documentElement.dataset.onboarded = '';
   listeners.forEach((l) => l());
 }
 
@@ -66,7 +73,9 @@ export function Onboarding() {
   const presets = colorwayPresetsFor(model);
   const colorway = Math.max(0, presets.findIndex((p) => p.name === colorName));
   const template = use.template ? BUILT_IN_TEMPLATES.find((t) => t.id === use.template) : undefined;
-  const sampleFits = !!template && templateFits(template, model);
+  // Telling whether the sample fits builds it (new layer ids), so only on the step that offers it:
+  // never while the page is prerendered.
+  const sampleFits = step === 2 && !!template && templateFits(template, model);
   const sample = sampleFits && withSample;
   const chooseUse = (u: (typeof USES)[number]) => {
     setUse(u);
@@ -86,7 +95,7 @@ export function Onboarding() {
 
   const steps = ['What are you making?', 'Pick the garment', 'How do you want to start?'];
   return (
-    <section aria-labelledby="onboarding-title" className="mb-10 rounded-2xl border border-line bg-panel p-5 sm:p-6">
+    <section data-onboarding aria-labelledby="onboarding-title" className="mb-10 rounded-2xl border border-line bg-panel p-5 sm:p-6">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="flex items-center gap-1.5 text-xs font-semibold text-accent">
