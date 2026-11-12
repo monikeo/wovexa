@@ -39,6 +39,7 @@ function describeLayerChange(a: ArtworkLayer, b: ArtworkLayer): string[] {
   if (a.style.finish !== b.style.finish) out.push(`finish ${b.style.finish.replace('_', ' ')}`);
   const effects = (s: ArtworkLayer['style']) => JSON.stringify([s.shadow ?? null, s.outline ?? null, s.halftone ?? null, s.distress ?? null]);
   if (effects(a.style) !== effects(b.style)) out.push('effects changed');
+  if (JSON.stringify(a.style.extrude ?? null) !== JSON.stringify(b.style.extrude ?? null)) out.push(b.style.extrude ? `extruded ${roundMm(b.style.extrude.depthMm)} mm deep` : 'no longer extruded');
   const ca = a.content;
   const cb = b.content;
   if (ca.kind === 'text' && cb.kind === 'text') {
@@ -47,6 +48,7 @@ function describeLayerChange(a: ArtworkLayer, b: ArtworkLayer): string[] {
     if (ca.fill !== cb.fill && !cb.letterColors) out.push(`colour ${cb.fill}`);
     if (JSON.stringify(ca.letterColors ?? null) !== JSON.stringify(cb.letterColors ?? null)) out.push(cb.letterColors ? `letter colours ${cb.letterColors.join(', ')}` : 'one colour for every letter');
     if (ca.curveDeg !== cb.curveDeg) out.push(cb.curveDeg ? `curved ${Math.round(cb.curveDeg)}°` : 'straightened');
+    if (JSON.stringify(ca.warp ?? null) !== JSON.stringify(cb.warp ?? null)) out.push(cb.warp ? `warped: ${cb.warp.kind} ${Math.round(cb.warp.amount)}%` : 'warp removed');
     if (ca.strokeColor !== cb.strokeColor || ca.strokeWidthMm !== cb.strokeWidthMm) out.push('outline changed');
     if (!!ca.hollow !== !!cb.hollow) out.push(cb.hollow ? 'outline only' : 'filled');
     if (ca.letterSpacingEm !== cb.letterSpacingEm || ca.lineHeight !== cb.lineHeight || ca.align !== cb.align) out.push('spacing or alignment changed');
@@ -93,6 +95,7 @@ export function diffDocuments(before: DesignDocument, after: DesignDocument): Ch
     const label = model.fabricPresets.find((f) => f.id === after.garment.fabricPresetId)?.label ?? after.garment.fabricPresetId;
     changes.push({ area: 'Garment', kind: 'changed', text: `Fabric changed to ${label}` });
   }
+  if ((before.garment.finish ?? null) !== (after.garment.finish ?? null)) changes.push({ area: 'Garment', kind: 'changed', text: after.garment.finish ? `Garment wash: ${after.garment.finish}` : 'Garment wash removed' });
 
   const beforeCw = new Map(before.colorways.map((c) => [c.id, c]));
   const afterCw = new Map(after.colorways.map((c) => [c.id, c]));

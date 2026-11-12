@@ -33,7 +33,10 @@ import { shapePathData } from '@/domain/shape-path';
 import { AssetError, importImageFile, loadAssetImage } from '@/lib/assets';
 import type { CombineOp } from '@/lib/combine';
 import { canvasToBlob } from '@/lib/download';
-import { KitLockupError, saveKitLockup, type KitLockup } from '@/lib/local-db';
+import { ARTWORK_FONTS } from '@/lib/fonts';
+import { BRUSH_LABELS, BRUSHES, brushStroke, pencilStroke, type Brush, type StrokePoint } from '@/lib/freehand';
+import { getAsset, KitLockupError, saveKitLockup, type KitLockup } from '@/lib/local-db';
+import { piecesToLayers, SvgImportError, svgPieces, type SvgSkipped } from '@/lib/svg-import';
 import { placeOnPath, textPathFrom } from '@/lib/path-text';
 import { drawZone, ensureFonts, isOnPath, textAspect } from '@/lib/render/zone-renderer';
 import { toast } from '@/components/ui/primitives';
@@ -60,6 +63,44 @@ export function addText(value = 'Your text') {
   c.s.dispatch(cmd.addLayer(c.zoneId, layer));
   c.s.select([layer.id]);
   // Wait for the inspector to render the new layer's text field before focusing it.
+  setTimeout(() => window.dispatchEvent(new CustomEvent('wovexa:edit-layer', { detail: { layerId: layer.id } })), 60);
+}
+
+/**
+ * A second line under a text layer, in a font that pairs with its own (spec TYP-03): the same ink,
+ * centred under it at about two thirds of its width, ready to type. Waits for the font, so the box
+ * starts at the new font's true proportions.
+ */
+export async function addPairedLine(sourceId: string, family: string) {
+  const c = context();
+  const src = c?.s.document ? artboardOf(c.s.document, c.zoneId)?.layers[sourceId] : undefined;
+  if (!c || !src || src.content.kind !== 'text') return;
+  const font = ARTWORK_FONTS.find((f) => f.family === family);
+  const layer = createTextLayer(c.spec, 'YOUR SUBLINE');
+  if (layer.content.kind !== 'text') return;
+  layer.content = {
+    ...layer.content,
+    fontFamily: family,
+    fontWeight: font?.weights.includes(400) ? 400 : (font?.weights[0] ?? 400),
+    fill: src.content.fill,
+    // Capitals spaced out read as a subline; a script keeps its joins.
+    letterSpacingEm: font?.category === 'script' ? 0 : 0.12,
+    value: font?.category === 'script' ? 'Your subline' : 'YOUR SUBLINE',
+  };
+  layer.name = 'Subline';
+  await ensureFonts([{ orderedLayerIds: [layer.id], layers: { [layer.id]: layer } }]).catch(() => undefined);
+  const t = src.transform;
+  const widthMm = Math.max(10, t.widthMm * 0.62);
+  const heightMm = widthMm / textAspect(layer.content);
+  // Below the source, along its own downward direction when it is turned.
+  const a = (t.rotationDeg * Math.PI) / 180;
+  const drop = t.heightMm / 2 + heightMm / 2 + Math.max(2, t.heightMm * 0.08);
+  Object.assign(layer.transform, { widthMm, heightMm, rotationDeg: t.rotationDeg, centerXmm: t.centerXmm - Math.sin(a) * drop, centerYmm: t.centerYmm + Math.cos(a) * drop });
+  // The document may have moved on while the font loaded: add it only if the headline is still there.
+  const now = useStudio.getState();
+  if (!now.document || now.activeZoneId !== c.zoneId || !artboardOf(now.document, c.zoneId)?.layers[sourceId]) return;
+  if (!now.dispatch(cmd.addLayer(c.zoneId, layer, artboardOf(now.document, c.zoneId)!.orderedLayerIds.indexOf(sourceId) + 1))) return;
+  now.select([layer.id]);
   setTimeout(() => window.dispatchEvent(new CustomEvent('wovexa:edit-layer', { detail: { layerId: layer.id } })), 60);
 }
 
@@ -390,6 +431,74 @@ export function editPoints() {
   onArtboard(() => window.dispatchEvent(new CustomEvent('wovexa:edit-points', { detail: { layerId: layer.id } })));
 }
 
+/** The pencil's and brush's settings, remembered on this device. */
+export interface FreehandSettings {
+  widthMm: number;
+  /** 0–1: how much a shaky hand is evened out. */
+  smoothing: number;
+  brush: Brush;
+}
+
+export const DEFAULT_FREEHAND: FreehandSettings = { widthMm: 2, smoothing: 0.5, brush: 'round' };
+const FREEHAND_KEY = 'wovexa.freehand';
+
+export function readFreehandSettings(): FreehandSettings {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FREEHAND_KEY) ?? 'null') as Partial<FreehandSettings> | null;
+    if (!saved) return DEFAULT_FREEHAND;
+    return {
+      widthMm: Number.isFinite(saved.widthMm) ? Math.min(30, Math.max(0.3, saved.widthMm!)) : DEFAULT_FREEHAND.widthMm,
+      smoothing: Number.isFinite(saved.smoothing) ? Math.min(1, Math.max(0, saved.smoothing!)) : DEFAULT_FREEHAND.smoothing,
+      brush: BRUSHES.includes(saved.brush as Brush) ? (saved.brush as Brush) : DEFAULT_FREEHAND.brush,
+    };
+  } catch {
+    return DEFAULT_FREEHAND;
+  }
+}
+
+export function writeFreehandSettings(settings: FreehandSettings) {
+  try {
+    localStorage.setItem(FREEHAND_KEY, JSON.stringify(settings));
+  } catch {
+    // Not remembered (private browsing): the tool still works.
+  }
+}
+
+/**
+ * Start the pencil (a smooth line, editable point by point) or the brush (a filled stroke) on the
+ * 2D artboard; with only the 3D view open, the artboard is shown first.
+ */
+export function startFreehand(tool: 'pencil' | 'brush') {
+  onArtboard(() => window.dispatchEvent(new CustomEvent('wovexa:freehand', { detail: tool })));
+}
+
+/**
+ * One finished stroke as a layer on the active zone or design area, in the ink that reads on the
+ * garment: a pencil line (outline only, round ends) or a brush stroke (a filled shape). False when
+ * the stroke was too small to keep.
+ */
+export function addFreehandStroke(points: StrokePoint[], tool: 'pencil' | 'brush', settings: FreehandSettings): boolean {
+  const c = context();
+  if (!c) return false;
+  if (tool === 'pencil') {
+    const out = pencilStroke(points, { smoothing: settings.smoothing, closeMm: Math.max(2, settings.widthMm * 1.5) });
+    if (!out) return false;
+    const layer = createGraphicLayer(c.spec, { id: 'pencil', name: out.closed ? 'Pencil loop' : 'Pencil line', path: out.path, aspect: out.box.w / out.box.h }, c.ink);
+    if (layer.content.kind !== 'shape') return false;
+    delete layer.content.graphicId;
+    Object.assign(layer.content, { hollow: true, strokeWidthMm: settings.widthMm, roundCaps: true });
+    Object.assign(layer.transform, { centerXmm: out.box.x + out.box.w / 2, centerYmm: out.box.y + out.box.h / 2, widthMm: out.box.w, heightMm: out.box.h });
+    return c.s.dispatch(cmd.addLayer(c.zoneId, layer));
+  }
+  const out = brushStroke(points, { brush: settings.brush, widthMm: settings.widthMm, smoothing: settings.smoothing });
+  if (!out) return false;
+  const layer = createGraphicLayer(c.spec, { id: 'brush', name: `${BRUSH_LABELS[settings.brush]} brush stroke`, path: out.path, aspect: out.box.w / out.box.h }, c.ink);
+  if (layer.content.kind !== 'shape') return false;
+  delete layer.content.graphicId;
+  Object.assign(layer.transform, { centerXmm: out.box.x + out.box.w / 2, centerYmm: out.box.y + out.box.h / 2, widthMm: out.box.w, heightMm: out.box.h });
+  return c.s.dispatch(cmd.addLayer(c.zoneId, layer));
+}
+
 /** A shape drawn with the pen (path in a 0–100 box, over `box` in mm) on the active zone or design area. */
 export function addDrawnShape(path: string, box: { x: number; y: number; w: number; h: number }) {
   const c = context();
@@ -488,6 +597,7 @@ export async function addImages(files: FileList | File[]) {
     return;
   }
   const added: string[] = [];
+  let svgs = 0;
   for (const file of list) {
     try {
       const asset = await importImageFile(file);
@@ -496,11 +606,14 @@ export async function addImages(files: FileList | File[]) {
       const layer = createImageLayer(c.spec, { id: asset.id, width: asset.width, height: asset.height, mime: asset.mime, name: asset.name });
       c.s.dispatch(cmd.addLayer(c.zoneId, layer));
       added.push(layer.id);
+      if (asset.mime === 'image/svg+xml') svgs++;
     } catch (error) {
       toast(error instanceof AssetError ? error.message : `${file.name} couldn't be added.`, 'error');
     }
   }
   if (added.length) useStudio.getState().select(added);
+  // An SVG goes in as a picture; say how to get its shapes.
+  if (svgs === 1 && added.length === 1) toast('SVG placed. To edit its shapes, choose Make editable shapes in its settings.');
 }
 
 export function deleteSelection() {
@@ -605,7 +718,8 @@ export async function combineSelection(op: CombineOp) {
   if (result.path.length > LIMITS.pathChars) return void toast('The combined shape would be too detailed to keep. Combine fewer or simpler layers.', 'error');
   const bottom = layers[0];
   const b = bottom.content;
-  const stroke = b.kind === 'shape' ? { strokeColor: b.strokeColor, strokeWidthMm: b.strokeWidthMm, hollow: b.hollow } : {};
+  // An outline-only layer is combined by its line, so the result is that area filled, not outlined again.
+  const stroke = b.kind === 'shape' && !b.hollow ? { strokeColor: b.strokeColor, strokeWidthMm: b.strokeWidthMm } : {};
   const fillStyle = b.kind === 'shape' || (b.kind === 'text' && !b.letterColors) ? b.fillStyle : undefined;
   const content: ShapeContent = { kind: 'shape', shape: 'path', fill: b.kind === 'text' || b.kind === 'shape' ? b.fill : c.ink, cornerRadiusMm: 0, path: result.path };
   for (const [k, v] of Object.entries({ ...stroke, fillStyle })) if (v !== undefined) (content as Record<string, unknown>)[k] = v;
@@ -622,6 +736,89 @@ export async function combineSelection(op: CombineOp) {
   const at = zone.orderedLayerIds.indexOf(ids[0]);
   c.s.dispatch(cmd.batch(COMBINE_LABELS[op], [cmd.removeLayers(c.zoneId, ids), cmd.addLayer(c.zoneId, layer, at)]));
   c.s.select([layer.id]);
+}
+
+/**
+ * Outline stroke: each selected outline-only shape (a pencil line, a ring) becomes a filled shape
+ * that looks the same, as cutters and some print shops want lines. One undo step.
+ */
+export async function outlineStroke() {
+  const c = context();
+  if (!c?.s.document) return;
+  const zone = artboardOf(c.s.document, c.zoneId);
+  if (!zone) return;
+  const layers = zone.orderedLayerIds.map((id) => zone.layers[id]).filter((l) => l && c.s.selectedLayerIds.includes(l.id) && l.content.kind === 'shape' && l.content.hollow);
+  if (!layers.length) return void toast('Select an outline-only shape or a pencil line to turn it into a filled shape.');
+  if (layers.some((l) => l.locked)) return void toast('Unlock the lines to outline them.');
+  const { combineLayers } = await import('@/lib/combine');
+  const commands: cmd.Command[] = [];
+  const made: string[] = [];
+  for (const layer of layers) {
+    const result = await combineLayers('union', [layer]).catch(() => null);
+    if (!result || result.path.length > LIMITS.pathChars || layer.content.kind !== 'shape') continue;
+    const { box } = result;
+    const content: ShapeContent = { kind: 'shape', shape: 'path', fill: layer.content.fill, cornerRadiusMm: 0, path: result.path };
+    if (layer.content.fillStyle) content.fillStyle = layer.content.fillStyle;
+    const outlined: ArtworkLayer = { ...layer, id: newId(), name: `${layer.name} outlined`.slice(0, 120), transform: { centerXmm: box.x + box.w / 2, centerYmm: box.y + box.h / 2, widthMm: box.w, heightMm: box.h, rotationDeg: 0, flipX: false, flipY: false }, content };
+    commands.push(cmd.removeLayers(c.zoneId, [layer.id]), cmd.addLayer(c.zoneId, outlined, zone.orderedLayerIds.indexOf(layer.id)));
+    made.push(outlined.id);
+  }
+  if (!made.length) return void toast('These lines couldn’t be turned into shapes.', 'error');
+  // Each swap takes one layer out and puts one back at its place, so the stack keeps its order.
+  c.s.dispatch(cmd.batch(made.length === 1 ? 'Outline stroke' : `Outline ${made.length} strokes`, commands));
+  c.s.select(made);
+}
+
+/**
+ * The one selected SVG image as editable shapes (spec ED2-09): each of its shapes a path layer in
+ * its own colour, grouped exactly where the image shows it. The image goes, unless parts of it
+ * (text, pictures) aren't shapes: then it stays, hidden, underneath. One undo step.
+ */
+export async function svgToShapes() {
+  const s = useStudio.getState();
+  const zoneId = s.activeZoneId;
+  const zone = s.document ? artboardOf(s.document, zoneId) : undefined;
+  const layer = s.selectedLayerIds.length === 1 ? zone?.layers[s.selectedLayerIds[0]] : undefined;
+  if (!zone || !layer || layer.content.kind !== 'image' || layer.content.mime !== 'image/svg+xml') return void toast('Select an SVG image to make it editable shapes.');
+  if (layer.locked) return void toast('Unlock the SVG to make it editable shapes.');
+  const c = layer.content;
+  if (c.crop || c.mask || c.repeat) return void toast('Take the crop, frame shape or repeat off the SVG first: its shapes come in whole.');
+  const asset = await getAsset(c.assetId).catch(() => undefined);
+  if (!asset) return void toast('The SVG file is no longer on this device.', 'error');
+  let made: ReturnType<typeof piecesToLayers>;
+  let skipped: SvgSkipped;
+  let keep: boolean;
+  try {
+    const read = svgPieces(await asset.blob.text(), c.naturalWidthPx, c.naturalHeightPx, layer.transform.widthMm, layer.transform.heightMm);
+    skipped = read.skipped;
+    keep = skipped.text + skipped.pictures > 0;
+    if (!read.pieces.length) return void toast(keep ? 'This SVG has no shapes to edit, only text or pictures.' : 'This SVG has no shapes to edit.', 'error');
+    made = piecesToLayers(read.pieces, layer, LIMITS.layers - zone.orderedLayerIds.length + (keep ? 0 : 1));
+  } catch (error) {
+    return void toast(error instanceof SvgImportError ? error.message : 'This SVG couldn’t be made into shapes.', 'error');
+  }
+  if (!made.layers.length) return void toast('This SVG’s shapes are too detailed to keep as layers.', 'error');
+  // Moved or changed while it was read: the shapes would land where it was.
+  const now = useStudio.getState();
+  const zoneNow = now.document ? artboardOf(now.document, zoneId) : undefined;
+  const current = zoneNow?.layers[layer.id];
+  if (!zoneNow || !current || current.transform !== layer.transform || current.content !== layer.content) return void toast('The SVG changed while it was being read. Try again.', 'error');
+  // Just above the image, past the rest of its group, so groups stay together in the stack.
+  const order = zoneNow.orderedLayerIds;
+  const last = layer.groupId ? Math.max(...order.map((id, i) => (zoneNow.layers[id]?.groupId === layer.groupId ? i : -1))) : order.indexOf(layer.id);
+  const commands = made.layers.map((l, i) => cmd.addLayer(zoneId, l, last + 1 + i));
+  commands.push(keep ? cmd.updateLayer(zoneId, layer.id, { visible: false }, 'Hide SVG image') : cmd.removeLayers(zoneId, [layer.id]));
+  if (!now.dispatch(cmd.batch('Make SVG editable shapes', commands))) return;
+  now.select(made.layers.map((l) => l.id));
+  const n = made.layers.length;
+  const notes = [
+    made.mergedAcross ? 'Shapes of one colour share a layer, to fit the print area.' : '',
+    keep ? `${[skipped.text ? `${skipped.text} text` : '', skipped.pictures ? `${skipped.pictures} picture${skipped.pictures === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ')} in it ${skipped.text + skipped.pictures === 1 ? 'isn’t a shape' : 'aren’t shapes'}: the SVG is hidden underneath.` : '',
+    skipped.flattened ? 'Gradients became their first colour.' : '',
+    skipped.clipped ? 'Clipping was left out: shapes come in whole.' : '',
+    made.tooDetailed ? `${made.tooDetailed} shape${made.tooDetailed === 1 ? ' was' : 's were'} too detailed to keep.` : '',
+  ].filter(Boolean);
+  toast(`Made ${n} editable shape layer${n === 1 ? '' : 's'} from the SVG.${notes.length ? ` ${notes.join(' ')}` : ''}`, 'success');
 }
 
 /** Open tracing into vector shapes for the one selected image (showing the inspector first on small screens). */
@@ -881,7 +1078,7 @@ export function shadowSelection(shadow: LayerShadow | undefined, label: string) 
   dispatch(cmd.batch(label, layers.map((l) => cmd.updateLayer(zoneId, l.id, l.content.kind === 'text' ? { content: { shadow } } : { style: { shadow } }, label))));
 }
 
-/** Take every effect off the selected layers (shadow or glow, sticker outline, halftone). One undo step. */
+/** Take every effect off the selected layers (shadow or glow, sticker outline, halftone, 3D extrusion). One undo step. */
 export function clearEffects() {
   const { layers, zoneId, dispatch } = editableSelection();
   const label = 'Remove effects';
@@ -889,7 +1086,7 @@ export function clearEffects() {
   dispatch(
     cmd.batch(
       label,
-      layers.map((l) => cmd.updateLayer(zoneId, l.id, { style: { shadow: undefined, outline: undefined, halftone: undefined }, ...(l.content.kind === 'text' ? { content: { shadow: undefined } } : {}) }, label)),
+      layers.map((l) => cmd.updateLayer(zoneId, l.id, { style: { shadow: undefined, outline: undefined, halftone: undefined, extrude: undefined }, ...(l.content.kind === 'text' ? { content: { shadow: undefined } } : {}) }, label)),
     ),
   );
 }

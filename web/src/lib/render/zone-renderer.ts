@@ -14,6 +14,7 @@ import type {
   ImageAdjust,
   ImageContent,
   ImageRepeat,
+  LayerExtrude,
   LayerHalftone,
   LayerShadow,
   LayerStack,
@@ -123,6 +124,8 @@ interface Glyph {
   x: number;
   y: number;
   rot: number;
+  /** Height scale for an envelope warp (1 or absent: as set). */
+  sy?: number;
 }
 
 /** Text laid out at the reference size. The renderer scales it to fill the layer box. */
@@ -152,9 +155,24 @@ export function isWaved(c: Pick<TextContent, 'curveDeg' | 'value' | 'wave' | 'on
   return !isOnPath(c) && !isCurved(c) && Math.abs(c.wave ?? 0) >= 0.5 && !c.value.includes('\n') && c.value.length > 0;
 }
 
-/** True when the text follows a path (a drawn one, an arc or a wave) rather than straight lines. */
-export function isWarped(c: Pick<TextContent, 'curveDeg' | 'value' | 'wave' | 'onPath'>) {
-  return isOnPath(c) || isCurved(c) || isWaved(c);
+/** An envelope warp (bulge, arch, perspective) applies to straight single-line text; a curve, wave or path takes precedence. */
+export function isEnveloped(c: Pick<TextContent, 'curveDeg' | 'value' | 'wave' | 'onPath' | 'warp'>) {
+  return !!c.warp && Math.abs(c.warp.amount) >= 0.5 && !isOnPath(c) && !isCurved(c) && !isWaved(c) && !c.value.includes('\n') && c.value.length > 0;
+}
+
+/** True when the text is laid out letter by letter (a drawn path, an arc, a wave or an envelope warp) rather than in straight lines. */
+export function isWarped(c: Pick<TextContent, 'curveDeg' | 'value' | 'wave' | 'onPath' | 'warp'>) {
+  return isOnPath(c) || isCurved(c) || isWaved(c) || isEnveloped(c);
+}
+
+/**
+ * How tall a letter `t` of the way along the text stands under an envelope warp (1 as set), and
+ * whether it grows from its baseline (arch) or from its middle.
+ */
+export function warpScale(warp: NonNullable<TextContent['warp']>, t: number): { s: number; fromBase: boolean } {
+  const a = warp.amount / 100;
+  const s = warp.kind === 'perspective' ? 1 + 0.8 * a * (2 * t - 1) : 1 + 0.8 * a * Math.sin(Math.PI * t);
+  return { s: Math.max(0.15, s), fromBase: warp.kind === 'arch' };
 }
 
 /** A path for text to follow: a polyline in path units with the distance along it to each point. */
@@ -217,7 +235,8 @@ export function layoutText(c: TextContent): TextLayout {
   const track = onPath ? pathTrack(onPath) : null;
   const curved = isCurved(c);
   const waved = isWaved(c);
-  const key = JSON.stringify([c.value, c.fontFamily, c.fontWeight, c.italic, c.letterSpacingEm, c.lineHeight, curved ? c.curveDeg : 0, waved ? c.wave : 0, track ? onPath : null]);
+  const warp = isEnveloped(c) ? c.warp : undefined;
+  const key = JSON.stringify([c.value, c.fontFamily, c.fontWeight, c.italic, c.letterSpacingEm, c.lineHeight, curved ? c.curveDeg : 0, waved ? c.wave : 0, track ? onPath : null, warp ?? null]);
   const cached = layoutCache.get(key);
   if (cached) return cached;
   const ctx = measurer();
@@ -263,7 +282,7 @@ export function layoutText(c: TextContent): TextLayout {
       return { g, x, y, rot: p.angle };
     });
     layout = { width: maxX - minX, height: maxY - minY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, lines: [c.value], glyphs, pathScale: scale };
-  } else if (curved || waved) {
+  } else if (curved || waved || warp) {
     setLetterSpacing(ctx, 0);
     const spacing = c.letterSpacingEm * TEXT_REF_PX;
     const gs = graphemes(c.value);
@@ -274,6 +293,9 @@ export function layoutText(c: TextContent): TextLayout {
     const up = theta > 0;
     const amp = ((c.wave ?? 0) / 100) * TEXT_REF_PX * 0.6;
     const k = (Math.PI * 2) / Math.max(length, 1);
+    // An arch grows letters up from their baseline: how far below a letter's middle it sits.
+    ctx.textBaseline = 'middle';
+    const baseline = warp?.kind === 'arch' ? ctx.measureText('H').actualBoundingBoxDescent || lineH * 0.35 : 0;
     let s = -length / 2;
     let minX = Infinity;
     let minY = Infinity;
@@ -285,23 +307,32 @@ export function layoutText(c: TextContent): TextLayout {
       let x: number;
       let y: number;
       let rot: number;
+      let sy = 1;
       if (curved) {
         const phi = mid / radius;
         x = radius * Math.sin(phi);
         y = (up ? 1 : -1) * radius * (1 - Math.cos(phi));
         rot = up ? phi : -phi;
-      } else {
+      } else if (waved) {
         // One full wave across the text: the first half rises, the second dips.
         const phase = (mid + length / 2) * k;
         x = mid;
         y = -amp * Math.sin(phase);
         rot = Math.atan(-amp * k * Math.cos(phase));
+      } else {
+        // An envelope: each letter stretched to the height the warp gives where it stands.
+        const { s: scale, fromBase } = warpScale(warp!, (mid + length / 2) / Math.max(length, 1));
+        sy = scale;
+        x = mid;
+        // Grown from the baseline, the letter's middle rises so its foot stays on the line.
+        y = fromBase ? baseline * (1 - sy) : 0;
+        rot = 0;
       }
       const cos = Math.cos(rot);
       const sin = Math.sin(rot);
       for (const [dx, dy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
         const px = (dx * widths[i]) / 2;
-        const py = (dy * lineH) / 2;
+        const py = (dy * lineH * sy) / 2;
         const X = x + px * cos - py * sin;
         const Y = y + px * sin + py * cos;
         minX = Math.min(minX, X);
@@ -309,7 +340,7 @@ export function layoutText(c: TextContent): TextLayout {
         minY = Math.min(minY, Y);
         maxY = Math.max(maxY, Y);
       }
-      return { g, x, y, rot };
+      return sy === 1 ? { g, x, y, rot } : { g, x, y, rot, sy };
     });
     layout = { width: maxX - minX, height: maxY - minY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, lines: [c.value], glyphs };
   } else {
@@ -837,13 +868,15 @@ function drawText(ctx: Ctx, c: TextContent, w: number, h: number, pxPerMm: numbe
     ctx.textAlign = 'center';
     for (const pass of hollow ? ['line'] : stroke ? ['stroke', 'fill'] : ['fill']) {
       m.glyphs.forEach((glyph, i) => {
+        const gsy = glyph.sy ?? 1;
         ctx.save();
         ctx.translate(glyph.x, glyph.y);
         ctx.rotate(glyph.rot);
+        if (gsy !== 1) ctx.scale(1, gsy);
         // Gradients and patterns paint in the space current at fill time, so map the box into
-        // each rotated glyph's space: the fill stays anchored to the layer, not to the letter.
+        // each rotated (and stretched) glyph's space: the fill stays anchored to the layer, not to the letter.
         const glyphPaint = () =>
-          inks ? (inks[0][i] ?? c.fill) : c.fillStyle ? paint(ctx, c.fill, c.fillStyle, w, h, pxPerMm, new DOMMatrix().rotate((-glyph.rot * 180) / Math.PI).translate(-glyph.x, -glyph.y).multiply(toText)) : c.fill;
+          inks ? (inks[0][i] ?? c.fill) : c.fillStyle ? paint(ctx, c.fill, c.fillStyle, w, h, pxPerMm, new DOMMatrix().scale(1, 1 / gsy).rotate((-glyph.rot * 180) / Math.PI).translate(-glyph.x, -glyph.y).multiply(toText)) : c.fill;
         if (pass === 'stroke' && stroke) {
           ctx.strokeStyle = stroke.color;
           ctx.lineWidth = stroke.width;
@@ -1024,8 +1057,10 @@ function drawShape(ctx: Ctx, c: ShapeContent, w: number, h: number, pxPerMm: num
     ctx.strokeStyle = paint(ctx, c.fill, c.fillStyle, w, h, pxPerMm);
     ctx.lineWidth = lineWidthMm(c) * pxPerMm;
     ctx.lineJoin = 'round';
+    ctx.lineCap = c.roundCaps ? 'round' : 'butt';
     if (path) ctx.stroke(path);
     else ctx.stroke();
+    ctx.lineCap = 'butt';
     return;
   }
   ctx.fillStyle = paint(ctx, c.fill, c.fillStyle, w, h, pxPerMm);
@@ -1607,6 +1642,7 @@ export function layerBleedMm(layer: ArtworkLayer, simulate = false): number {
     mm = lockupOverhangMm(c) * Math.max(layer.transform.widthMm / c.widthMm, layer.transform.heightMm / c.heightMm);
   }
   if (layer.style.outline) mm += layer.style.outline.widthMm + 0.5;
+  if (layer.style.extrude) mm += layer.style.extrude.depthMm + 0.5;
   const shadow = layerShadow(layer);
   if (shadow) mm += Math.max(Math.abs(shadow.offsetXmm), Math.abs(shadow.offsetYmm)) + shadow.blurMm * 1.5;
   if (simulate && RAISED[layer.style.finish]) mm += 2.5;
@@ -1620,7 +1656,48 @@ function bleedPx(layer: ArtworkLayer, pxPerMm: number, simulate: boolean) {
 /** Whether a layer needs the offscreen effect pass rather than drawing straight onto the target. */
 export function needsEffectPass(layer: ArtworkLayer, simulate = false) {
   const s = layer.style;
-  return !!effectiveDistress(layer) || s.finish === 'cracked' || !!layerShadow(layer) || !!s.outline || !!s.halftone || (simulate && SIMULATED.has(s.finish));
+  return !!effectiveDistress(layer) || s.finish === 'cracked' || !!layerShadow(layer) || !!s.outline || !!s.halftone || !!s.extrude || (simulate && SIMULATED.has(s.finish));
+}
+
+/**
+ * The artwork carried back into a solid block behind it (3D lettering): its silhouette stamped every
+ * pixel from the back to the front in the extrusion colour, each step shaded by how far back it is
+ * when `shade` is on, so the faces darken away from the front. Returns the block alone, artwork-sized.
+ */
+function extrudeBlock(art: HTMLCanvasElement, ex: LayerExtrude, pxPerMm: number): HTMLCanvasElement {
+  const W = art.width;
+  const H = art.height;
+  const tint = (color: string) => {
+    const c = makeCanvas(W, H);
+    const g = c.getContext('2d')!;
+    g.drawImage(art, 0, 0);
+    g.globalCompositeOperation = 'source-in';
+    g.fillStyle = color;
+    g.fillRect(0, 0, W, H);
+    return c;
+  };
+  const face = tint(ex.color);
+  const dark = ex.shade ? tint('#000000') : null;
+  const out = makeCanvas(W, H);
+  const o = out.getContext('2d')!;
+  const depth = ex.depthMm * pxPerMm;
+  const a = (ex.angleDeg * Math.PI) / 180;
+  const steps = Math.max(1, Math.ceil(depth));
+  for (let i = steps; i >= 1; i--) {
+    const d = (depth * i) / steps;
+    const x = Math.cos(a) * d;
+    const y = Math.sin(a) * d;
+    o.globalAlpha = 1;
+    o.drawImage(face, x, y);
+    if (dark) {
+      o.globalAlpha = 0.5 * (i / steps);
+      o.drawImage(dark, x, y);
+    }
+  }
+  o.globalAlpha = 1;
+  release(face);
+  if (dark) release(dark);
+  return out;
 }
 
 function drawRaw(ctx: Ctx, layer: ArtworkLayer, w: number, h: number, pxPerMm: number): boolean {
@@ -1685,9 +1762,9 @@ const fxCache = new CanvasCache(32e6, 8e6);
 function renderEffects(layer: ArtworkLayer, w: number, h: number, pxPerMm: number, simulate: boolean): { canvas: HTMLCanvasElement; bleed: number } | null {
   const bleed = bleedPx(layer, pxPerMm, simulate);
   const distress = effectiveDistress(layer);
-  const { halftone, outline } = layer.style;
+  const { halftone, outline, extrude } = layer.style;
   const shadow = layerShadow(layer);
-  const key = JSON.stringify([layer.content, layer.style.finish, distress, halftone, outline, shadow, Math.round(w * 2), Math.round(h * 2), Math.round(pxPerMm * 1000), simulate]);
+  const key = JSON.stringify([layer.content, layer.style.finish, distress, halftone, outline, extrude ?? null, shadow, Math.round(w * 2), Math.round(h * 2), Math.round(pxPerMm * 1000), simulate]);
   const hit = fxCache.get(key);
   if (hit) return { canvas: hit, bleed };
   const W = Math.ceil(w) + 2 * bleed;
@@ -1710,6 +1787,13 @@ function renderEffects(layer: ArtworkLayer, w: number, h: number, pxPerMm: numbe
     if (art !== base) release(art);
     release(ring);
     art = both;
+  }
+  // Then carried back into a 3D block (outline and all), the artwork on its front face.
+  if (extrude) {
+    const block = extrudeBlock(art, extrude, pxPerMm);
+    block.getContext('2d')!.drawImage(art, 0, 0);
+    if (art !== base) release(art);
+    art = block;
   }
   if (art !== base) release(base);
   const a = art.getContext('2d')!;

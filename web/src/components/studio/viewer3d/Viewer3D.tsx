@@ -33,12 +33,12 @@ import { nudgeProjection, transformProjection } from '../projection-actions';
 import { activeBareArea, nudgeArea } from '../area-actions';
 import { ScenePanel } from './ScenePanel';
 import { BASE_FOV, frameFit, shotKey, shotLabel, VIEW_PRESETS, viewerApi, ZONE_VIEW, type RenderBackground, type ShotSpec, type ViewPreset } from './stage';
-import { buildGarment, createFabricNormalMap, FABRIC_LOOK, type GarmentGeometry, type GarmentLayout, type TrimColor } from './garment-geometry';
+import { buildGarment, createFabricNormalMap, FABRIC_LOOK, fabricLook, type GarmentGeometry, type GarmentLayout, type TrimColor } from './garment-geometry';
 import { drawPart, drawPartSurface, partKey, partSizeMm, setGpuMaxTexture, type PaintContext, type Quality } from './garment-textures';
 import { bakeAmbientOcclusion, type AoTarget } from './ao-bake';
 import { cachedShape, exportGarmentTemplate, ShapeError, shapedGarment, type ParsedShape } from './garment-glb';
 import { shellGarment } from './garment-shell';
-import { applyMotion, MOTION_CACHE_KEY, motionDepthMaterial, motionState, motionUniforms, patchMotion, setLimbPivots } from './motion';
+import { applyMotion, fabricDrape, MOTION_CACHE_KEY, motionDepthMaterial, motionState, motionUniforms, patchMotion, setLimbPivots } from './motion';
 import { disposeDecal, disposePhotoreal, fillCard, inkDecals, insetGeometry, liveTrace, pathTrace, photorealSupport, softStudioLights } from './photoreal';
 import { areaOutlineImage, effectiveArea, effectiveLayer, projectArea, projectLayer, renderAreaArtwork } from './projected-paint';
 import { dragProjector, footprintNormal, insideDecal, planeOffset, pointOnTriangle, steadyProjector, surfaceAtUv, tangentUp, toDecal, type DecalFrame, type ProjectedPart, type ProjectionMesh, type Projector, type SurfacePoint } from './projection';
@@ -575,7 +575,14 @@ function Garment({ geo, ownRest, quality, mode, guides, hanger, onOwnZone }: { g
   const model = getGarment(doc.garment.modelId);
   const size = getSize(model, doc.garment.sizeCode);
   const fabricPreset = model.fabricPresets.find((f) => f.id === doc.garment.fabricPresetId) ?? model.fabricPresets[0];
-  const look = FABRIC_LOOK[fabricPreset.surface];
+  const finish = doc.garment.finish;
+  // The fabric for what it is (fibre, weight, wash), not only its knit.
+  const look = useMemo(() => fabricLook(fabricPreset, finish), [fabricPreset, finish]);
+  // Light cloth ripples more in wind and walking, heavy cloth hangs heavier.
+  useEffect(() => {
+    motionUniforms.uDrape.value = fabricDrape(fabricPreset.gsm);
+    invalidate();
+  }, [fabricPreset.gsm, invalidate]);
   const meshes = useRef(new Map<PartId, THREE.Mesh>());
   const liningMeshes = useRef(new Map<PartId, THREE.Mesh>());
   const trimMeshes = useRef(new Map<string, THREE.Mesh>());
@@ -722,11 +729,10 @@ function Garment({ geo, ownRest, quality, mode, guides, hanger, onOwnZone }: { g
     const parts = new Map<PartId, THREE.Texture>();
     for (const p of geo.parts) {
       const { w, h } = partSizeMm(geo, p.id);
-      const mm = FABRIC_LOOK[fabricPreset.surface].tileMm;
-      parts.set(p.id, tile(fabric, w / mm, h / mm));
+      parts.set(p.id, tile(fabric, w / look.tileMm, h / look.tileMm));
     }
     return { fabric, rib, parts, trimRib: tile(rib, 90, 3), trimFabric: tile(fabric, 60, 60) };
-  }, [geo, fabricPreset.surface]);
+  }, [geo, fabricPreset.surface, look.tileMm]);
   useEffect(
     () => () => {
       normals.fabric.dispose();
@@ -788,7 +794,8 @@ function Garment({ geo, ownRest, quality, mode, guides, hanger, onOwnZone }: { g
   useEffect(() => {
     const exportTemplate = () => {
       const zones = Object.fromEntries(Object.entries(doc.zones).map(([id, z]) => [id, { ...z, layers: {}, orderedLayerIds: [] }])) as unknown as DesignDocument['zones'];
-      const blank: DesignDocument = { ...doc, zones, projections: emptyProjections() };
+      // A template is plain new fabric: no prints, and no wash.
+      const blank: DesignDocument = { ...doc, garment: { ...doc.garment, finish: undefined }, zones, projections: emptyProjections() };
       const neutral = {
         ...colorway,
         surfaces: undefined,
@@ -1856,22 +1863,35 @@ function CameraRig({
     if (!c) return;
     const A = CameraControlsImpl.ACTION;
     if (mode === 'orbit') {
+      // Drag turns the garment; right-drag (or two fingers) pans across it, to look at a detail.
       c.mouseButtons.left = A.ROTATE;
-      c.mouseButtons.right = A.ROTATE;
+      c.mouseButtons.right = A.TRUCK;
       c.mouseButtons.middle = A.DOLLY;
       c.mouseButtons.wheel = A.DOLLY;
       c.touches.one = A.TOUCH_ROTATE;
-      c.touches.two = A.TOUCH_DOLLY;
+      c.touches.two = A.TOUCH_DOLLY_TRUCK;
     } else {
+      // Place mode: the primary pointer is the artwork's; right-drag still turns, middle-drag pans.
       c.mouseButtons.left = A.NONE;
       c.mouseButtons.right = A.ROTATE;
-      c.mouseButtons.middle = A.DOLLY;
+      c.mouseButtons.middle = A.TRUCK;
       c.mouseButtons.wheel = hasSelection ? A.NONE : A.DOLLY;
       c.touches.one = A.NONE;
-      c.touches.two = hasSelection ? A.NONE : A.TOUCH_DOLLY;
+      c.touches.two = hasSelection ? A.NONE : A.TOUCH_DOLLY_TRUCK;
     }
     c.touches.three = A.NONE;
   }, [mode, hasSelection]);
+
+  // Panning stays on the garment: the point the camera looks at can't leave its box (a little
+  // larger), so the garment is never lost off screen. A view or Home re-centres it.
+  useEffect(() => {
+    const c = controls.current;
+    if (!c) return;
+    const hw = (fitW / 2) * 1.15;
+    const hh = (fitH / 2) * 1.15;
+    const y = centerY ?? fitH / 2;
+    c.setBoundary(new THREE.Box3(new THREE.Vector3(-hw, y - hh, -hw), new THREE.Vector3(hw, y + hh, hw)));
+  }, [fitW, fitH, centerY]);
 
   useFrame((_, delta) => {
     if (turntable && !stage.capturing && controls.current) {
@@ -2157,7 +2177,6 @@ function CameraRig({
       // A full sphere: look down into the neck or up through the hem, all the way round.
       minPolarAngle={0.02}
       maxPolarAngle={Math.PI - 0.02}
-      truckSpeed={0}
       smoothTime={0.28}
     />
   );
@@ -2570,6 +2589,8 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
       if (projection) nudgeProjection(projection.id, dx, dy);
       else if (bareArea && placing) nudgeArea(bareArea.id, dx, dy);
       else if (placing) nudgeSelection(dx, dy);
+      // Shift and an arrow pans the view a tenth of the way across, within the garment's box.
+      else if (e.shiftKey) void c.truck(Math.sign(dx) * c.distance * 0.1, Math.sign(dy) * c.distance * 0.1, true);
       else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') void c.rotate((e.key === 'ArrowLeft' ? 1 : -1) * (Math.PI / 12), 0, true);
       // Up raises the camera to look down on the garment (a smaller polar angle).
       else void c.rotate(0, (e.key === 'ArrowUp' ? -1 : 1) * (Math.PI / 18), true);
@@ -2703,9 +2724,10 @@ export function Viewer3D({ compact = false }: { compact?: boolean }) {
         <RenderFrame />
       </div>
       <p id="viewer3d-help" className="sr-only">
-        Orbit mode: drag to rotate, scroll or pinch to zoom, click artwork to select it. Place mode: drag artwork to move it on the garment, scroll or pinch to resize, Shift plus scroll or
-        twist to rotate, right-drag to rotate the view. Keys: arrows rotate the view or nudge artwork in Place mode, plus and minus zoom or resize, comma and period rotate artwork, 1 to 7
-        jump to views (6 from the top, 7 from underneath), Home resets the view, O and P switch modes. The view turns all the way round, over the top and underneath.
+        Orbit mode: drag to rotate, right-drag or drag with two fingers to pan, scroll or pinch to zoom, click artwork to select it. Place mode: drag artwork to move it on the garment,
+        scroll or pinch to resize, Shift plus scroll or twist to rotate, right-drag to rotate the view, middle-drag to pan. Keys: arrows rotate the view or nudge artwork in Place mode, Shift
+        and an arrow pans, plus and minus zoom or resize, comma and period rotate artwork, 1 to 7 jump to views (6 from the top, 7 from underneath), Home resets the view, O and P switch
+        modes. The view turns all the way round, over the top and underneath.
       </p>
 
       <div className={`pointer-events-none absolute inset-x-0 ${compact ? 'top-2' : 'bottom-3'} flex justify-center px-2`}>

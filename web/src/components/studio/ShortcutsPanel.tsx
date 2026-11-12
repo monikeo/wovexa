@@ -93,7 +93,7 @@ export function ShortcutsPanel() {
           ]}
         />
         <p className="text-[11px] text-fg-3">
-          In the 3D view: arrows turn the view (in Place mode they move artwork), + and − zoom or resize, comma and period turn artwork 5° in Place mode, 1 to 7 jump to views, Home resets, O and P switch Orbit and Place.
+          In the 3D view: arrows turn the view (in Place mode they move artwork), Shift and an arrow pans, + and − zoom or resize, comma and period turn artwork 5° in Place mode, 1 to 7 jump to views, Home resets, O and P switch Orbit and Place.
         </p>
       </Section>
       <Section title="Mouse">
@@ -104,8 +104,8 @@ export function ShortcutsPanel() {
             ['Pan the canvas', 'Middle-drag, Space+drag, or scroll'],
             ['Zoom the canvas', `${MOD}+scroll`],
             ['Actions', 'Right-click'],
-            ['3D, Orbit mode', 'Drag turns the garment, scroll zooms, click selects artwork'],
-            ['3D, Place mode', 'Drag artwork or a design area anywhere on the garment; scroll resizes, Shift+scroll rotates; right-drag turns the view'],
+            ['3D, Orbit mode', 'Drag turns the garment, right-drag pans, scroll zooms, click selects artwork'],
+            ['3D, Place mode', 'Drag artwork or a design area anywhere on the garment; scroll resizes, Shift+scroll rotates; right-drag turns the view, middle-drag pans'],
           ]}
         />
       </Section>
@@ -114,7 +114,7 @@ export function ShortcutsPanel() {
           rows={[
             ['Pan the canvas', 'Two-finger scroll'],
             ['Zoom the canvas', 'Pinch'],
-            ['3D view', 'Two-finger scroll or pinch zooms; in Place mode they resize the selection'],
+            ['3D view', 'Two-finger scroll or pinch zooms; in Place mode they resize the selection. A two-finger click and drag pans'],
           ]}
         />
       </Section>

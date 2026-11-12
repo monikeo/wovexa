@@ -194,6 +194,12 @@ function TechPackBody({ doc, editable, header, projectId }: { doc: DesignDocumen
             </dd>
             <dt className="text-fg-2">Fabric</dt>
             <dd>{fabric?.label ?? 'Not set'}</dd>
+            {doc.garment.finish ? (
+              <>
+                <dt className="text-fg-2">Garment wash</dt>
+                <dd>{doc.garment.finish === 'vintage' ? 'Vintage: washed after printing until faded, softer at the seams and edges' : 'Garment-washed after printing: softened, colour slightly faded'}</dd>
+              </>
+            ) : null}
             <dt className="text-fg-2">Colourway</dt>
             <dd>{colorway.name}</dd>
             <dt className="text-fg-2">Pattern source</dt>

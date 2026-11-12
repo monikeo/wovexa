@@ -149,6 +149,12 @@ export async function prepareDocument(doc: DesignDocument, zones: ZoneId[]) {
   await ensureFonts(stacks);
 }
 
+/** The fabric as the factory reads it: its name, and the wash the finished garment gets. */
+export function fabricWithWash(label: string, doc: DesignDocument) {
+  const finish = doc.garment.finish;
+  return finish === 'vintage' ? `${label}, vintage wash after printing` : finish === 'washed' ? `${label}, garment-washed after printing` : label;
+}
+
 export function zonesWithArtwork(doc: DesignDocument): ZoneId[] {
   const model = getGarment(doc.garment.modelId);
   return model.zoneOrder.filter((z) => doc.zones[z].orderedLayerIds.some((id) => doc.zones[z].layers[id]?.visible));
@@ -271,7 +277,7 @@ async function makeProof(doc: DesignDocument, colorways: Colorway[], products: P
     doc,
     model,
     size,
-    fabricLabel: fabric.label,
+    fabricLabel: fabricWithWash(fabric.label, doc),
     products: rows,
     placements,
     approval,
@@ -686,7 +692,7 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
         doc,
         model,
         size,
-        fabricLabel: fabric.label,
+        fabricLabel: fabricWithWash(fabric.label, doc),
         approval: ctx.approval.label,
         revision: rev,
         contentHash,

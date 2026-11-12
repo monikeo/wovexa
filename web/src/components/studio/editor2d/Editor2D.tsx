@@ -6,7 +6,7 @@
  * World units are millimetres from the top-left of the active print zone.
  */
 import { ActiveSelection, Canvas as FabricCanvas, FabricImage, Group, Point, type FabricObject, type TPointerEventInfo } from 'fabric';
-import { Check, Component, Focus, Maximize, Minus, PenTool, Plus, Shirt } from 'lucide-react';
+import { Brush, Check, Component, Focus, Maximize, Minus, Pencil, PenTool, Plus, Shirt } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { expandToGroups, unionBounds } from '@/domain/arrange';
 import { EditorContextMenu } from './ContextMenu';
@@ -29,9 +29,10 @@ import { drawRuler, GUIDE_COLOR, GUIDE_GRAB_PX, RULER_SIZE } from './rulers';
 import { drawSketch, SEAM_CLEARANCE_MM, seamEdges, sketchForZone } from './flat-sketch';
 import { PathEditOverlay } from './PathEditOverlay';
 import { PenOverlay } from './PenOverlay';
+import { FreehandOverlay } from './FreehandOverlay';
 import { penShape } from '@/domain/pen';
 import { layerAssetIds, placementsOf } from '@/domain/lockups';
-import { addDrawnShape, addTextOnPath, editLockup, finishLockupEdit } from '../actions';
+import { addDrawnShape, addFreehandStroke, addTextOnPath, editLockup, finishLockupEdit, readFreehandSettings, writeFreehandSettings, type FreehandSettings } from '../actions';
 
 /**
  * Shown while a lockup's own board is open (spec ED2-12): what is being edited, how many places
@@ -228,19 +229,34 @@ export function Editor2D() {
   // The pen: a closed shape, or ('path') the line a new text runs along.
   const [penMode, setPenMode] = useState<'shape' | 'path' | null>(null);
   const getFabric = useCallback(() => fabricRef.current, []);
+  // The pencil and the brush (N, B, the toolbar or the Add menu): one tool on at a time, the pen included.
+  const [freehand, setFreehand] = useState<'pencil' | 'brush' | null>(null);
+  const [freehandSettings, setFreehandSettings] = useState<FreehandSettings>(readFreehandSettings);
   useEffect(() => {
     const toggle = (e: Event) => {
       const detail = (e as CustomEvent).detail;
+      setFreehand(null);
       setPenMode((m) => (detail === 'path' ? 'path' : detail === 'on' ? 'shape' : m ? null : 'shape'));
     };
+    const drawFreehand = (e: Event) => {
+      const detail = (e as CustomEvent<'pencil' | 'brush' | 'toggle-pencil' | 'toggle-brush'>).detail;
+      setPenMode(null);
+      setFreehand((t) => (detail === 'toggle-pencil' ? (t === 'pencil' ? null : 'pencil') : detail === 'toggle-brush' ? (t === 'brush' ? null : 'brush') : detail));
+    };
     window.addEventListener('wovexa:pen', toggle);
-    return () => window.removeEventListener('wovexa:pen', toggle);
+    window.addEventListener('wovexa:freehand', drawFreehand);
+    return () => {
+      window.removeEventListener('wovexa:pen', toggle);
+      window.removeEventListener('wovexa:freehand', drawFreehand);
+    };
   }, []);
+  const stopFreehand = useCallback(() => setFreehand(null), []);
   // Editing a shape's points: the layer whose points are shown, if any.
   const [pointsLayerId, setPointsLayerId] = useState<string | null>(null);
   useEffect(() => {
     const start = (e: Event) => {
       setPenMode(null);
+      setFreehand(null);
       setPointsLayerId((e as CustomEvent<{ layerId: string }>).detail.layerId);
     };
     window.addEventListener('wovexa:edit-points', start);
@@ -956,7 +972,7 @@ export function Editor2D() {
         const ppm = Math.min(resolution(), 2048 / Math.max(layer.transform.widthMm, layer.transform.heightMm));
         const ready = layerAssetIds(layer).every((asset) => !!getLoadedImage(asset));
         const s = layer.style;
-        const key = JSON.stringify([layer.id, layer.content, s.finish, s.distress, s.shadow, s.outline, s.halftone, ready, Math.round(layer.transform.widthMm * ppm), Math.round(layer.transform.heightMm * ppm)]);
+        const key = JSON.stringify([layer.id, layer.content, s.finish, s.distress, s.shadow, s.outline, s.halftone, s.extrude ?? null, ready, Math.round(layer.transform.widthMm * ppm), Math.round(layer.transform.heightMm * ppm)]);
         if (obj.bitmapKey !== key || !obj.bitmap) {
           const rendered = renderLayerBitmap(layer, ppm);
           obj.bitmap = rendered.canvas;
@@ -1273,8 +1289,41 @@ export function Editor2D() {
         <button className="icon-btn" onClick={fit} aria-label="Fit print area to screen" title="Fit (Shift+1)">
           <Maximize size={15} />
         </button>
-        <button className="icon-btn" onClick={() => setPenMode((m) => (m === 'shape' ? null : 'shape'))} aria-pressed={penMode === 'shape'} aria-label="Pen: draw a shape" title="Pen: draw your own shape (P)">
+        <button
+          className="icon-btn"
+          onClick={() => {
+            setFreehand(null);
+            setPenMode((m) => (m === 'shape' ? null : 'shape'));
+          }}
+          aria-pressed={penMode === 'shape'}
+          aria-label="Pen: draw a shape"
+          title="Pen: draw your own shape (P)"
+        >
           <PenTool size={15} />
+        </button>
+        <button
+          className="icon-btn"
+          onClick={() => {
+            setPenMode(null);
+            setFreehand((t) => (t === 'pencil' ? null : 'pencil'));
+          }}
+          aria-pressed={freehand === 'pencil'}
+          aria-label="Pencil: draw freehand lines"
+          title="Pencil: draw freehand, a smooth line you can edit (N)"
+        >
+          <Pencil size={15} />
+        </button>
+        <button
+          className="icon-btn"
+          onClick={() => {
+            setPenMode(null);
+            setFreehand((t) => (t === 'brush' ? null : 'brush'));
+          }}
+          aria-pressed={freehand === 'brush'}
+          aria-label="Brush: paint freehand strokes"
+          title="Brush: paint strokes, thicker where a stylus presses (B)"
+        >
+          <Brush size={15} />
         </button>
         {zoneSpec?.areaId || zoneSpec?.lockupId ? null : (
           <button
@@ -1315,6 +1364,23 @@ export function Editor2D() {
             setPenMode(null);
           }}
           onCancel={() => setPenMode(null)}
+        />
+      ) : null}
+      {freehand && zone ? (
+        <FreehandOverlay
+          key={zoneId}
+          fabric={getFabric}
+          tool={freehand}
+          settings={freehandSettings}
+          onSettings={(next) => {
+            setFreehandSettings(next);
+            writeFreehandSettings(next);
+          }}
+          onTool={setFreehand}
+          onStroke={(points) => {
+            if (!addFreehandStroke(points, freehand, freehandSettings) && freehand === 'pencil' && points.length > 3) toast('That line was too short to keep: draw a little further.');
+          }}
+          onDone={stopFreehand}
         />
       ) : null}
     </div>

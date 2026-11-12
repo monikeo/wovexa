@@ -7,6 +7,7 @@
 import {
   AlertTriangle,
   BadgeCheck,
+  Brush,
   Circle,
   Clapperboard,
   Component,
@@ -23,6 +24,7 @@ import {
   Loader2,
   Minus,
   MousePointer2,
+  Pencil,
   PenTool,
   Plus,
   Redo2,
@@ -69,6 +71,7 @@ import {
   rotateSelection,
   selectAll,
   selectNextLayer,
+  startFreehand,
   startPen,
   switchArtboard,
   ungroupSelection,
@@ -574,6 +577,26 @@ function ShapeMenu() {
           >
             <PenTool size={15} /> Draw your own (P)
           </button>
+          <button
+            role="menuitem"
+            className="flex items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm hover:bg-hover"
+            onClick={() => {
+              closeMenu(false);
+              startFreehand('pencil');
+            }}
+          >
+            <Pencil size={15} /> Pencil, freehand (N)
+          </button>
+          <button
+            role="menuitem"
+            className="flex items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm hover:bg-hover"
+            onClick={() => {
+              closeMenu(false);
+              startFreehand('brush');
+            }}
+          >
+            <Brush size={15} /> Brush (B)
+          </button>
         </div>
       ) : null}
     </div>
@@ -895,6 +918,9 @@ function useShortcuts() {
       } else if (!mod && !e.altKey && key === 'p' && !target.closest('[data-viewer3d]') && s.viewMode !== '3d') {
         // The pen, on the 2D artboard (P in the 3D view switches it to Place mode instead).
         window.dispatchEvent(new CustomEvent('wovexa:pen'));
+      } else if (!mod && !e.altKey && (key === 'n' || key === 'b') && !target.closest('[data-viewer3d]') && s.viewMode !== '3d') {
+        // The pencil (N) and the brush (B), on the 2D artboard; the same key again puts it away.
+        window.dispatchEvent(new CustomEvent('wovexa:freehand', { detail: key === 'n' ? 'toggle-pencil' : 'toggle-brush' }));
       } else if (!mod && e.key === ']') {
         if (s.selectedProjectionId) moveProjectionBy(s.selectedProjectionId, 1);
         else moveSelectionInStack(1);
@@ -967,6 +993,12 @@ function MobileAddSheet({ onDone }: { onDone: () => void }) {
         ))}
         <button className={item} onClick={() => { onDone(); startPen(); }}>
           <PenTool size={20} /> Draw
+        </button>
+        <button className={item} onClick={() => { onDone(); startFreehand('pencil'); }}>
+          <Pencil size={20} /> Pencil
+        </button>
+        <button className={item} onClick={() => { onDone(); startFreehand('brush'); }}>
+          <Brush size={20} /> Brush
         </button>
       </div>
       <section>
