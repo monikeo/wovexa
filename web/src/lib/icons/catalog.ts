@@ -1,8 +1,9 @@
 /**
- * The icon library's catalogue: line icons from Lucide (lucide.dev, ISC licence; some drawn from
- * Feather, MIT), chosen for garments (sport, nature, music, food, places, symbols) rather than
- * app controls, in categories. Names are Lucide's own. Kept free of imports, so the script that
- * writes the icon set (scripts/icon-set.mjs) can read it as it is.
+ * The icon library's catalogue: Lucide's line icons (lucide.dev, ISC licence; some drawn from
+ * Feather, MIT), every one of them searchable by its name and Lucide's own tags, with the ones
+ * that suit garments (sport, nature, music, food, places, symbols) picked out into categories and
+ * listed first. Names are Lucide's own. Pure: the icon data itself is loaded with the panel
+ * (./library.ts), so none of this is in the studio's start-up bundle.
  */
 
 export interface IconCategory {
@@ -69,8 +70,8 @@ export const ICON_CATEGORIES: readonly IconCategory[] = [
   },
 ];
 
-/** Every icon in the library once, in catalogue order. */
-export const ICON_NAMES: readonly string[] = [...new Set(ICON_CATEGORIES.flatMap((c) => c.icons))];
+/** The catalogue's picks once each, in its order: they lead the full list. */
+export const CATALOGUE_ICONS: readonly string[] = [...new Set(ICON_CATEGORIES.flatMap((c) => c.icons))];
 
 /** Names that say it better than Lucide's own, for the icons whose names describe the drawing. */
 const LABELS: Readonly<Record<string, string>> = {
@@ -115,23 +116,109 @@ const KEYWORDS: Readonly<Record<string, readonly string[]>> = {
 
 /** An icon's name as people say it: "flag-triangle-right" is "Flag triangle right", "flower-2" is "Flower". */
 export function iconLabel(name: string): string {
-  if (LABELS[name]) return LABELS[name];
+  if (Object.hasOwn(LABELS, name)) return LABELS[name];
   const words = name.split('-').filter((w) => !/^\d+$/.test(w));
   const text = (words.length ? words : [name]).join(' ');
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+/** Words in a search, a tag or a label: lower case, split at spaces, commas, hyphens and underscores. */
+const wordsOf = (text: string) => text.toLowerCase().split(/[\s,_-]+/).filter(Boolean);
+
+/** Joining words that would find half the library on their own. */
+const FILLER = new Set(['a', 'an', 'and', 'the', 'of', 'or', 'to', 'in', 'on', 'with', 'for']);
+
+/** How closely a word describes an icon: its name (or the name it's shown by), then everyday words, then Lucide's tags, then its category. */
+const NAME = 0;
+const WORD = 1;
+const TAG = 2;
+const CATEGORY = 3;
+
+/** How far ahead a catalogue pick goes: its everyday word ranks with another icon's name ("fire" finds the flame first). */
+const PICK_LEAD = 2;
+
+interface IndexEntry {
+  name: string;
+  /** Its search words, lower case, each once at its closest rank. */
+  words: string[];
+  ranks: number[];
+  /** Fewer words in a name make the plainer match: "star" before "star-half". */
+  nameWords: number;
+  /** One of the catalogue's picks, made for garments. */
+  pick: boolean;
+  order: number;
+}
+
+export interface IconIndex {
+  /** Every icon in the set: the catalogue's picks first, in its order, then the rest by name. */
+  names: readonly string[];
+  entries: ReadonlyMap<string, IndexEntry>;
+  /** Each category's icons that are in the set. */
+  categories: ReadonlyMap<string, readonly string[]>;
+}
+
 /**
- * Icons that have a word starting with each word typed, in their name, label, search words or
- * category, in catalogue order. An empty search lists the category (or everything).
+ * The search index of an icon set: `setNames` are the icons it has (Lucide's, about two thousand),
+ * `tags` the words Lucide gives each. Catalogue picks the set doesn't have are left out.
  */
-export function searchIcons(query: string, categoryId: string | null = null): string[] {
-  const pool = categoryId ? (ICON_CATEGORIES.find((c) => c.id === categoryId)?.icons ?? []) : ICON_NAMES;
-  const terms = query.toLowerCase().split(/[\s,-]+/).filter(Boolean);
-  if (!terms.length) return [...pool];
-  const categoriesOf = (name: string) => ICON_CATEGORIES.filter((c) => c.icons.includes(name)).map((c) => c.label.toLowerCase());
-  return pool.filter((name) => {
-    const words = [...name.split('-'), ...iconLabel(name).toLowerCase().split(/\s+/), ...(KEYWORDS[name] ?? []), ...categoriesOf(name).flatMap((l) => l.split(/\s+/))];
-    return terms.every((t) => words.some((w) => w.startsWith(t)));
+export function buildIconIndex(setNames: readonly string[], tags: Readonly<Record<string, readonly string[]>> = {}): IconIndex {
+  const inSet = new Set(setNames);
+  const picks = CATALOGUE_ICONS.filter((n) => inSet.has(n));
+  const picked = new Set(picks);
+  const names = [...picks, ...[...setNames].filter((n) => !picked.has(n)).sort()];
+  const categoriesOf = new Map<string, string[]>();
+  for (const c of ICON_CATEGORIES) for (const n of c.icons) categoriesOf.set(n, [...(categoriesOf.get(n) ?? []), c.label]);
+  const entries = new Map<string, IndexEntry>();
+  names.forEach((name, order) => {
+    const best = new Map<string, number>();
+    const add = (words: string[], rank: number) => {
+      for (const w of words) if ((best.get(w) ?? Infinity) > rank) best.set(w, rank);
+    };
+    const own = name.split('-').filter(Boolean);
+    add(own, NAME);
+    add(wordsOf(iconLabel(name)), NAME);
+    for (const k of Object.hasOwn(KEYWORDS, name) ? KEYWORDS[name] : []) add(wordsOf(k), WORD);
+    for (const t of Object.hasOwn(tags, name) ? tags[name] : []) add(wordsOf(t).filter((w) => !FILLER.has(w)), TAG);
+    for (const label of categoriesOf.get(name) ?? []) add(wordsOf(label).filter((w) => !FILLER.has(w)), CATEGORY);
+    entries.set(name, { name, words: [...best.keys()], ranks: [...best.values()], nameWords: own.length, pick: picked.has(name), order });
   });
+  const categories = new Map(ICON_CATEGORIES.map((c) => [c.id, c.icons.filter((n) => inSet.has(n))] as const));
+  return { names, entries, categories };
+}
+
+/**
+ * Icons with a word starting with each word typed (in their name, label, everyday words, Lucide's
+ * tags or category), the closest first: a name that is the search, then names with the word,
+ * then everyday words, tags and categories, whole words before beginnings of words, the
+ * catalogue's garment picks a step ahead, plainer names before longer ones. An empty search lists
+ * the category, or every icon.
+ */
+export function searchIconIndex(index: IconIndex, query: string, categoryId: string | null = null): string[] {
+  const pool = categoryId ? (index.categories.get(categoryId) ?? []) : index.names;
+  const terms = wordsOf(query);
+  if (!terms.length) return [...pool];
+  const whole = terms.join('-');
+  const found: { entry: IndexEntry; score: number }[] = [];
+  for (const name of pool) {
+    const entry = index.entries.get(name);
+    if (!entry) continue;
+    let score = 0;
+    for (const t of terms) {
+      let best = Infinity;
+      for (let i = 0; i < entry.words.length && best > 0; i++) {
+        const w = entry.words[i];
+        // An exact word beats a word that only starts with what was typed, at each rank.
+        if (w.startsWith(t)) best = Math.min(best, entry.ranks[i] * 2 + (w.length === t.length ? 0 : 1));
+      }
+      if (best === Infinity) {
+        score = -1;
+        break;
+      }
+      score += best;
+    }
+    if (score < 0) continue;
+    found.push({ entry, score: score - (name === whole ? 1 : 0) - (entry.pick ? PICK_LEAD : 0) });
+  }
+  found.sort((a, b) => a.score - b.score || a.entry.nameWords - b.entry.nameWords || a.entry.order - b.entry.order);
+  return found.map((f) => f.entry.name);
 }

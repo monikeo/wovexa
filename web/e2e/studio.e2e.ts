@@ -419,11 +419,21 @@ test('exports a CMYK PDF/X-1a print file', async ({ page }) => {
   expect(pdf).not.toContain('/DeviceRGB');
 });
 
-test('finds a line icon in the icon library and adds it as an editable line shape', async ({ page }) => {
+test('finds a line icon by tag and by name, adds it from the keyboard as an editable line shape, and changes its line width', async ({ page }) => {
   await page.getByRole('button', { name: 'Add an icon' }).click();
   const panel = page.getByRole('dialog', { name: 'Icons' });
-  await panel.getByRole('searchbox', { name: 'Search icons' }).fill('troph');
-  await panel.getByRole('button', { name: 'Add trophy icon' }).click();
+  const search = panel.getByRole('searchbox', { name: 'Search icons' });
+  const results = panel.getByRole('group', { name: 'Icons', exact: true });
+  // All of Lucide, with Lucide's own tags: "tournament" isn't in the trophy's name.
+  await expect(search).toHaveAttribute('placeholder', /Search 2\D?0\d\d icons/);
+  await search.fill('tournament');
+  await expect.poll(() => results.getByRole('button').count()).toBeLessThan(5);
+  await expect(results.getByRole('button').first()).toHaveAccessibleName('Add trophy icon');
+  // The start of its name finds it too; Down goes from the search into the results, Enter adds it.
+  await search.fill('troph');
+  await search.press('ArrowDown');
+  await expect(results.getByRole('button', { name: 'Add trophy icon' })).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect(panel).toHaveCount(0);
   await expect.poll(async () => (await frontLayers(page)).map((l) => l.name)).toContain('Trophy icon');
   const icon = (await frontLayers(page)).find((l) => l.name === 'Trophy icon')!;
@@ -432,9 +442,24 @@ test('finds a line icon in the icon library and adds it as an editable line shap
   expect(icon.content.shape).toBe('path');
   expect(icon.content.hollow).toBe(true);
   expect(icon.content.roundCaps).toBe(true);
+  expect(icon.content.icon).toEqual({ set: 'lucide', name: 'trophy' });
   expect(icon.content.strokeWidthMm).toBeGreaterThan(1);
   // The trophy keeps its own proportions.
   expect(icon.transform.widthMm / icon.transform.heightMm).toBeCloseTo(1, 0);
+  // Its line width changes in the inspector, as any line's does.
+  await expect(page.getByText('From Lucide’s “trophy” icon')).toBeVisible();
+  const line = page.getByRole('textbox', { name: /^Line/ });
+  await line.fill('2.5');
+  await line.press('Enter');
+  await expect
+    .poll(async () => {
+      const c = (await frontLayers(page)).find((l) => l.name === 'Trophy icon')!.content;
+      return c.kind === 'shape' ? c.strokeWidthMm : null;
+    })
+    .toBe(2.5);
+  // Opened again, the panel offers it first, under Recently used.
+  await page.getByRole('button', { name: 'Add an icon' }).click();
+  await expect(panel.getByRole('group', { name: 'Recently used icons' }).getByRole('button', { name: 'Add trophy icon' })).toBeVisible();
 });
 
 test('takes the 3D garment apart into its pieces and puts it back together', async ({ page }) => {

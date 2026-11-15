@@ -1,44 +1,50 @@
 'use client';
 /**
- * Icon library (spec AST-09): about two hundred line icons from Lucide, in categories and
- * searchable, that land as editable line shapes (lib/icons/icon-shape.ts): recolour them, change
- * their line weight, edit their points, or turn the line into a filled shape. The icons load the
- * first time the library opens, so the studio's own start-up stays as light as it was.
+ * Icon library (spec ED2-09): all of Lucide's line icons, about two thousand, found by name or by
+ * Lucide's own tags, browsed by category, with recently used ones first. They land as editable line
+ * shapes (lib/icons/icon-shape.ts): recolour them, change their line weight, edit their points, or
+ * turn the line into a filled shape. The icons, their tags and the catalogue load the first time
+ * the library opens (lib/icons/library.ts), so the studio's own start-up stays as light as it was.
+ * Keyboard: the arrow keys move through a grid (Home and End to its ends), Down from the search
+ * goes into it and Up from its top row comes back.
  */
 import { Search, Smile } from 'lucide-react';
-import { createElement, useEffect, useMemo, useRef, useState } from 'react';
-import { ICON_CATEGORIES, iconLabel, searchIcons } from '@/lib/icons/catalog';
+import { createElement, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import type { IconData } from '@/lib/icons/icon-shape';
 import { addIcon } from './actions';
 
-type IconSet = Readonly<Record<string, IconData>>;
+type IconLibrary = typeof import('@/lib/icons/library');
 
-let pending: Promise<IconSet> | null = null;
-/** The icon set, fetched once (and again after a failed try). */
-function loadIcons(): Promise<IconSet> {
-  pending ??= import('@/lib/icons/lucide-set').then(
-    (m) => m.ICON_DATA,
-    (error: unknown) => {
-      pending = null;
-      throw error;
-    },
-  );
+let pending: Promise<IconLibrary> | null = null;
+/** The icon library, fetched once (and again after a failed try). */
+function loadLibrary(): Promise<IconLibrary> {
+  pending ??= import('@/lib/icons/library').catch((error: unknown) => {
+    pending = null;
+    throw error;
+  });
   return pending;
 }
 
-function useIconSet() {
-  const [state, setState] = useState<{ icons: IconSet | null; failed: boolean }>({ icons: null, failed: false });
+function useIconLibrary() {
+  const [attempt, setAttempt] = useState(0);
+  const [state, setState] = useState<{ lib: IconLibrary | null; failed: boolean }>({ lib: null, failed: false });
   useEffect(() => {
     let alive = true;
-    loadIcons().then(
-      (icons) => alive && setState({ icons, failed: false }),
-      () => alive && setState({ icons: null, failed: true }),
+    loadLibrary().then(
+      (lib) => alive && setState({ lib, failed: false }),
+      () => alive && setState({ lib: null, failed: true }),
     );
     return () => {
       alive = false;
     };
-  }, []);
-  return state;
+  }, [attempt]);
+  return {
+    ...state,
+    retry: () => {
+      setState({ lib: null, failed: false });
+      setAttempt((a) => a + 1);
+    },
+  };
 }
 
 const RECENT_KEY = 'wovexa.recent-icons';
@@ -61,7 +67,7 @@ function rememberRecent(name: string): string[] {
   return next;
 }
 
-/** An icon drawn as Lucide draws it: 2-unit lines on its 24-unit grid. */
+/** An icon drawn as Lucide draws it: 2-unit lines on its 24-unit grid, round at ends and corners. */
 export function IconGlyph({ icon, size = 22 }: { icon: IconData; size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -70,88 +76,172 @@ export function IconGlyph({ icon, size = 22 }: { icon: IconData; size?: number }
   );
 }
 
-/** Arrow keys move through a grid of buttons, a row at a time up and down. */
-function gridKeys(e: React.KeyboardEvent<HTMLElement>, columns: number) {
-  const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowDown' ? columns : e.key === 'ArrowUp' ? -columns : 0;
-  if (!step) return;
-  const buttons = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('button'));
-  const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
-  if (i < 0) return;
-  const next = buttons[i + step];
-  if (!next) return;
-  e.preventDefault();
-  next.focus();
+/** Icons shown at a time, and added by Show more: whole rows at six, seven or eight across. */
+const PAGE = 168;
+
+/**
+ * A grid of icon buttons that takes one Tab stop: the arrow keys move through it, a row at a time up
+ * and down, Home and End go to its first and last icon, and Up from the top row calls `onTop`.
+ */
+function IconGrid({ names, lib, columns, label, onPick, onTop }: { names: readonly string[]; lib: IconLibrary; columns: number; label: string; onPick: (name: string) => void; onTop?: () => void }) {
+  const [active, setActive] = useState(0);
+  const ref = useRef<HTMLDivElement>(null);
+  const current = Math.max(0, Math.min(active, names.length - 1));
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const last = names.length - 1;
+    const steps: Record<string, number> = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: columns, ArrowUp: -columns, Home: -current, End: last - current };
+    if (!(e.key in steps) || e.altKey || e.ctrlKey || e.metaKey) return;
+    e.preventDefault();
+    const to = current + steps[e.key];
+    if (to < 0 && e.key === 'ArrowUp') return onTop?.();
+    const next = Math.max(0, Math.min(last, to));
+    setActive(next);
+    ref.current?.querySelectorAll<HTMLButtonElement>('button')[next]?.focus();
+  };
+  const cell = 'touch-hit grid aspect-square place-items-center rounded-lg border border-line text-fg hover:border-line-strong hover:bg-hover';
+  return (
+    <div ref={ref} className="grid gap-1" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }} role="group" aria-label={label} onKeyDown={onKeyDown}>
+      {names.map((name, i) => {
+        const icon = lib.iconData(name);
+        const text = lib.iconLabel(name);
+        return (
+          <button key={name} className={cell} tabIndex={i === current ? 0 : -1} title={text} aria-label={`Add ${text.toLowerCase()} icon`} onFocus={() => setActive(i)} onClick={() => onPick(name)}>
+            {icon ? <IconGlyph icon={icon} /> : null}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
-export function IconsGrid({ onPick, columns = 7, focusSearch = false }: { onPick: (icon: IconData) => void; columns?: number; focusSearch?: boolean }) {
-  const { icons, failed } = useIconSet();
+const chip = 'rounded-full border border-line px-2.5 py-1 text-xs font-medium text-fg-2 hover:text-fg aria-pressed:border-transparent aria-pressed:bg-inverse aria-pressed:text-fg-inverse';
+
+export function IconsGrid({ onPick, columns = 7, focusSearch = false }: { onPick: (icon: IconData, label: string) => void; columns?: number; focusSearch?: boolean }) {
+  const { lib, failed, retry } = useIconLibrary();
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<string | null>(null);
+  const [limit, setLimit] = useState(PAGE);
   const [recent, setRecent] = useState<string[]>(readRecent);
   const search = useRef<HTMLInputElement>(null);
+  const results = useRef<HTMLDivElement>(null);
+  // Typing stays quick while the grid catches up.
+  const shownQuery = useDeferredValue(query);
   useEffect(() => {
     if (focusSearch) search.current?.focus();
   }, [focusSearch]);
-  const names = useMemo(() => searchIcons(query, category), [query, category]);
-  const shownRecent = !query && !category && icons ? recent.filter((n) => icons[n]) : [];
+  const names = useMemo(() => (lib ? lib.searchIcons(shownQuery, category) : []), [lib, shownQuery, category]);
+  const searching = !!shownQuery.trim();
+  const recentShown = !searching && !category && lib ? recent.filter((n) => lib.iconData(n)) : [];
   const pick = (name: string) => {
-    const icon = icons?.[name];
-    if (!icon) return;
+    const icon = lib?.iconData(name);
+    if (!lib || !icon) return;
     setRecent(rememberRecent(name));
-    onPick(icon);
+    onPick(icon, lib.iconLabel(name));
   };
-  const cell = 'touch-hit grid aspect-square place-items-center rounded-lg border border-line text-fg hover:border-line-strong hover:bg-hover';
-  const grid = (list: readonly string[], label: string) => (
-    <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }} role="group" aria-label={label} onKeyDown={(e) => gridKeys(e, columns)}>
-      {list.map((name) => (
-        <button key={name} className={cell} title={iconLabel(name)} aria-label={`Add ${iconLabel(name).toLowerCase()} icon`} onClick={() => pick(name)}>
-          {icons?.[name] ? <IconGlyph icon={icons[name]} /> : null}
-        </button>
-      ))}
-    </div>
-  );
+  const intoGrid = () => results.current?.querySelector<HTMLButtonElement>('button[tabindex="0"]')?.focus();
+  const categoryLabel = lib?.ICON_CATEGORIES.find((c) => c.id === category)?.label;
+  const heading = searching ? `${names.length.toLocaleString()} ${names.length === 1 ? 'icon' : 'icons'} found` : categoryLabel ? `${categoryLabel} (${names.length})` : `All ${names.length.toLocaleString()} icons`;
   return (
     <div>
       <label className="relative block">
         <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-3" aria-hidden />
-        <input ref={search} className="field h-9 w-full pl-8 text-sm" type="search" placeholder="Search icons: star, music, coffee" aria-label="Search icons" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <input
+          ref={search}
+          className="field h-9 w-full pl-8 text-sm"
+          type="search"
+          placeholder={lib ? `Search ${lib.ICON_NAMES.length.toLocaleString()} icons: star, music, coffee` : 'Search icons: star, music, coffee'}
+          aria-label="Search icons"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setLimit(PAGE);
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== 'ArrowDown') return;
+            e.preventDefault();
+            intoGrid();
+          }}
+        />
       </label>
-      <div className="mt-2 flex flex-wrap gap-1" role="group" aria-label="Icon category">
-        {[{ id: null, label: 'All' }, ...ICON_CATEGORIES].map((c) => (
-          <button
-            key={c.id ?? 'all'}
-            className="rounded-full border border-line px-2.5 py-1 text-xs font-medium text-fg-2 hover:text-fg aria-pressed:border-transparent aria-pressed:bg-inverse aria-pressed:text-fg-inverse"
-            aria-pressed={category === c.id}
-            onClick={() => setCategory(c.id)}
-          >
-            {c.label}
-          </button>
-        ))}
-      </div>
-      <div className="mt-2 max-h-[min(52vh,420px)] space-y-3 overflow-y-auto pr-0.5">
+      {lib ? (
+        <div className="mt-2 flex flex-wrap gap-1" role="group" aria-label="Icon category">
+          {[{ id: null, label: 'All' }, ...lib.ICON_CATEGORIES].map((c) => (
+            <button
+              key={c.id ?? 'all'}
+              className={chip}
+              aria-pressed={category === c.id}
+              onClick={() => {
+                setCategory(c.id);
+                setLimit(PAGE);
+              }}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <div ref={results} className="mt-2 max-h-[min(52vh,420px)] space-y-3 overflow-y-auto pr-0.5">
         {failed ? (
-          <p className="py-6 text-center text-xs text-fg-2">The icons couldn’t load. Check your connection, then open the icons again.</p>
-        ) : !icons ? (
+          <div className="py-6 text-center text-xs text-fg-2">
+            <p>The icons couldn’t load. Check your connection and try again.</p>
+            <button className="btn btn-outline mt-2 text-xs" onClick={retry}>
+              Try again
+            </button>
+          </div>
+        ) : !lib ? (
           <p className="py-6 text-center text-xs text-fg-2" role="status">
             Loading icons…
           </p>
         ) : (
           <>
-            {shownRecent.length ? (
+            {recentShown.length ? (
               <section>
                 <h4 className="mb-1 text-[11px] font-semibold text-fg-2">Recently used</h4>
-                {grid(shownRecent, 'Recently used icons')}
+                <IconGrid names={recentShown} lib={lib} columns={columns} label="Recently used icons" onPick={pick} onTop={() => search.current?.focus()} />
               </section>
             ) : null}
-            {names.length ? (
-              grid(names, 'Icons')
-            ) : (
-              <p className="py-6 text-center text-xs text-fg-2">No icons match “{query.trim()}”. Try one simple word, like star, music or coffee.</p>
-            )}
+            <section>
+              <h4 className="mb-1 text-[11px] font-semibold text-fg-2">{heading}</h4>
+              <p className="sr-only" role="status">
+                {searching ? heading : ''}
+              </p>
+              {names.length ? (
+                <>
+                  <IconGrid
+                    key={`${shownQuery}|${category}`}
+                    names={names.slice(0, limit)}
+                    lib={lib}
+                    columns={columns}
+                    label="Icons"
+                    onPick={pick}
+                    onTop={recentShown.length ? undefined : () => search.current?.focus()}
+                  />
+                  {names.length > limit ? (
+                    <button className="btn btn-outline mt-2 w-full text-xs" onClick={() => setLimit((l) => l + PAGE)}>
+                      Show more icons ({(names.length - limit).toLocaleString()} left)
+                    </button>
+                  ) : null}
+                </>
+              ) : (
+                <p className="py-6 text-center text-xs text-fg-2">No icons match “{shownQuery.trim()}”. Try one simple word, like star, music or coffee.</p>
+              )}
+            </section>
           </>
         )}
       </div>
-      <p className="mt-2 text-[11px] text-fg-3">Line icons by Lucide (ISC licence): free to use on your garments. Recolour and resize them like any shape.</p>
+      {lib ? (
+        <details className="mt-2 text-[11px] text-fg-3">
+          <summary className="cursor-pointer hover:text-fg-2">Line icons by Lucide: free to change and to print on garments you sell. Licence details</summary>
+          <div className="mt-1.5 space-y-1.5">
+            {lib.ICON_LICENCE_SUMMARY.map((line) => (
+              <p key={line}>{line}</p>
+            ))}
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-line p-2 font-mono text-[10px] leading-snug">{lib.LUCIDE_LICENCE}</pre>
+          </div>
+        </details>
+      ) : (
+        <p className="mt-2 text-[11px] text-fg-3">Line icons by Lucide: free to change and to print on garments you sell.</p>
+      )}
     </div>
   );
 }
@@ -201,8 +291,8 @@ export function IconsMenu() {
         >
           <IconsGrid
             focusSearch
-            onPick={(icon) => {
-              if (addIcon(icon)) setOpen(false);
+            onPick={(icon, label) => {
+              if (addIcon(icon, label)) setOpen(false);
             }}
           />
         </div>
