@@ -10,13 +10,16 @@
  * - photos, image repeats and raster effects (distress, cracked ink, shadows) are placed as
  *   images at print resolution, exactly where the PNG puts them,
  * - a layer clipped to the one below is masked by that layer's own shape (vector when it is),
- * - a lockup placement is its lockup's own layers, written the same way, in a scaled group.
+ * - a lockup placement is its lockup's own layers, written the same way, in a scaled group,
+ * - library icons are credited in its description, with their licence in its metadata.
  * Browser only (it measures text and draws raster parts on a canvas).
  */
 import { clipBases } from '@/domain/clipping';
 import { graphemes, letterInks } from '@/domain/letter-colors';
 import { shapePathData, transformPathData } from '@/domain/shape-path';
 import type { ArtworkLayer, FillStyle, LayerHalftone, LayerStack, LockupContent, ShapeContent, TextContent } from '@/domain/schema';
+import { stackIcons } from '@/lib/icons/credits';
+import { LUCIDE_LICENCE } from '@/lib/icons/lucide-licence';
 import { ringArea, ringsPath, simplifyRing, traceContours } from '@/lib/render/trace';
 import {
   distanceField,
@@ -381,16 +384,20 @@ export function zoneSvg(zone: LayerStack, widthMm: number, heightMm: number, opt
   const build: SvgBuild = { ppm, defs: new Defs(ppm), fonts: new Set<string>(), rasterLayers: [], vectorEffects: [], cuts: [] };
   const body = stackSvg(zone, widthMm, heightMm, build);
   const { defs, fonts, rasterLayers, vectorEffects, cuts } = build;
+  const icons = stackIcons(zone);
   const desc = [
     `${n(widthMm)} × ${n(heightMm)} mm print area at true size (1 unit = 1 mm).`,
     fonts.size ? `Live text in: ${[...fonts].join(', ')}. Install these fonts or outline the text before printing.` : '',
     vectorEffects.length ? `Sticker outlines and halftones as vector shapes: ${vectorEffects.join(', ')}.` : '',
     rasterLayers.length ? `Placed as images at ${Math.round(opts.dpi)} dpi: ${rasterLayers.join(', ')}.` : '',
+    icons.length ? `Lucide icons (lucide.dev): ${icons.join(', ')}. ISC licence, MIT for those Lucide drew from Feather: free to print on products for sale. The licence text is in this file's metadata.` : '',
   ]
     .filter(Boolean)
     .join(' ');
   const open = `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${n(widthMm)}mm" height="${n(heightMm)}mm" viewBox="0 0 ${n(widthMm)} ${n(heightMm)}">`;
-  const svg = `${open}<title>${esc(opts.title)}</title><desc>${esc(desc)}</desc>${defs.svg}${body.join('')}</svg>\n`;
+  // The icons' licence travels with every copy of their drawing.
+  const licence = icons.length ? `<metadata id="lucide-licence">${esc(LUCIDE_LICENCE)}</metadata>` : '';
+  const svg = `${open}<title>${esc(opts.title)}</title><desc>${esc(desc)}</desc>${licence}${defs.svg}${body.join('')}</svg>\n`;
   // The cut file: just the sticker outlines' edges, as the hairline a vinyl cutter or plotter follows.
   const cut = cuts.length
     ? `${open}<title>${esc(`${opts.title}, cut line`)}</title><desc>${esc(`Cut line at true size (1 unit = 1 mm) for a vinyl cutter, plotter or print-and-cut: the outer edge of each sticker outline. Line it up with the print file's top-left corner.`)}</desc><g id="CutContour" fill="none" stroke="#FF00FF" stroke-width="0.25" stroke-linejoin="round">${cuts.join('')}</g></svg>\n`

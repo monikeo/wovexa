@@ -685,6 +685,11 @@ function ShapeSection({ layer, content }: { layer: ArtworkLayer; content: ShapeC
           <NumberField label="Outline" suffix="mm" decimals={1} step={0.5} min={0} max={50} value={content.strokeWidthMm ?? 0} onCommit={(v) => update({ strokeWidthMm: v, strokeColor: content.strokeColor ?? '#000000' }, 'Outline width')} />
         </>
       )}
+      {content.icon ? (
+        <p className="text-[11px] text-fg-3">
+          From Lucide’s “{content.icon.name}” icon: free to change and to print on garments you sell. Export packages carry its licence.
+        </p>
+      ) : null}
     </Section>
   );
 }

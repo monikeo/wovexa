@@ -25,6 +25,8 @@ export interface TechSheetInput {
   colorwayFlats: Record<string, string[]>;
   mockups: Record<string, string[]>;
   fonts: { family: string; weights: number[]; source: string; licence: string; file?: string }[];
+  /** Library icons in the design (Lucide's names), with the version and the package's licence file. */
+  icons?: { names: string[]; version: string; file: string };
   issues: { severity: string; message: string; zoneId?: string }[];
   team?: { people: number; sizes: { size: string; count: number }[]; file: string };
   marker?: MarkerSummary;
@@ -49,6 +51,12 @@ export function gradingSection(model: GarmentModel, grading: NonNullable<TechShe
   return `<h2>Artwork graded by size</h2>
   <p class="small">Designed on size ${esc(grading.base)}. Every size prints the same artwork scaled from the top centre of its print area by the percentage shown: the chest across a front or back, the overall grade along a sleeve, the length down a leg. Design areas and artwork across seams keep their size.</p>
   <table class="grid"><tr><th>Size</th>${head}</tr>${rows}</table>`;
+}
+
+/** The library icons in the design, where they come from and under what licence. */
+export function iconsSection(icons: NonNullable<TechSheetInput['icons']>): string {
+  return `<h2>Icons</h2>
+  <table class="grid"><tr><th>Icons</th><th>Source</th><th>Licence</th></tr><tr><td>${icons.names.map(esc).join(', ')}</td><td>Lucide, version ${esc(icons.version)}<br><span class="muted small">lucide.dev</span></td><td>ISC; MIT for the icons Lucide drew from Feather. Both allow printing on products for sale.<br><a class="small" href="${esc(icons.file)}">${esc(icons.file)}</a></td></tr></table>`;
 }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -243,6 +251,7 @@ export function buildTechSheet(input: TechSheetInput): string {
 
   <h2>Fonts</h2>
   ${fonts ? `<table class="grid"><tr><th>Family</th><th>Weights</th><th>Source</th><th>Licence</th></tr>${fonts}</table>` : '<p class="muted">No text in this design.</p>'}
+  ${input.icons?.names.length ? iconsSection(input.icons) : ''}
 
   <h2>Open issues at export</h2>
   ${issues}

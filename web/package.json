@@ -10,8 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "icons": "node scripts/build-icons.mjs",
-    "icon-set": "node scripts/icon-set.mjs"
+    "icons": "node scripts/build-icons.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",
@@ -23,6 +22,7 @@
     "idb": "^8.0.4",
     "immer": "^11.2.9",
     "lucide-react": "^1.70.0",
+    "lucide-static": "1.66.0",
     "mediabunny": "1.63.0",
     "next": "16.4.5",
     "polygon-clipping": "0.15.7",

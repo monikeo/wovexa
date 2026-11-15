@@ -26,6 +26,7 @@ import type { Colorway, DesignArea, DesignDocument, LayerStack, ZoneId } from '@
 import { getLoadedImage, loadAssetImage } from '@/lib/assets';
 import { canvasToBlob, sha256Hex } from '@/lib/download';
 import { findFont } from '@/lib/fonts';
+import { ICON_LICENCE_FILE, iconLicenceText, iconsUsed } from '@/lib/icons/credits';
 import { getFont } from '@/lib/local-db';
 import { keepLetterSize, keepPathInPlace } from '@/lib/path-text';
 import { renderPrintPng } from '@/lib/render/print-render';
@@ -679,6 +680,10 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
   await add('colourways.csv', toCsv(colourRows), 'text/csv;charset=utf-8');
 
   const fonts = await fontsUsed(doc);
+  // Library icons: credited, with their licence carried in the package (spec §38).
+  const icons = iconsUsed(doc);
+  const iconLicence = icons.length ? await import('@/lib/icons/lucide-licence') : null;
+  if (iconLicence) await add(ICON_LICENCE_FILE, iconLicenceText(icons, { version: iconLicence.LUCIDE_VERSION, summary: iconLicence.ICON_LICENCE_SUMMARY, text: iconLicence.LUCIDE_LICENCE }));
   // Images and fonts are loaded by now, so the seam and font checks can run too.
   const issues = fullPreflight(doc)
     .issues.filter((i) => i.severity !== 'info')
@@ -701,6 +706,7 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
         colorwayFlats,
         mockups,
         fonts,
+        icons: iconLicence ? { names: icons, version: iconLicence.LUCIDE_VERSION, file: ICON_LICENCE_FILE } : undefined,
         issues,
         team: teamFile && roster ? { people: roster.rows.length, sizes: sizeBreakdown(roster), file: teamFile } : undefined,
         marker,
@@ -741,6 +747,8 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
       opts.include.proof ? '*_proof_*.pdf       Client proof with an approval line.' : null,
       opts.include.techSheet ? 'tech-sheet.html     Full specification. Open it in any browser from the unzipped folder.' : null,
       'colourways.csv      Every colour part as HEX, RGB and approximate CMYK.',
+      iconLicence ? 'licences/           The licence of the Lucide line icons in this design: ISC, and MIT for those Lucide drew from' : null,
+      iconLicence ? '                    Feather. Both allow printing them on products for sale; keep the file with copies of the icons.' : null,
       'manifest.json       Machine-readable index of this package with the SHA-256 of every file.',
       '',
       'Screen colours are sRGB previews; CMYK values are approximate. Confirm colour, placement and print method',
@@ -776,6 +784,9 @@ export async function buildProductionPackage(doc: DesignDocument, opts: PackageO
       : null,
     marker: marker ?? null,
     fonts,
+    artworkSources: iconLicence
+      ? [{ source: 'Lucide icons', url: 'https://lucide.dev', version: iconLicence.LUCIDE_VERSION, icons, licence: 'ISC; MIT for the icons Lucide derived from Feather', licenceFile: ICON_LICENCE_FILE }]
+      : [],
     preflight: issues,
     production: {
       constructionNotes: doc.production.constructionNotes,

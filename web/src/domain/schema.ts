@@ -274,8 +274,10 @@ export const shapeContentSchema = z.object({
   graphicId: z.string().max(40).optional(),
   /** Outline only: rings, frames and line art (the outline colour and width, else the fill colour at 1 mm), no fill. */
   hollow: z.boolean().optional(),
-  /** Round ends (and joins) on an outline-only line, as a pencil stroke draws; square cut without. */
+  /** Round ends on an outline-only line, as a pencil stroke draws; square cut without. Its corners are always round. */
   roundCaps: z.boolean().optional(),
+  /** The library icon this was drawn from (Lucide's name for it), so export packages can credit it and carry its licence. */
+  icon: z.object({ set: z.literal('lucide'), name: z.string().regex(/^[a-z0-9-]{1,80}$/) }).optional(),
 });
 
 /** What a layer inside a lockup can be: anything but another lockup. */

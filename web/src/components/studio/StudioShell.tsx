@@ -1016,7 +1016,7 @@ function MobileAddSheet({ onDone }: { onDone: () => void }) {
       </section>
       <section id="mobile-icons">
         <h3 className="panel-title mb-2">Icons</h3>
-        <IconsGrid columns={6} onPick={(icon) => { if (addIcon(icon)) onDone(); }} />
+        <IconsGrid columns={6} onPick={(icon, label) => { if (addIcon(icon, label)) onDone(); }} />
       </section>
     </div>
   );

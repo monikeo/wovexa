@@ -2,9 +2,14 @@
 
 WOVEXA includes the third-party software and artwork below. The 3D garment models in the model library, and who made them, are listed in 3d_models/CREDITS.md.
 
-## Lucide icons (lucide-react)
+## Lucide icons (lucide-react, lucide-static)
 
-Used for the interface's icons and for the line icons in the studio's icon library (src/lib/icons). Version 1.70.0, https://lucide.dev
+https://lucide.dev. Two packages, under the licence below:
+
+- lucide-react 1.70.0 draws the interface's own icons.
+- lucide-static 1.66.0 supplies the drawings and search tags of the studio's icon library (src/lib/icons), whose line icons designers place on garments.
+
+What the licences allow for printed products: Lucide's ISC licence, and the MIT licence of the icons Lucide drew from Feather, both allow any use, paid or free, including changing the icons and selling garments printed with them. Their one condition is that the copyright and licence notice below is kept with copies of the icons. WOVEXA shows it in the icon library and writes it into every export package with icons in it (licences/lucide-icons.txt); neither licence mentions a credit on the product itself.
 
 ```
 ISC License
